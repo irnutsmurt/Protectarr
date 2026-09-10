@@ -1,0 +1,91 @@
+# Protectarr configuration. Copy to config.yaml (or mount at /config/config.yaml).
+# Secrets can also be supplied via env vars (see README): PROTECTARR_QBIT_PASSWORD, etc.
+
+qbittorrent:
+  url: http://192.168.1.100:8080
+  # qBittorrent >= 5.2.0: paste an API key (starts with "qbt_"). If set, it's
+  # used instead of username/password. Also settable via PROTECTARR_QBIT_API_KEY.
+  api_key: ""
+  # Fallback for older qBittorrent (< 5.2.0):
+  username: admin
+  password: ""            # set here, or via PROTECTARR_QBIT_PASSWORD
+  verify_ssl: true
+
+arrs:
+  - name: Sonarr
+    type: sonarr          # sonarr | radarr | lidarr | readarr | whisparr
+    url: http://192.168.1.100:8989
+    api_key: "your-sonarr-api-key"
+  # - name: Radarr
+  #   type: radarr
+  #   url: http://192.168.1.100:7878
+  #   api_key: "your-radarr-api-key"
+
+detection:
+  blocked_extensions:
+    - .exe
+    - .scr
+    - .bat
+    - .com
+    - .cmd
+    - .msi
+    - .pif
+    - .vbs
+    - .js
+    - .jar
+    - .lnk
+    - .ps1
+  # Only inspect torrents still downloading (fast; finished seeds are skipped).
+  only_active: true
+
+safety:
+  # arr_tracked : reap only torrents a configured arr is tracking (safest;
+  #               your hand-added Linux ISOs are never touched)
+  # allowlist   : reap any torrent whose category/tag is listed below
+  # both        : must be arr-tracked AND allowlisted
+  mode: arr_tracked
+  allowed_categories:
+    - tv
+    - radarr
+  allowed_tags: []
+  # After reaping, requeue (search for a clean release) ONLY once the
+  # episode/movie has aired/released. If it hasn't aired yet, no legit release
+  # can exist, so hold and let the arr's normal RSS grab the real one later.
+  # Set false to never requeue (blocklist only).
+  requeue_after_airdate: true
+  # Wait this many hours past the air/release time before requeuing (web
+  # releases often appear a little after the broadcast slot).
+  airdate_grace_hours: 0
+
+poll_interval: 20         # seconds between scans
+dry_run: true             # true = log only; set false to actually reap
+
+# Optional: peer IP blocklist applied to qBittorrent's IP filter.
+ip_blocklist:
+  enabled: false
+  url: https://github.com/Naunter/BT_BlockLists/raw/master/bt_blocklists.gz
+  # Where the list is written — MUST be readable by qBittorrent. In Docker,
+  # mount a shared volume into both containers and use qBittorrent's path here.
+  path: /blocklist/ipfilter.p2p
+  update_interval_hours: 24
+  apply_to_qbit: true       # set qBittorrent ip_filter_enabled + ip_filter_path
+  block_trackers: false
+
+# Optional: a small hand-curated list of IPs pushed to qBittorrent's "manually
+# banned IPs" via the API (no file / shared volume needed).
+banned_ips:
+  enabled: false
+  ips: []                   # one IP per entry
+  merge_existing: true      # union with qBittorrent's current banned IPs
+
+web:
+  enabled: true
+  host: 0.0.0.0
+  port: 8090
+  api_key: ""             # optional; programmatic access (X-Api-Key / ?apikey=)
+  auth:
+    method: none          # none | basic | forms
+    required: enabled     # enabled | local_disabled (bypass auth for LAN clients)
+    username: ""
+    password_hash: ""     # set via the WebUI (stored hashed)
+    trusted_proxies: []   # CIDRs of reverse proxies whose X-Forwarded-For is trusted

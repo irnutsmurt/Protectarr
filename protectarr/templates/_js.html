@@ -1,0 +1,57 @@
+<script>
+function toggleSecret(btn) {
+  const inp = btn.parentNode.querySelector('input');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  btn.textContent = show ? 'Hide' : 'Show';
+}
+function post(url, body) {
+  return fetch(url, {method:'POST', headers:{'Content-Type':'application/json', 'X-CSRF-Token': window.CSRF || ''}, body:JSON.stringify(body)}).then(r=>r.json());
+}
+function setMsg(el, r){ el.textContent = (r.ok?'✓ ':'✗ ') + r.message; el.style.color = r.ok ? 'var(--accent)' : 'var(--danger)'; }
+function testQbit() {
+  const msg = document.getElementById('qbit_msg'); msg.textContent='testing…'; msg.style.color='var(--text-dim)';
+  post('{{ url_for("test_qbit") }}', {url:qbit_url.value, api_key:qbit_api_key.value, username:qbit_username.value, password:qbit_password.value, verify_ssl:true}).then(r=>setMsg(msg,r));
+}
+function testArr(btn) {
+  const box = btn.closest('.instance'), msg = box.querySelector('.msg'); msg.textContent='testing…'; msg.style.color='var(--text-dim)';
+  post('{{ url_for("test_arr") }}', {
+    name: box.querySelector('[name=arr_name]').value, type: box.querySelector('[name=arr_type]').value,
+    url: box.querySelector('[name=arr_url]').value, api_key: box.querySelector('[name=arr_key]').value
+  }).then(r=>setMsg(msg,r));
+}
+function testAll() {
+  if (document.getElementById('qbit_url')) testQbit();
+  document.querySelectorAll('#arrs .instance').forEach(function(box){
+    const btn = box.querySelector('button[onclick^="testArr"]');
+    if (btn) testArr(btn);
+  });
+}
+function addArr() {
+  const types = {{ arr_types | tojson }};
+  const opts = types.map(t=>`<option value="${t}">${t}</option>`).join('');
+  const div = document.createElement('div'); div.className='instance';
+  div.innerHTML = `<div class="row">
+      <div><label>Name</label><input type="text" name="arr_name"></div>
+      <div><label>Type</label><select name="arr_type">${opts}</select></div></div>
+    <label>URL</label><input type="url" name="arr_url">
+    <label>API Key</label>
+    <div class="secret-field"><input type="password" name="arr_key" autocomplete="off">
+      <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button></div>
+    <p style="margin-top:12px"><button type="button" class="btn small" onclick="testArr(this)">Test</button>
+      <button type="button" class="btn small" onclick="this.closest('.instance').remove()">Remove</button>
+      <span class="msg"></span></p>`;
+  document.getElementById('arrs').appendChild(div);
+}
+function preview() {
+  const el = document.getElementById('preview'); if(!el) return;
+  el.innerHTML = '<p class="hint">scanning…</p>';
+  fetch('{{ url_for("preview") }}').then(r=>r.json()).then(r=>{
+    if (!r.ok) { el.innerHTML = `<div class="card"><div class="body" style="color:var(--danger)">${r.message}</div></div>`; return; }
+    if (!r.actions.length) { el.innerHTML = '<div class="card"><div class="body hint">Nothing would be reaped right now.</div></div>'; return; }
+    const rows = r.actions.map(a=>`<tr><td>${a.name}</td><td>${a.bad_file}</td><td>${a.decision}</td><td>${a.arr||'—'}</td></tr>`).join('');
+    el.innerHTML = `<div class="card"><h2>Dry-run preview</h2><div class="body" style="overflow-x:auto">
+      <table><tr><th>Torrent</th><th>Bad file</th><th>Action</th><th>App</th></tr>${rows}</table></div></div>`;
+  });
+}
+</script>

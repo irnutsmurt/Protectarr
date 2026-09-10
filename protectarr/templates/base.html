@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Protectarr{% endblock %}</title>
+  <meta name="csrf" content="{{ csrf_token }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='logo-icon.png') }}">
+</head>
+<body>
+  <header class="app-header">
+    <a class="header-logo" href="{{ url_for('applications') }}"><img class="brand-icon" src="{{ url_for('static', filename='logo-icon.png') }}" alt=""><span class="brand-name">Protectarr</span></a>
+    <div class="header-spacer"></div>
+    <div class="header-icons">
+      {% if user %}<span>👤 {{ user }}</span><a href="{{ url_for('logout') }}">Logout</a>
+      {% elif basic_user %}<span>👤 {{ basic_user }}</span>{% endif %}
+    </div>
+  </header>
+
+  <aside class="sidebar">
+    <nav class="nav">
+      <a href="{{ url_for('applications') }}" class="{{ 'active' if active=='applications' }}">Applications</a>
+      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active=='dashboard' }}">Dashboard</a>
+
+      <a href="{{ url_for('settings_index') }}" class="{{ 'active' if active=='settings' }}">Settings</a>
+      {% if active == 'settings' %}
+      <div class="subnav">
+        {% for key, label, icon in settings_sections %}
+        <a href="{{ url_for('settings_page', section=key) }}" class="{{ 'active' if active_sub==key }}">{{ label }}</a>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <a href="{{ url_for('watchlist') }}" class="{{ 'active' if active=='watchlist' }}">Watchlist</a>
+      <a href="{{ url_for('system') }}" class="{{ 'active' if active=='system' }}">System</a>
+    </nav>
+    <div class="sidebar-foot">Protectarr v{{ version }}</div>
+  </aside>
+
+  <main class="content">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}<div class="flash">{{ messages[0] }}</div>{% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    // CSRF: expose the token and stamp it into every form.
+    window.CSRF = document.querySelector('meta[name=csrf]').content;
+    document.querySelectorAll('form').forEach(function (f) {
+      if (f.querySelector('input[name=csrf_token]')) return;
+      var i = document.createElement('input');
+      i.type = 'hidden'; i.name = 'csrf_token'; i.value = window.CSRF;
+      f.appendChild(i);
+    });
+  </script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

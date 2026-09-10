@@ -1,0 +1,27 @@
+services:
+  protectarr:
+    build: .
+    # image: ghcr.io/YOURNAME/protectarr:latest   # once published
+    container_name: protectarr
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./config:/config
+      # For the optional IP blocklist: mount a shared volume that qBittorrent
+      # ALSO mounts (at the same path), and set ip_blocklist.path to it, e.g.:
+      # - ./blocklist:/blocklist        # and in qBittorrent: - ./blocklist:/blocklist
+    environment:
+      # Prefer secrets via env over writing them into config.yaml.
+      # qBittorrent >= 5.2.0: use an API key…
+      - PROTECTARR_QBIT_API_KEY=${QBIT_API_KEY:-}
+      # …or fall back to username/password on older versions:
+      - PROTECTARR_QBIT_PASSWORD=${QBIT_PASSWORD:-}
+    # Protectarr must reach qBittorrent + your *arr apps. If they run in this
+    # same compose stack, put them on a shared network and use service names in
+    # the URLs (e.g. http://qbittorrent:8080). Otherwise the LAN IPs work as-is.
+    # networks:
+    #   - arr
+# networks:
+#   arr:
+#     external: true

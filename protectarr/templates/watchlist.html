@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>IP Watchlist <span class="hint" style="font-weight:400">— peers seen sharing confirmed fakes</span></h2>
+  <div class="body">
+    <p class="hint" style="margin-top:0">
+      Every time Protectarr reaps a fake, it records the torrent's swarm here <b>before</b> removing it.
+      This is passive observation only — nothing is blocked automatically. Watch for IPs (and subnets)
+      that show up across <b>many distinct fakes</b> while <b>seeding</b>: those are the likely sources.
+    </p>
+
+    {% if rows %}
+    <div style="overflow-x:auto">
+      <table class="applist">
+        <thead>
+          <tr>
+            <th>IP</th>
+            <th style="text-align:right">Distinct fakes</th>
+            <th>Role</th>
+            <th style="text-align:right">Observations</th>
+            <th>Indexers</th>
+            <th>Client</th>
+            <th>Country</th>
+            <th>First seen</th>
+            <th>Last seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr title="{{ r.samples | join(' · ') }}">
+            <td><code>{{ r.ip }}</code></td>
+            <td style="text-align:right"><b>{{ r.distinct_fakes }}</b></td>
+            <td>
+              {% if r.was_seeder %}<span class="pill dry">seeder</span>{% else %}<span class="hint">leecher</span>{% endif %}
+            </td>
+            <td style="text-align:right">{{ r.hits }}{% if r.seed_hits %} <span class="hint">({{ r.seed_hits }} seeding)</span>{% endif %}</td>
+            <td class="hint">{{ r.indexers | join(', ') or '—' }}</td>
+            <td class="hint">{{ r.clients | join(', ') or '—' }}</td>
+            <td class="hint">{{ r.countries | join(', ') or '—' }}</td>
+            <td class="hint">{{ r.first_seen or '—' }}</td>
+            <td class="hint">{{ r.last_seen or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint" style="margin-top:12px">{{ rows | length }} IP(s) observed. Hover a row to see sample release names.</p>
+    {% else %}
+    <p class="hint">No peers harvested yet. Once Protectarr reaps a fake (Live mode) with harvesting enabled, the swarm shows up here.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

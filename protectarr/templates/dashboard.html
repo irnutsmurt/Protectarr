@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="toolbar">
+  <button class="tool-btn" type="button" onclick="preview()">Dry-run preview</button>
+  <button class="tool-btn" type="button" onclick="loadDashboard()">Refresh</button>
+</div>
+
+<div class="cards">
+  <div class="statcard">
+    <div class="label">Applications</div>
+    <div class="num">{{ cfg.arrs | length }}</div>
+    <div class="sub" id="apps_health">—</div>
+  </div>
+  <div class="statcard">
+    <div class="label">Indexers seen</div>
+    <div class="num" id="stat_indexers">…</div>
+    <div class="sub">across all apps</div>
+  </div>
+  <div class="statcard">
+    <div class="label">Torrents</div>
+    <div class="num" id="stat_torrents">…</div>
+    <div class="sub" id="stat_downloading">in qBittorrent</div>
+  </div>
+  <div class="statcard accent">
+    <div class="label">Malicious reaped</div>
+    <div class="num">{{ state.stats.reaped_total }}</div>
+    <div class="sub">{% if state.stats.first_seen %}since {{ state.stats.first_seen }}{% else %}all time{% endif %}</div>
+  </div>
+  {% if cfg.ip_blocklist.enabled %}
+  <div class="statcard">
+    <div class="label">IPs blocked</div>
+    <div class="num">{% if state.blocklist.entries %}{{ '{:,}'.format(state.blocklist.entries) }}{% else %}—{% endif %}</div>
+    <div class="sub">{% if state.blocklist.last %}updated {{ state.blocklist.last }}{% else %}not updated yet{% endif %}</div>
+  </div>
+  {% endif %}
+</div>
+
+<div id="preview"></div>
+
+<div class="card">
+  <h2>Library monitored <span class="hint" style="font-weight:400">— per application</span></h2>
+  <div class="body">
+    <div class="legend" id="library_legend"></div>
+    <div class="chart-wrap" id="library_chart"><p class="hint">Loading…</p></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Malicious reaped by indexer</h2>
+  <div class="body">
+    <div class="chart-wrap" id="reaped_chart"></div>
+    <p class="hint" id="reaped_empty" hidden>No reaps recorded yet. Once Protectarr fails a fake via one of your apps, the indexer it came from shows up here.</p>
+    {% if state.stats.by_app %}
+    <p class="hint" style="margin-top:12px">By app:
+      {% for app, c in state.stats.by_app | dictsort(by='value', reverse=true) %}<b>{{ app }}</b> {{ c }}{% if not loop.last %} · {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>Indexers <span class="hint" style="font-weight:400">— what your apps can pull from</span></h2>
+  <div class="body" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Indexer</th><th>Protocol</th><th>Seen by</th><th>Reaped</th></tr></thead>
+      <tbody id="indexers_tbody"><tr><td colspan="4" class="hint">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Application health</h2>
+  <div class="body" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Indexers</th></tr></thead>
+      <tbody id="apps_tbody"><tr><td colspan="4" class="hint">Loading…</td></tr></tbody>
+    </table>
+    <p class="hint" id="dash_errors" style="color:var(--danger)"></p>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+{% include "_js.html" %}
+<script>
+window.REAPED_BY_INDEXER = {{ state.stats.by_indexer | tojson }};
+var LAST_APPS = [];
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function trunc(s, n){ s = String(s); return s.length > n ? s.slice(0, n-1) + '…' : s; }
+
+// ---- self-contained SVG bar chart (axis + gridlines + stacked series) ----
+function niceNum(range, round){
+  const exp = Math.floor(Math.log10(range || 1));
+  const f = (range || 1) / Math.pow(10, exp);
+  let nf;
+  if (round) nf = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
+  else       nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+  return nf * Math.pow(10, exp);
+}
+function axis(maxVal){
+  maxVal = Math.max(1, maxVal);
+  const step = niceNum(niceNum(maxVal, false) / 4, true);
+  return { step: step, max: Math.ceil(maxVal / step) * step };
+}
+function barChart(el, opts){
+  const cats = opts.categories, series = opts.series, H = opts.height || 280;
+  const W = Math.max(320, el.clientWidth || 760);
+  const padL = 46, padR = 14, padT = 10, padB = 48;
+  const totals = cats.map((_, i) => series.reduce((s, se) => s + (+se.data[i] || 0), 0));
+  const ax = axis(Math.max.apply(null, [1].concat(totals)));
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const band = plotW / (cats.length || 1), bw = Math.min(46, band * 0.5);
+  let grid = '', bars = '', xl = '';
+  for (let v = 0; v <= ax.max + 1e-9; v += ax.step){
+    const y = padT + plotH - plotH * (v / ax.max);
+    grid += `<line class="grid" x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}"/>`;
+    grid += `<text class="yl" x="${padL-8}" y="${(y+4).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
+  }
+  cats.forEach((c, i) => {
+    const cx = padL + band * i + band / 2; let acc = 0;
+    series.forEach(se => {
+      const val = +se.data[i] || 0; if (val <= 0) return;
+      const h = plotH * (val / ax.max), y = padT + plotH - plotH * (acc / ax.max) - h;
+      bars += `<rect x="${(cx-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${se.color}"><title>${esc(c)} · ${esc(se.name)}: ${val}</title></rect>`;
+      acc += val;
+    });
+    xl += `<text class="xl" x="${cx.toFixed(1)}" y="${padT+plotH+18}" text-anchor="middle">${esc(trunc(c, 16))}</text>`;
+  });
+  el.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" width="100%" height="${H}">${grid}${bars}${xl}</svg>`;
+}
+function legend(el, series){
+  el.innerHTML = series.map(s => `<span class="leg"><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('');
+}
+
+const C_MON = '#35c46b', C_UNMON = '#3f4753', C_REAP = '#e5484d';
+function renderCharts(){
+  const apps = LAST_APPS.filter(a => a.library);
+  const libEl = document.getElementById('library_chart'), libLeg = document.getElementById('library_legend');
+  if (apps.length){
+    const series = [
+      {name:'Monitored',   color:C_MON,   data: apps.map(a => a.library.monitored)},
+      {name:'Unmonitored', color:C_UNMON, data: apps.map(a => Math.max(0, a.library.total - a.library.monitored))}
+    ];
+    legend(libLeg, series);
+    barChart(libEl, {categories: apps.map(a => a.name + ' · ' + a.library.noun), series: series});
+  } else { libLeg.innerHTML = ''; libEl.innerHTML = '<p class="hint">No library data (apps unreachable or empty).</p>'; }
+
+  const rb = window.REAPED_BY_INDEXER || {}, keys = Object.keys(rb);
+  const rEl = document.getElementById('reaped_chart'), rEmpty = document.getElementById('reaped_empty');
+  if (keys.length){
+    rEmpty.hidden = true;
+    barChart(rEl, {categories: keys, series: [{name:'Reaped', color:C_REAP, data: keys.map(k => rb[k])}]});
+  } else { rEl.innerHTML = ''; rEmpty.hidden = false; }
+}
+
+function loadDashboard() {
+  fetch('{{ url_for("dashboard_data") }}').then(r=>r.json()).then(r=>{
+    if (!r.ok) return;
+    const d = r.data; LAST_APPS = d.apps || [];
+    document.getElementById('stat_torrents').textContent = d.total_torrents == null ? '—' : d.total_torrents;
+    document.getElementById('stat_downloading').textContent = d.active_torrents == null ? 'in qBittorrent' : (d.active_torrents + ' downloading');
+    document.getElementById('stat_indexers').textContent = d.indexers.length;
+
+    const ok = d.apps.filter(a=>a.ok).length;
+    document.getElementById('apps_health').textContent = d.apps.length ? (ok + ' of ' + d.apps.length + ' online') : 'none configured';
+
+    const reap = window.REAPED_BY_INDEXER || {};
+    document.getElementById('indexers_tbody').innerHTML = d.indexers.length
+      ? d.indexers.map(ix=>`<tr><td>${esc(ix.name)}${ix.enabled?'':' <span class="hint">(disabled)</span>'}</td><td>${esc(ix.protocol)}</td><td>${esc(ix.apps.join(', '))}</td><td>${reap[ix.name]||0}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="hint">No indexers found on your apps.</td></tr>';
+
+    document.getElementById('apps_tbody').innerHTML = d.apps.length
+      ? d.apps.map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(a.type)}</td><td>${a.ok?'<span class="pill on">OK</span>':'<span class="pill off">Error</span>'} <span class="hint">${esc(a.detail)}</span></td><td>${a.indexers}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="hint">No applications configured yet — add one on the Applications page.</td></tr>';
+
+    document.getElementById('dash_errors').textContent = (d.errors||[]).join(' · ');
+    renderCharts();
+  }).catch(e=>{ document.getElementById('dash_errors').textContent = String(e); });
+}
+
+let _rz;
+window.addEventListener('resize', function(){ clearTimeout(_rz); _rz = setTimeout(renderCharts, 150); });
+renderCharts();   // draw reaped chart immediately from server data
+loadDashboard();  // then fill live data + library chart
+</script>
+{% endblock %}

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Protectarr</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='logo-icon.png') }}">
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" method="post" action="{{ url_for('login') }}">
+    <div class="brand"><img class="brand-logo-lg" src="{{ url_for('static', filename='logo-full.png') }}" alt="Protectarr"></div>
+    <p class="sub">Sign in to continue</p>
+    {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next or '' }}">
+    <label>Username</label>
+    <input type="text" name="username" autocomplete="username" autofocus>
+    <label>Password</label>
+    <input type="password" name="password" autocomplete="current-password">
+    <label class="check"><input type="checkbox" name="remember"> Remember me</label>
+    <button type="submit" class="btn primary">Sign in</button>
+  </form>
+</div>
+</body>
+</html>

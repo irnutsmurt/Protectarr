@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Settings</h2>
+  <div class="body">
+    {% for key, label, icon, desc in settings_sections_full %}
+    <a class="settings-link" href="{{ url_for('settings_page', section=key) }}">
+      <span class="settings-link-title">{{ label }}</span>
+      <span class="hint">{{ desc }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

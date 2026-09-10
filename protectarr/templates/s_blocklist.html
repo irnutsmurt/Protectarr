@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" action="{{ url_for('save_section', section='blocklist') }}">
+  <div class="card">
+    <h2>Peer IP Blocklist</h2>
+    <div class="body">
+      <p class="hint" style="margin-top:0">Downloads a peer blocklist (default: Naunter/BT_BlockLists) and points qBittorrent's IP filter at it. The file path must be readable by qBittorrent — in Docker, a volume shared by both containers.</p>
+      <label class="check"><input type="checkbox" name="bl_enabled" {% if cfg.ip_blocklist.enabled %}checked{% endif %}> Enable IP blocklist</label>
+      <label>Blocklist URL</label>
+      <input type="url" name="bl_url" value="{{ cfg.ip_blocklist.url }}">
+      <div class="row">
+        <div><label>File path <span class="hint">(as qBittorrent sees it)</span></label><input type="text" name="bl_path" value="{{ cfg.ip_blocklist.path }}"></div>
+        <div><label>Update every (hours)</label><input type="number" name="bl_interval" min="1" value="{{ cfg.ip_blocklist.update_interval_hours }}"></div>
+      </div>
+      <label class="check"><input type="checkbox" name="bl_apply" {% if cfg.ip_blocklist.apply_to_qbit %}checked{% endif %}> Apply to qBittorrent IP filter automatically</label>
+      <label class="check"><input type="checkbox" name="bl_trackers" {% if cfg.ip_blocklist.block_trackers %}checked{% endif %}> Also filter tracker connections</label>
+      <div style="margin-top:14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <button type="submit" name="do_update" value="1" class="btn small">Save &amp; Update now</button>
+        <span class="hint">
+          {% set b = state.blocklist %}
+          {% if b.error %}<span style="color:var(--danger)">Last error: {{ b.error }}</span>
+          {% elif b.last %}Last update: {{ b.last }} · {{ b.entries }} entries · {{ (b.bytes/1024)|round|int }} KiB · applied: {{ 'yes' if b.applied else 'no' }}
+          {% else %}Never updated{% endif %}
+        </span>
+      </div>
+    </div>
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+{% endblock %}

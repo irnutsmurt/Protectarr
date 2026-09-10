@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>System</h2>
+  <div class="body">
+    <table>
+      <tr><th style="width:220px">Version</th><td>Protectarr v{{ version }}</td></tr>
+      <tr><th>Worker</th><td>{% if state.running %}Running{% else %}Stopped{% endif %}</td></tr>
+      <tr><th>Reaped total</th><td>{{ state.stats.reaped_total }}{% if state.stats.last_reap %} <span class="hint">(last {{ state.stats.last_reap }})</span>{% endif %}</td></tr>
+      <tr><th>Last scan</th><td>{{ state.last_scan or "—" }}</td></tr>
+      <tr><th>IP blocklist</th><td>
+        {% if state.blocklist.last %}{{ state.blocklist.entries }} entries, applied={{ state.blocklist.applied }} <span class="hint">({{ state.blocklist.last }})</span>{% else %}—{% endif %}
+        {% if state.blocklist.error %}<span style="color:var(--danger)"> {{ state.blocklist.error }}</span>{% endif %}
+      </td></tr>
+      <tr><th>Banned IPs</th><td>
+        {% if state.banned.last %}{{ state.banned.count }} applied <span class="hint">({{ state.banned.last }})</span>{% else %}—{% endif %}
+        {% if state.banned.error %}<span style="color:var(--danger)"> {{ state.banned.error }}</span>{% endif %}
+      </td></tr>
+      <tr><th>Config file</th><td><code>{{ config_path }}</code></td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Recent activity</h2>
+  <div class="body"><pre class="log">{{ state.log | join('\n') or "(no activity yet)" }}</pre></div>
+</div>
+{% endblock %}

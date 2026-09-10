@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" action="{{ url_for('save_section', section='bannedips') }}">
+  <div class="card">
+    <h2>Manually Banned IPs</h2>
+    <div class="body">
+      <p class="hint" style="margin-top:0">A small hand-curated list of individual IPs pushed to qBittorrent's <em>banned IPs</em> via the API — no file or shared volume required. Applied on Save (and via the button).</p>
+      <label class="check"><input type="checkbox" name="bip_enabled" {% if cfg.banned_ips.enabled %}checked{% endif %}> Manage qBittorrent's banned IPs</label>
+      <label>Banned IPs <span class="hint">(one per line)</span></label>
+      <textarea name="bip_ips" placeholder="203.0.113.7&#10;198.51.100.42">{{ cfg.banned_ips.ips | join('\n') }}</textarea>
+      <label class="check"><input type="checkbox" name="bip_merge" {% if cfg.banned_ips.merge_existing %}checked{% endif %}> Merge with qBittorrent's existing banned IPs (don't overwrite)</label>
+      <div style="margin-top:14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <span class="hint">
+          {% set n = state.banned %}
+          {% if n.error %}<span style="color:var(--danger)">Last error: {{ n.error }}</span>
+          {% elif n.last %}Last applied: {{ n.last }} · {{ n.count }} IP(s) banned in qBittorrent
+          {% else %}Not applied yet{% endif %}
+        </span>
+      </div>
+    </div>
+  </div>
+  <button type="submit" class="btn primary">Save &amp; Apply</button>
+</form>
+{% endblock %}

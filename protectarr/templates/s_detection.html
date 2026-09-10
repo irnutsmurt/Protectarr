@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" action="{{ url_for('save_section', section='detection') }}">
+  <div class="card">
+    <h2>Monitored Extensions</h2>
+    <div class="body">
+      <p class="hint" style="margin-bottom:12px">A download is flagged for removal when its file list contains any of these
+        extensions. Public trackers seed video-sized decoys named like <code>Show.S01E01.1080p….exe</code>.</p>
+      <label>Monitored extensions <span class="hint">(comma or newline separated)</span></label>
+      <textarea name="blocked_extensions">{{ cfg.detection.blocked_extensions | join(', ') }}</textarea>
+      <label class="check"><input type="checkbox" name="only_active" {% if cfg.detection.only_active %}checked{% endif %}>
+        Only scan downloading torrents <span class="hint">(recommended — much faster on large libraries)</span></label>
+    </div>
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+{% endblock %}

@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="toolbar">
+  <form method="post" action="{{ url_for('control', action='start') }}"><button class="tool-btn"><span class="ti">▶️</span>Start</button></form>
+  <form method="post" action="{{ url_for('control', action='stop') }}"><button class="tool-btn"><span class="ti">⏹️</span>Stop</button></form>
+  <button class="tool-btn" type="button" onclick="openApp()"><span class="ti">➕</span>Add Application</button>
+  <button class="tool-btn" type="button" onclick="testAll()"><span class="ti">✔️</span>Test All</button>
+</div>
+
+<div class="statusbar">
+  <span class="stat">Worker
+    {% if state.running %}<span class="pill on">Running</span>{% else %}<span class="pill off">Stopped</span>{% endif %}
+  </span>
+  <span class="stat">Mode
+    {% if cfg.dry_run %}<span class="pill dry">Dry run</span> <span class="hint">— <a href="{{ url_for('settings_page', section='safety') }}">switch to Live in Safety</a></span>{% else %}<span class="pill live">Live</span>{% endif %}
+  </span>
+  <span class="stat">Last scan: <b>{{ state.last_scan or "—" }}</b></span>
+  {% if state.last_error %}<span class="stat" style="color:var(--danger)">Error: {{ state.last_error }}</span>{% endif %}
+</div>
+
+<div class="card">
+  <h2>Download Client</h2>
+  <div class="body" style="overflow-x:auto">
+    <table class="applist">
+      <thead><tr><th style="width:34px"></th><th>Name</th><th>Type</th><th>URL</th><th style="width:90px;text-align:right">Actions</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="st st-unknown" id="qbit_status" title="not tested">●</span></td>
+          <td><b>qBittorrent</b></td>
+          <td>qbittorrent</td>
+          <td class="hint">{{ cfg.qbittorrent.url or '—' }}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="iconbtn" href="{{ cfg.qbittorrent.web_url or cfg.qbittorrent.url or '#' }}" target="_blank" rel="noopener" title="Open qBittorrent">↗</a>
+            <button type="button" class="iconbtn" title="Configure" onclick="openQbit()">🔧</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Applications <span class="hint" style="font-weight:400">— Sonarr / Radarr / Lidarr / Readarr instances Protectarr cross-references</span></h2>
+  <div class="body" style="overflow-x:auto">
+    {% if cfg.arrs %}
+    <table class="applist">
+      <thead><tr><th style="width:34px"></th><th>Name</th><th>Type</th><th>URL</th><th style="width:90px;text-align:right">Actions</th></tr></thead>
+      <tbody>
+        {% for a in cfg.arrs %}
+        <tr>
+          <td><span class="st st-unknown" id="st_{{ loop.index0 }}" data-name="{{ a.name }}" title="not tested">●</span></td>
+          <td><b>{{ a.name }}</b></td>
+          <td>{{ a.type }}</td>
+          <td class="hint">{{ a.url }}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="iconbtn" href="{{ a.web_url or a.url }}" target="_blank" rel="noopener" title="Open {{ a.name }}">↗</a>
+            <button type="button" class="iconbtn" title="Configure" onclick="openApp({{ loop.index0 }})">🔧</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="hint">No applications yet — click <b>Add Application</b> above.</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- qBittorrent config modal -->
+<div class="modal-overlay" id="qbitModal" hidden>
+  <div class="modal">
+    <div class="modal-head"><span>Edit — qBittorrent</span>
+      <button type="button" class="modal-x" onclick="closeQbit()">×</button></div>
+    <form method="post" action="{{ url_for('save_qbit') }}">
+      <div class="modal-body">
+        <label>Web UI URL <span class="hint">(backend address Protectarr connects to)</span></label>
+        <input type="url" name="qbit_url" id="qbit_url" value="{{ cfg.qbittorrent.url }}" placeholder="http://192.168.1.100:8090">
+        <label>Public URL <span class="hint">(optional — where <i>you</i> open qBittorrent in a browser, if different)</span></label>
+        <input type="url" name="qbit_web_url" value="{{ cfg.qbittorrent.web_url or '' }}" placeholder="https://qbit.example.com">
+        <label>API key <span class="hint">(qBittorrent ≥ 5.2.0, <code>qbt_…</code> — used instead of username/password if set)</span></label>
+        <div class="secret-field">
+          <input type="password" name="qbit_api_key" id="qbit_api_key" value="{{ cfg.qbittorrent.api_key }}" placeholder="qbt_…" autocomplete="off">
+          <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>
+        </div>
+        <div class="row">
+          <div><label>Username</label><input type="text" name="qbit_username" id="qbit_username" value="{{ cfg.qbittorrent.username }}"></div>
+          <div><label>Password</label><input type="password" name="qbit_password" id="qbit_password" placeholder="(unchanged)"></div>
+        </div>
+        <label class="check"><input type="checkbox" name="qbit_verify_ssl" {% if cfg.qbittorrent.verify_ssl %}checked{% endif %}> Verify SSL</label>
+        <p style="margin-top:14px"><button type="button" class="btn small" onclick="testQbit()">Test</button><span class="msg" id="qbit_msg"></span></p>
+      </div>
+      <div class="modal-foot">
+        <span style="flex:1"></span>
+        <button type="button" class="btn" onclick="closeQbit()">Cancel</button>
+        <button type="submit" class="btn primary">💾 Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Application (arr) config modal -->
+<div class="modal-overlay" id="appModal" hidden>
+  <div class="modal">
+    <div class="modal-head"><span id="m_title">Add Application</span>
+      <button type="button" class="modal-x" onclick="closeApp()">×</button></div>
+    <form method="post" action="{{ url_for('save_app') }}">
+      <div class="modal-body">
+        <input type="hidden" name="arr_index" id="m_index" value="">
+        <label>Name</label><input type="text" name="arr_name" id="m_name">
+        <label>Type</label>
+        <select name="arr_type" id="m_type">
+          {% for t in arr_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+        </select>
+        <label>URL <span class="hint">(backend address Protectarr connects to for the API)</span></label>
+        <input type="url" name="arr_url" id="m_url" placeholder="http://192.168.1.100:8989">
+        <label>Public URL <span class="hint">(optional — where <i>you</i> open this app in a browser, used by the Open link)</span></label>
+        <input type="url" name="arr_web_url" id="m_web_url" placeholder="https://sonarr.example.com">
+        <label>API Key</label>
+        <div class="secret-field">
+          <input type="password" name="arr_key" id="m_key" autocomplete="off">
+          <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>
+        </div>
+        <p style="margin-top:12px"><button type="button" class="btn small" onclick="testAppModal()">Test</button>
+          <span class="msg" id="m_msg"></span></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn danger" id="m_delete" onclick="deleteApp()" hidden>Delete</button>
+        <span style="flex:1"></span>
+        <button type="button" class="btn" onclick="closeApp()">Cancel</button>
+        <button type="submit" class="btn primary">💾 Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+<form method="post" action="{{ url_for('delete_app') }}" id="deleteForm" hidden>
+  <input type="hidden" name="arr_index" id="d_index">
+</form>
+
+{% endblock %}
+{% block scripts %}
+{% include "_js.html" %}
+<script>
+window.APPS = {{ cfg.arrs | tojson }};
+
+function openQbit() { document.getElementById('qbitModal').hidden = false; }
+function closeQbit() { document.getElementById('qbitModal').hidden = true; }
+
+function openApp(idx) {
+  const editing = (idx !== undefined && idx !== null);
+  const a = editing ? window.APPS[idx] : {};
+  document.getElementById('m_title').textContent = editing ? ('Edit — ' + (a.name||'')) : 'Add Application';
+  document.getElementById('m_index').value = editing ? idx : '';
+  document.getElementById('m_name').value = a.name || '';
+  document.getElementById('m_type').value = a.type || document.getElementById('m_type').options[0].value;
+  document.getElementById('m_url').value = a.url || '';
+  document.getElementById('m_web_url').value = a.web_url || '';
+  document.getElementById('m_key').value = a.api_key || '';
+  document.getElementById('m_delete').hidden = !editing;
+  document.getElementById('m_msg').textContent = '';
+  document.getElementById('appModal').hidden = false;
+}
+function closeApp() { document.getElementById('appModal').hidden = true; }
+function deleteApp() {
+  const idx = document.getElementById('m_index').value;
+  if (idx === '') return;
+  if (!confirm('Remove this application?')) return;
+  document.getElementById('d_index').value = idx;
+  document.getElementById('deleteForm').submit();
+}
+function testAppModal() {
+  const msg = document.getElementById('m_msg'); msg.textContent='testing…'; msg.style.color='var(--text-dim)';
+  post('{{ url_for("test_arr") }}', {
+    name: document.getElementById('m_name').value, type: document.getElementById('m_type').value,
+    url: document.getElementById('m_url').value, api_key: document.getElementById('m_key').value
+  }).then(r=>setMsg(msg,r));
+}
+// close modals on overlay click / Esc
+['qbitModal','appModal'].forEach(function(id){
+  document.getElementById(id).addEventListener('click', function(e){ if (e.target === this) this.hidden = true; });
+});
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { closeApp(); closeQbit(); } });
+
+function setStatus(el, ok, detail) {
+  if (ok === true)  { el.textContent='✓'; el.className='st st-ok';   el.title = detail || 'Online'; }
+  else if (ok === false) { el.textContent='⚠'; el.className='st st-err'; el.title = detail || 'Unreachable'; }
+  else { el.textContent='●'; el.className='st st-unknown'; el.title='not tested'; }
+}
+function loadAppHealth() {
+  const qs = document.getElementById('qbit_status');
+  document.querySelectorAll('[id^=st_]').forEach(el=>setStatus(el, null));
+  if (qs) setStatus(qs, null);
+  fetch('{{ url_for("dashboard_data") }}').then(r=>r.json()).then(r=>{
+    if (!r.ok) return;
+    const byName = {}; (r.data.apps||[]).forEach(a=>byName[a.name]=a);
+    document.querySelectorAll('[id^=st_]').forEach(el=>{
+      const a = byName[el.dataset.name];
+      if (a) setStatus(el, a.ok, a.detail);
+    });
+    if (qs) {
+      const qbitErr = (r.data.errors||[]).find(e=>e.indexOf('qBittorrent:')===0);
+      setStatus(qs, qbitErr ? false : (r.data.active_torrents!=null), qbitErr || 'Online');
+    }
+  });
+}
+function testAll() { if (document.getElementById('qbit_url')) testQbit(); loadAppHealth(); }
+loadAppHealth();
+</script>
+{% endblock %}
