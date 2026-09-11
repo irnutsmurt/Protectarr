@@ -26,27 +26,35 @@ def _norm_title(s):
 #   search        - (command name, ids field on command, id field on queue rec)
 #   airdate       - (resource, id field on queue rec, [date fields on resource]).
 #                   resource=None means the type has no meaningful "aired" concept.
+#   queue_includes- queue params that nest the media object into each record, so
+#                   History can name what a release was FOR without a second
+#                   lookup. Unknown params are ignored by older *arrs.
 ARR_TYPES = {
     "sonarr":   {"version": "v3", "unknown_param": "includeUnknownSeriesItems",
                  "search": ("EpisodeSearch", "episodeIds", "episodeId"),
                  "airdate": ("episode", "episodeId", ["airDateUtc"]),
-                 "library": ("series", "Series")},
+                 "library": ("series", "Series"),
+                 "queue_includes": ["includeSeries", "includeEpisode"]},
     "radarr":   {"version": "v3", "unknown_param": "includeUnknownMovieItems",
                  "search": ("MoviesSearch", "movieIds", "movieId"),
                  "airdate": ("movie", "movieId", ["digitalRelease", "physicalRelease"]),
-                 "library": ("movie", "Movies")},
+                 "library": ("movie", "Movies"),
+                 "queue_includes": ["includeMovie"]},
     "whisparr": {"version": "v3", "unknown_param": "includeUnknownMovieItems",
                  "search": ("MoviesSearch", "movieIds", "movieId"),
                  "airdate": ("movie", "movieId", ["digitalRelease", "physicalRelease"]),
-                 "library": ("movie", "Items")},
+                 "library": ("movie", "Items"),
+                 "queue_includes": ["includeMovie"]},
     "lidarr":   {"version": "v1", "unknown_param": "includeUnknownArtistItems",
                  "search": ("AlbumSearch", "albumIds", "albumId"),
                  "airdate": (None, "albumId", []),
-                 "library": ("artist", "Artists")},
+                 "library": ("artist", "Artists"),
+                 "queue_includes": ["includeArtist", "includeAlbum"]},
     "readarr":  {"version": "v1", "unknown_param": "includeUnknownAuthorItems",
                  "search": ("BookSearch", "bookIds", "bookId"),
                  "airdate": (None, "bookId", []),
-                 "library": ("author", "Authors")},
+                 "library": ("author", "Authors"),
+                 "queue_includes": ["includeAuthor", "includeBook"]},
 }
 
 
@@ -126,6 +134,8 @@ class ArrClient:
     def queue_by_hash(self):
         """Map lowercased torrent hash -> full queue record for this instance."""
         params = {"pageSize": 2000, self.meta["unknown_param"]: "true"}
+        for inc in self.meta.get("queue_includes", []):
+            params[inc] = "true"
         r = self._s.get(self._url("queue"), params=params, timeout=self.timeout)
         r.raise_for_status()
         out = {}
@@ -190,42 +200,67 @@ class ArrClient:
         aired = datetime.now(timezone.utc) >= earliest + timedelta(hours=grace_hours)
         return aired, earliest
 
-    def is_blocklisted_title(self, titles, retries=6, delay=1.5):
-        """Confirm a release made it into the blocklist.
+    # Keys an *arr might expose the torrent's identity under on a blocklist
+    # record. Not every version returns any of them, so this is opportunistic.
+    _HASH_KEYS = ("torrentInfoHash", "downloadId")
 
-        Matching is normalised rather than exact. The queue record's `title` is
-        the download client's name for the torrent, which is usually
-        space-separated, while the blocklist stores the raw release name, which
-        is usually dot-separated:
+    def blocklist_match(self, torrent_hash=None, titles=(), retries=6, delay=1.5):
+        """Confirm a release reached the blocklist. Returns how it matched, or
+        None if it never appeared.
 
-            Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb
-            Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb
+        Strongest evidence first:
 
-        Those are the same release, and an exact compare says they are not, so
-        it reported "unconfirmed" for entries that were written correctly. All
-        separators collapse to single spaces before comparing; the release group
-        and quality still distinguish genuinely different releases.
+          "hash"       the torrent infohash / downloadId, when the blocklist
+                       exposes it. Exact and unambiguous.
+          "title"      exact sourceTitle.
+          "normalized" sourceTitle compared on words alone. Needed because the
+                       queue record's title is the download client's name for
+                       the torrent and is space-separated, while the blocklist
+                       stores the raw release name and is dot-separated:
 
-        Sonarr also writes the entry a moment after the queue delete returns,
-        hence the polling. `titles` may be one string or several candidates.
+                         Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb
+                         Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb
+
+                       Comparing those exactly can never match, which is why
+                       every reap used to report "unconfirmed". It is last
+                       because collapsing separators could in principle make two
+                       near-identical releases look the same; group and quality
+                       normally keep them apart.
+
+        Each tier is checked across every record before falling back, so a weak
+        match never pre-empts a strong one. Sonarr writes the entry a moment
+        after the queue delete returns, hence the polling.
         """
         if isinstance(titles, str):
             titles = [titles]
-        want = {_norm_title(t) for t in titles if t and _norm_title(t)}
-        if not want:
-            return False
+        want_hash = (torrent_hash or "").lower()
+        want_exact = {t.lower() for t in titles if t}
+        want_norm = {_norm_title(t) for t in titles if t and _norm_title(t)}
+        if not (want_hash or want_exact):
+            return None
+
         for attempt in range(retries):
             r = self._s.get(self._url("blocklist"),
                             params={"pageSize": 50, "sortKey": "date",
                                     "sortDirection": "descending"},
                             timeout=self.timeout)
             r.raise_for_status()
-            if any(_norm_title(b.get("sourceTitle")) in want
-                   for b in r.json().get("records", [])):
-                return True
+            records = r.json().get("records", [])
+
+            if want_hash:
+                for b in records:
+                    for key in self._HASH_KEYS:
+                        if (b.get(key) or "").lower() == want_hash:
+                            return "hash"
+            for b in records:
+                if (b.get("sourceTitle") or "").lower() in want_exact:
+                    return "title"
+            for b in records:
+                if want_norm and _norm_title(b.get("sourceTitle")) in want_norm:
+                    return "normalized"
             if attempt < retries - 1:
                 time.sleep(delay)
-        return False
+        return None
 
     def grab_indexer(self, download_id):
         """Best-effort: which indexer grabbed this download. Queue records don't

@@ -323,35 +323,102 @@ class TestBlocklistConfirmation(unittest.TestCase):
     QUEUE = "Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb"
     RAW = "Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"
 
+    HASH = "ffcff9e6cd9a5d4cad048ba041f987676fd8dca0"
+
+    def match(self, **kw):
+        kw.setdefault("retries", 1)
+        return self.client.blocklist_match(**kw)
+
     def test_dotted_blocklist_entry_matches_spaced_queue_title(self):
         self.records = [{"sourceTitle": self.RAW}]
-        self.assertTrue(self.client.is_blocklisted_title(self.QUEUE, retries=1))
+        self.assertEqual(self.match(titles=self.QUEUE), "normalized")
 
     def test_spaced_blocklist_entry_matches_too(self):
         self.records = [{"sourceTitle": self.QUEUE}]
-        self.assertTrue(self.client.is_blocklisted_title(self.RAW, retries=1))
+        self.assertEqual(self.match(titles=self.RAW), "normalized")
+
+    def test_exact_title_beats_the_normalised_fallback(self):
+        self.records = [{"sourceTitle": self.QUEUE}]
+        self.assertEqual(self.match(titles=self.QUEUE), "title")
+
+    def test_hash_wins_even_when_a_title_also_matches(self):
+        self.records = [{"sourceTitle": self.QUEUE,
+                         "torrentInfoHash": self.HASH.upper()}]
+        self.assertEqual(self.match(torrent_hash=self.HASH,
+                                    titles=self.QUEUE), "hash")
+
+    def test_hash_on_a_later_record_is_not_pre_empted_by_a_weak_match(self):
+        self.records = [{"sourceTitle": self.RAW},
+                        {"sourceTitle": "unrelated", "downloadId": self.HASH}]
+        self.assertEqual(self.match(torrent_hash=self.HASH,
+                                    titles=self.QUEUE), "hash")
+
+    def test_downloadid_is_accepted_as_the_hash(self):
+        self.records = [{"sourceTitle": "unrelated", "downloadId": self.HASH}]
+        self.assertEqual(self.match(torrent_hash=self.HASH), "hash")
+
+    def test_missing_hash_field_degrades_to_titles(self):
+        self.records = [{"sourceTitle": self.RAW}]
+        self.assertEqual(self.match(torrent_hash=self.HASH,
+                                    titles=self.QUEUE), "normalized")
 
     def test_several_candidate_titles(self):
         self.records = [{"sourceTitle": self.RAW}]
-        self.assertTrue(self.client.is_blocklisted_title(
-            ["something else entirely", self.QUEUE], retries=1))
+        self.assertEqual(
+            self.match(titles=["something else entirely", self.QUEUE]), "normalized")
 
     def test_a_different_release_still_does_not_match(self):
         self.records = [{"sourceTitle":
                          "Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-OTHER"}]
-        self.assertFalse(self.client.is_blocklisted_title(self.QUEUE, retries=1))
+        self.assertIsNone(self.match(titles=self.QUEUE))
 
     def test_a_different_episode_still_does_not_match(self):
         self.records = [{"sourceTitle":
                          "Ted.Lasso.S04E06.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"}]
-        self.assertFalse(self.client.is_blocklisted_title(self.QUEUE, retries=1))
+        self.assertIsNone(self.match(titles=self.QUEUE))
 
-    def test_empty_titles_short_circuit_without_calling_the_api(self):
-        self.assertFalse(self.client.is_blocklisted_title(["", None], retries=3))
+    def test_a_different_torrent_hash_does_not_match(self):
+        self.records = [{"sourceTitle": "unrelated", "torrentInfoHash": "deadbeef"}]
+        self.assertIsNone(self.match(torrent_hash=self.HASH))
+
+    def test_nothing_to_match_on_short_circuits_without_calling_the_api(self):
+        self.assertIsNone(self.match(titles=["", None], retries=3))
         self.assertEqual(self.calls, 0)
 
     def test_polls_because_sonarr_writes_the_entry_late(self):
         self.records = []
-        self.assertFalse(self.client.is_blocklisted_title(
-            self.QUEUE, retries=3, delay=0))
+        self.assertIsNone(self.match(titles=self.QUEUE, retries=3, delay=0))
         self.assertEqual(self.calls, 3)
+
+
+class TestQueueIncludes(unittest.TestCase):
+    """owner.media was null on the live event because the queue record had no
+    nested series object. These are the params that fix that."""
+
+    def test_every_arr_type_asks_for_its_media_object(self):
+        from protectarr.arr import ARR_TYPES
+        for name, meta in ARR_TYPES.items():
+            with self.subTest(arr=name):
+                self.assertTrue(meta.get("queue_includes"))
+
+    def test_includes_are_sent_on_the_queue_call(self):
+        from protectarr.arr import ArrClient
+        seen = {}
+
+        class R:
+            def raise_for_status(self): pass
+            def json(self): return {"records": []}
+
+        c = ArrClient("Sonarr", "sonarr", "http://x", "k")
+        c._s.get = lambda url, params=None, timeout=None: (
+            seen.update(params or {}), R())[1]
+        c.queue_by_hash()
+        self.assertEqual(seen.get("includeSeries"), "true")
+        self.assertEqual(seen.get("includeEpisode"), "true")
+        self.assertEqual(seen.get("includeUnknownSeriesItems"), "true")
+
+    def test_media_name_reads_the_nested_object(self):
+        from protectarr.core import _media_name
+        self.assertEqual(_media_name({"series": {"title": "Ted Lasso"}}), "Ted Lasso")
+        self.assertEqual(_media_name({"movie": {"title": "Dune"}}), "Dune")
+        self.assertIsNone(_media_name({"title": "release name only"}))

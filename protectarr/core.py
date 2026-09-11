@@ -349,9 +349,11 @@ def apply_actions(actions, state, cfg):
                 peers = _harvest_peers(a, indexer, client.name, state, cfg)  # before removal
                 client.fail(record["id"])  # remove + blocklist, no auto-redownload
                 removed = True
-                # The queue title and the torrent name can each be the form the
-                # blocklist recorded, so offer both as candidates.
-                blocked = client.is_blocklisted_title([source_title, a["name"]])
+                # Prefer the infohash; fall back to the titles, either of which
+                # can be the form the blocklist recorded.
+                match = client.blocklist_match(
+                    torrent_hash=a["hash"], titles=[source_title, a["name"]])
+                blocked = match is not None
 
                 # Requeue only if it has actually aired/released.
                 requeue = "disabled"
@@ -381,7 +383,10 @@ def apply_actions(actions, state, cfg):
                     owner={"type": client.type, "instance": client.name,
                            "media": _media_name(record), "release_title": source_title},
                     action={"result": "reaped", "decision": "arr_fail",
-                            "removed": True, "blocklisted": bool(blocked)},
+                            "removed": True, "blocklisted": bool(blocked),
+                            # which evidence confirmed it, so a reliance on the
+                            # fuzzy title fallback is visible rather than silent
+                            "blocklist_match": match},
                     redownload=rd))
             elif a["decision"] == "qbit_delete":
                 peers = _harvest_peers(a, None, "qBittorrent", state, cfg)  # before removal
