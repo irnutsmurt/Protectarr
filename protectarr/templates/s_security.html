@@ -27,17 +27,41 @@
       </div>
       <label>Trusted proxies <span class="hint">(CIDRs whose X-Forwarded-For is trusted; needed for "Disabled for Local Addresses" behind a reverse proxy)</span></label>
       <textarea name="trusted_proxies" placeholder="e.g. 172.18.0.0/16">{{ cfg.web.auth.trusted_proxies | join(', ') }}</textarea>
-      {% if cfg.web.api_key %}
-      <label>API key <span class="hint">(HTTP API - send as the <code>X-Api-Key</code> header or <code>?apikey=</code>; see <code>GET /api/v1</code>)</span></label>
-      <div class="secret-field">
-        <input type="password" value="{{ cfg.web.api_key }}" readonly autocomplete="off">
-        <button type="button" class="btn small copybtn" tabindex="-1" title="Copy to clipboard without showing it" onclick="copySecret(this)">Copy</button>
-        <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>
-      </div>
-      {% endif %}
     </div>
   </div>
   <button type="submit" class="btn primary">Save</button>
 </form>
+
+{% if cfg.web.api_key %}
+{# Its own card, outside the settings form: a credential you generate, not a
+   field you save - and a form inside a form would be invalid HTML anyway. #}
+<div class="card" style="margin-top:18px">
+  <h2>API key <span class="hint" style="font-weight:400">- for the HTTP API</span></h2>
+  <div class="body">
+    <p class="hint" style="margin-top:0">
+      Send as the <code>X-Api-Key</code> header (preferred) or <code>?apikey=</code>,
+      which is convenient but can land in proxy/access logs. See <code>GET /api/v1</code>
+      for the endpoint list.
+    </p>
+    <div class="secret-field">
+      <input type="password" value="{{ cfg.web.api_key }}" readonly autocomplete="off">
+      <button type="button" class="btn small copybtn" tabindex="-1" title="Copy to clipboard without showing it" onclick="copySecret(this)">Copy</button>
+      <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>
+    </div>
+    {% if api_key_from_env %}
+    <p class="hint" style="margin-top:12px">
+      This key comes from the <code>PROTECTARR_WEB_API_KEY</code> environment
+      variable, so it has to be changed there. Regenerating it here would have no effect.
+    </p>
+    {% else %}
+    <form method="post" action="{{ url_for('regenerate_api_key') }}" style="margin-top:12px"
+          onsubmit="return confirm('Generate a new API key?\n\nThe current key stops working immediately, and anything still using it will get 401 until you update it.')">
+      <button type="submit" class="btn small danger">Regenerate</button>
+      <span class="hint" style="margin-left:10px">Revokes the current key straight away. Use this if it has leaked.</span>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 {% block scripts %}{% include "_js.html" %}{% endblock %}

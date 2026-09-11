@@ -206,6 +206,7 @@ def create_app(service):
             settings_sections_full=SETTINGS_SECTIONS_FULL,
             version=__version__, config_path=cfg_mod.CONFIG_PATH,
             user=session.get("user"), basic_user=getattr(g, "auth_user", None),
+            api_key_from_env=cfg_mod.api_key_is_from_env(),
             **ctx)
 
     @app.route("/")
@@ -471,6 +472,16 @@ def create_app(service):
         service.update_blocklist(cfg_mod.load(), force=True)
         flash("IP blocklist update triggered.")
         return redirect(url_for("settings_page", section="blocklist"))
+
+    @app.route("/settings/security/apikey/regenerate", methods=["POST"])
+    def regenerate_api_key():
+        new = cfg_mod.regenerate_api_key()
+        if new is None:
+            flash("The API key comes from PROTECTARR_WEB_API_KEY; change it there.")
+        else:
+            # Auth reads the key per request, so the old one is already dead.
+            flash("New API key generated. The previous key no longer works.")
+        return redirect(url_for("settings_page", section="security"))
 
     @app.route("/bannedips/apply", methods=["POST"])
     def bannedips_apply():

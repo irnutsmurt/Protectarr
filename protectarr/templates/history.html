@@ -95,6 +95,12 @@
       {% if show == 'live' %}
       No live actions recorded yet. Anything Protectarr reaps for real shows up here;
       switch to <b>Dry run</b> to see what it would have caught while testing.
+      {% if state.stats.reaped_total %}
+      <br><br>
+      The dashboard counts <b>{{ state.stats.reaped_total }}</b> reap(s), which is higher
+      because those happened before this page existed. Only reaps from here on are recorded
+      in detail.
+      {% endif %}
       {% elif show == 'dry' %}
       No dry-run detections recorded yet.
       {% else %}

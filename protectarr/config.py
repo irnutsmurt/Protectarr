@@ -191,6 +191,17 @@ def _read_file():
     return {}
 
 
+def _persist(file_cfg):
+    """Write the raw file merged over defaults, atomically. Caller holds _lock."""
+    clean = _deep_merge(DEFAULTS, file_cfg)
+    os.makedirs(os.path.dirname(CONFIG_PATH) or ".", exist_ok=True)
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        yaml.safe_dump(clean, fh, sort_keys=False, default_flow_style=False)
+    os.replace(tmp, CONFIG_PATH)
+    return clean
+
+
 def ensure_secret_key():
     """Return a stable session-signing key, generating + persisting one on first
     run. Operates on the raw file so env-injected secrets aren't written back."""
@@ -200,12 +211,7 @@ def ensure_secret_key():
         if not key:
             key = secrets.token_hex(32)
             file_cfg.setdefault("web", {})["secret_key"] = key
-            clean = _deep_merge(DEFAULTS, file_cfg)
-            os.makedirs(os.path.dirname(CONFIG_PATH) or ".", exist_ok=True)
-            tmp = CONFIG_PATH + ".tmp"
-            with open(tmp, "w") as fh:
-                yaml.safe_dump(clean, fh, sort_keys=False, default_flow_style=False)
-            os.replace(tmp, CONFIG_PATH)
+            _persist(file_cfg)
         return key
 
 
@@ -222,23 +228,35 @@ def ensure_api_key():
         if not key:
             key = secrets.token_hex(32)
             file_cfg.setdefault("web", {})["api_key"] = key
-            clean = _deep_merge(DEFAULTS, file_cfg)
-            os.makedirs(os.path.dirname(CONFIG_PATH) or ".", exist_ok=True)
-            tmp = CONFIG_PATH + ".tmp"
-            with open(tmp, "w") as fh:
-                yaml.safe_dump(clean, fh, sort_keys=False, default_flow_style=False)
-            os.replace(tmp, CONFIG_PATH)
+            _persist(file_cfg)
+        return key
+
+
+def api_key_is_from_env():
+    return bool(os.environ.get("PROTECTARR_WEB_API_KEY"))
+
+
+def regenerate_api_key():
+    """Issue a new web API key, revoking the old one immediately.
+
+    Auth reads the key from config on every request, so the change takes effect
+    at once with no restart - and anything still presenting the old key starts
+    getting 401. Returns the new key, or None if the key is pinned by the
+    PROTECTARR_WEB_API_KEY env override, where rotating the file would silently
+    do nothing.
+    """
+    if api_key_is_from_env():
+        return None
+    with _lock:
+        file_cfg = _read_file()
+        key = secrets.token_hex(32)
+        file_cfg.setdefault("web", {})["api_key"] = key
+        _persist(file_cfg)
         return key
 
 
 def save(cfg):
     """Persist config to disk (env overrides are NOT written back)."""
     with _lock:
-        os.makedirs(os.path.dirname(CONFIG_PATH) or ".", exist_ok=True)
         # Only store keys we know about, in a stable order.
-        clean = _deep_merge(DEFAULTS, cfg)
-        tmp = CONFIG_PATH + ".tmp"
-        with open(tmp, "w") as fh:
-            yaml.safe_dump(clean, fh, sort_keys=False, default_flow_style=False)
-        os.replace(tmp, CONFIG_PATH)
-        return clean
+        return _persist(cfg)
