@@ -143,6 +143,7 @@ _REQUEUE_TEXT = {
     "not_yet_aired": "held - not out yet",
     "airdate_unknown": "held - no air/release date known",
     "requeue_disabled": "requeue turned off in Safety settings",
+    "verification_failed": "unknown - the check after removal failed",
     "not_applicable": "-",
 }
 

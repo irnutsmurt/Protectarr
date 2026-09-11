@@ -344,6 +344,10 @@ def apply_actions(actions, state, cfg):
                         "removed": False, "blocklisted": False},
                 redownload={"decision": "none", "reason": "not_applicable"}))
             continue
+        # Tracks whether the destructive half already went through, so a failure
+        # in the verification/requeue half afterwards isn't reported as if
+        # nothing happened.
+        removed = False
         try:
             if a["decision"] == "arr_fail":
                 client, record = a["_owner"]
@@ -351,6 +355,7 @@ def apply_actions(actions, state, cfg):
                 indexer = record.get("indexer") or client.grab_indexer(record.get("downloadId"))
                 peers = _harvest_peers(a, indexer, client.name, state, cfg)  # before removal
                 client.fail(record["id"])  # remove + blocklist, no auto-redownload
+                removed = True
                 blocked = client.is_blocklisted_title(source_title)
 
                 # Requeue only if it has actually aired/released.
@@ -386,6 +391,7 @@ def apply_actions(actions, state, cfg):
             elif a["decision"] == "qbit_delete":
                 peers = _harvest_peers(a, None, "qBittorrent", state, cfg)  # before removal
                 a["_qb"].delete(a["hash"], delete_files=True)
+                removed = True
                 _log(state, f"Deleted from qBittorrent: {label}")
                 record_reap(state, "qBittorrent", a.get("category") or None)
                 events.record(_event(
@@ -396,16 +402,28 @@ def apply_actions(actions, state, cfg):
                             "removed": True, "blocklisted": False},
                     redownload={"decision": "none", "reason": "not_applicable"}))
         except (requests.RequestException, QbitError) as e:
-            _log(state, f"Action failed for {label}: {e}")
+            # If the removal already succeeded, the fake really is gone and
+            # blocklisted; only the confirmation or requeue half broke. Calling
+            # that "failed" would be factually wrong, so it's recorded as
+            # partial with the outcome left unknown rather than asserted.
+            if removed:
+                _log(state, f"Removed, but the follow-up check failed for {label}: {e}")
+                result, rd = "partial", {"decision": "unknown",
+                                         "reason": "verification_failed"}
+            else:
+                _log(state, f"Action failed for {label}: {e}")
+                result, rd = "failed", {"decision": "none",
+                                        "reason": "not_applicable"}
             owner = a["_owner"]
             events.record(_event(
                 a, cfg,
                 owner=({"type": owner[0].type, "instance": owner[0].name,
                         "media": _media_name(owner[1]),
                         "release_title": owner[1].get("title")} if owner else None),
-                action={"result": "failed", "decision": a["decision"],
-                        "removed": False, "blocklisted": False, "error": str(e)},
-                redownload={"decision": "none", "reason": "not_applicable"}))
+                action={"result": result, "decision": a["decision"],
+                        "removed": removed, "blocklisted": None if removed else False,
+                        "error": str(e)},
+                redownload=rd))
 
 
 class ProtectarrService:

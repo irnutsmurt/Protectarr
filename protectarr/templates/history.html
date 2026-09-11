@@ -56,12 +56,15 @@
             <td style="white-space:nowrap">
               {% if act.result == 'reaped' %}<span class="pill live">reaped</span>
               {% elif act.result == 'would_reap' %}<span class="pill dry">dry run</span>
+              {% elif act.result == 'partial' %}<span class="pill dry">partial</span>
               {% else %}<span class="pill off">failed</span>{% endif %}
               <div class="hint" style="margin-top:4px">
                 {% if act.result == 'reaped' %}
                   removed · blocklist {{ 'confirmed' if act.blocklisted else 'unconfirmed' }}
                 {% elif act.result == 'would_reap' %}
                   would {{ act.decision }}
+                {% elif act.result == 'partial' %}
+                  removed · follow-up failed: {{ act.error or 'error' }}
                 {% else %}
                   {{ act.error or 'error' }}
                 {% endif %}
