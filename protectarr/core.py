@@ -164,10 +164,15 @@ def scan(cfg, state):
                     api_key=qc.get("api_key", ""), verify_ssl=qc.get("verify_ssl", True))
     qb.login()
 
-    # Only pull the category we care about when in a category-scoped setup;
-    # otherwise inspect everything and let the safety rules filter.
-    torrents = qb.torrents()
-    log.debug("qBittorrent returned %d torrent(s)", len(torrents))
+    det = cfg["detection"]
+    only_active = det.get("only_active", True)
+
+    # Ask qBittorrent to do the filtering. On a large library the unfiltered
+    # list is megabytes of seeding torrents fetched every poll and discarded
+    # immediately; the state check below still has the final say.
+    torrents = qb.torrents(state_filter="downloading" if only_active else None)
+    log.debug("qBittorrent returned %d torrent(s)%s", len(torrents),
+              " (server-side filter=downloading)" if only_active else "")
 
     arr_clients = build_clients(cfg)
     # name -> raw config entry, so policy can read a per-*arr `profile`.
@@ -183,8 +188,6 @@ def scan(cfg, state):
         except requests.RequestException as e:
             _log(state, f"Could not read {client.name} queue: {e}", logging.ERROR)
 
-    det = cfg["detection"]
-    only_active = det.get("only_active", True)
     safety = cfg["safety"]
     actions = []
     inspected = skipped = 0

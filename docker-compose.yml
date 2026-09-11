@@ -14,7 +14,9 @@ services:
     environment:
       # Your timezone, so log and history timestamps match your clock. Without
       # it a container runs on UTC. Can also be set in Settings > Logging.
-      - TZ=${TZ:-Etc/UTC}
+      # List of timezone names:
+      # https://gist.github.com/alejzeis/ad5827eb14b5c22109ba652a1a267af5
+      - TZ=America/Los_Angeles
       # Prefer secrets via env over writing them into config.yaml.
       # qBittorrent >= 5.2.0: use an API key…
       - PROTECTARR_QBIT_API_KEY=${QBIT_API_KEY:-}

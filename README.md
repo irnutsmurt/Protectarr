@@ -311,6 +311,14 @@ overwrite it. Use this for one-off bans; use the IP filter above for bulk lists.
 Protectarr replaces that feature. If both are active, qBittorrent's exclusion
 jams the download into a state Protectarr (and the *arr) can't cleanly fail.
 
+## Performance
+
+With `detection.only_active` on (the default) Protectarr asks qBittorrent for
+just the downloading torrents rather than fetching the whole list and discarding
+most of it. On a 1214-torrent library that is the difference between 2.4 MB and
+2 KB per poll, and a scan that takes 0.04s instead of 5.6s. Turning
+`only_active` off restores the full sweep, including finished torrents.
+
 ## Logging
 
 Protectarr logs every step: which torrents were inspected or skipped and why,

@@ -422,3 +422,55 @@ class TestQueueIncludes(unittest.TestCase):
         self.assertEqual(_media_name({"series": {"title": "Ted Lasso"}}), "Ted Lasso")
         self.assertEqual(_media_name({"movie": {"title": "Dune"}}), "Dune")
         self.assertIsNone(_media_name({"title": "release name only"}))
+
+
+class TestServerSideFilter(unittest.TestCase):
+    """The unfiltered torrent list was 2.4 MB every 20s on a 1214-torrent
+    library, to inspect one torrent. Verified live against qBittorrent 5.2.3
+    that filter=downloading includes stoppedDL and stalledDL, so it does not
+    narrow what Protectarr would have looked at."""
+
+    def _scan_with(self, only_active):
+        from protectarr import core
+        seen = {}
+
+        class FakeQb:
+            def login(self): pass
+            def torrents(self, category=None, state_filter=None):
+                seen["state_filter"] = state_filter
+                return []
+            def files(self, h): return []
+
+        real = core.QbitClient
+        core.QbitClient = lambda *a, **k: FakeQb()
+        try:
+            core.scan({"qbittorrent": {"url": "http://x"},
+                       "detection": {"only_active": only_active},
+                       "safety": {}, "arrs": []}, {})
+        finally:
+            core.QbitClient = real
+        return seen.get("state_filter")
+
+    def test_filter_is_pushed_server_side_when_only_active(self):
+        self.assertEqual(self._scan_with(True), "downloading")
+
+    def test_no_filter_when_only_active_is_off(self):
+        self.assertIsNone(self._scan_with(False))
+
+    def test_client_still_passes_the_param_through(self):
+        from protectarr.qbit import QbitClient
+        seen = {}
+
+        class R:
+            content = b"[]"
+            status_code = 200
+            def raise_for_status(self): pass
+            def json(self): return []
+
+        qb = QbitClient("http://x", api_key="k")
+        qb._s.get = lambda url, params=None, timeout=None: (seen.update(params or {}), R())[1]
+        qb.torrents(state_filter="downloading")
+        self.assertEqual(seen.get("filter"), "downloading")
+        seen.clear()
+        qb.torrents()
+        self.assertNotIn("filter", seen)

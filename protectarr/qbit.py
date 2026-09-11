@@ -83,10 +83,20 @@ class QbitClient:
         except (QbitError, requests.RequestException) as e:
             return False, str(e)
 
-    def torrents(self, category=None):
+    def torrents(self, category=None, state_filter=None):
+        """Torrent list, optionally narrowed server-side.
+
+        `state_filter="downloading"` is the big one: on a large library the full
+        list is megabytes of seeding torrents that get discarded immediately.
+        Verified against qBittorrent 5.2.3 that this filter is state-family
+        based and includes paused (`stoppedDL`) and `stalledDL`, so it does not
+        narrow the set Protectarr would have inspected anyway.
+        """
         params = {}
         if category:
             params["category"] = category
+        if state_filter:
+            params["filter"] = state_filter
         return self._get("torrents/info", **params).json()
 
     def files(self, torrent_hash):
