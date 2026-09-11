@@ -11,6 +11,7 @@ import requests
 
 from . import config as cfg_mod
 from . import harvest
+from . import events
 from .qbit import QbitClient, QbitError
 from .arr import build_clients
 
@@ -78,9 +79,10 @@ def record_reap(state, app, indexer):
 
 def _harvest_peers(a, indexer, app, state, cfg):
     """Before a fake is removed, enumerate its swarm and log the peers to the
-    harvest ledger. Best-effort - never let it break a reap."""
+    harvest ledger. Best-effort - never let it break a reap. Returns the number
+    of distinct peer IPs recorded."""
     if not cfg.get("harvest", {}).get("enabled", True):
-        return
+        return 0
     try:
         peers = a["_qb"].peers(a["hash"])
         n = harvest.record(peers, {
@@ -89,8 +91,10 @@ def _harvest_peers(a, indexer, app, state, cfg):
         })
         if n:
             _log(state, f"Harvested {n} peer IP(s) from {a['name']!r}")
+        return n
     except Exception as e:  # noqa: BLE001 - harvest must never abort a reap
         _log(state, f"Peer harvest failed for {a['name']!r}: {e}")
+        return 0
 
 
 # ---- media extensions per arr type (for the archive-with-no-media rule) ----
@@ -120,27 +124,48 @@ def _is_archive(ext, archive_exts):
     return ext in archive_exts or bool(_RAR_PART.match(ext)) or bool(_NUM_PART.match(ext))
 
 
+# Wording of the existing log lines, keyed by the finding's reason code. The
+# history page renders findings its own way (see events.describe); this keeps
+# the activity log reading exactly as it always has.
+_REASON_TEXT = {
+    "blocked_extension": lambda e: f"blocked extension {e.get('extension', '')}",
+    "lure_filename": lambda e: "suspicious lure filename",
+    "archive_no_media": lambda e: "archive with no media",
+}
+
+
+def reason_text(find):
+    """Legacy one-liner for the activity log."""
+    if not find:
+        return None
+    fn = _REASON_TEXT.get(find.get("reason"))
+    return fn(find.get("evidence", {})) if fn else find.get("reason")
+
+
 def detect_basic(files, det):
-    """Tier 1 + 2 - universal, high-precision. Returns (bad_name, reason) for the
-    first blocked-extension or lure-filename hit, else (None, None)."""
+    """Tier 1 + 2 - universal, high-precision. Returns (bad_name, finding) for
+    the first blocked-extension or lure-filename hit, else (None, None)."""
     exts = {e.lower() for e in det.get("blocked_extensions", [])}
     keywords = [k.lower() for k in det.get("blocked_name_keywords", [])]
     for f in files:
         name = f.get("name", "")
         ext = _ext(name)
         if ext in exts:
-            return name, f"blocked extension {ext}"
+            return name, events.finding("extension", "critical", "blocked_extension",
+                                        filename=name, extension=ext)
         if keywords and ext in LURE_EXTS:
             base = posixpath.basename(name).lower()
-            if any(k in base for k in keywords):
-                return name, "suspicious lure filename"
+            hit = next((k for k in keywords if k in base), None)
+            if hit:
+                return name, events.finding("filename", "high", "lure_filename",
+                                            filename=name, keyword=hit)
     return None, None
 
 
 def detect_archive(files, det, arr_type):
-    """Tier 3 (structural half) - returns (archive_name, reason) when the torrent
-    is archives-only with NO real media for this arr type, else (None, None).
-    Indexer scoping is the caller's responsibility (see scan)."""
+    """Tier 3 (structural half) - returns (archive_name, finding) when the
+    torrent is archives-only with NO real media for this arr type, else
+    (None, None). Indexer scoping is the caller's responsibility (see scan)."""
     ad = det.get("archive_detection", {})
     archive_exts = {e.lower() for e in ad.get("archive_extensions", [])}
     media = _MEDIA_BY_TYPE.get((arr_type or "").lower())
@@ -154,7 +179,9 @@ def detect_archive(files, det, arr_type):
         if first_archive is None and _is_archive(ext, archive_exts):
             first_archive = f.get("name", "")
     if first_archive:
-        return first_archive, "archive with no media"
+        return first_archive, events.finding(
+            "archive", "high", "archive_no_media",
+            filename=first_archive, arr_type=(arr_type or "").lower())
     return None, None
 
 
@@ -231,18 +258,19 @@ def scan(cfg, state):
         except requests.RequestException:
             continue
         arr_hit = owner.get(thash.lower())
-        bad, reason = detect_basic(files, det)
+        bad, find = detect_basic(files, det)
         # Tier 3: indexer-scoped archive rule - only for arr-tracked torrents,
         # and only resolve the (possibly expensive) indexer for real candidates.
         ad = det.get("archive_detection", {})
         if not bad and ad.get("enabled") and arr_hit:
-            cand, crs = detect_archive(files, det, arr_hit[0].type)
+            cand, cfind = detect_archive(files, det, arr_hit[0].type)
             if cand:
                 client, record = arr_hit
                 indexer = record.get("indexer") or client.grab_indexer(record.get("downloadId"))
                 allowed = {i.strip() for i in ad.get("indexers", []) if i.strip()}
                 if indexer and indexer in allowed:
-                    bad, reason = cand, crs
+                    bad, find = cand, cfind
+                    find["evidence"]["indexer"] = indexer
         if not bad:
             continue
 
@@ -253,7 +281,9 @@ def scan(cfg, state):
             "hash": thash,
             "name": t.get("name", thash),
             "bad_file": bad,
-            "reason": reason,
+            "reason": reason_text(find),
+            "finding": find,
+            "size": t.get("size"),
             "category": t.get("category", ""),
             "tags": t.get("tags", ""),
             "decision": decision,
@@ -262,6 +292,36 @@ def scan(cfg, state):
             "_qb": qb,
         })
     return actions
+
+
+def _media_name(record):
+    """Best-effort human name for what the release was *for* (series, movie,
+    album, book). Queue records only carry these when the arr includes them, so
+    this is decoration - the release title is always recorded separately."""
+    for key in ("series", "movie", "artist", "author", "album", "book"):
+        obj = record.get(key)
+        if isinstance(obj, dict) and obj.get("title"):
+            return obj["title"]
+    return None
+
+
+def _event(a, cfg, **over):
+    """Common event skeleton for one action. `over` fills in the outcome."""
+    ev = {
+        "torrent": {
+            "hash": a.get("hash"),
+            "name": a.get("name"),
+            "size": a.get("size"),
+            "category": a.get("category") or None,
+            "indexer": over.pop("indexer", None),
+        },
+        "owner": over.pop("owner", None),
+        "finding": a.get("finding"),
+        "peers_harvested": over.pop("peers", 0),
+        "dry_run": bool(cfg.get("dry_run", True)),
+    }
+    ev.update(over)
+    return ev
 
 
 def apply_actions(actions, state, cfg):
@@ -274,37 +334,78 @@ def apply_actions(actions, state, cfg):
         label = f"{a['name']!r} (bad: {a['bad_file']!r}{' - ' + _r if _r else ''})"
         if dry_run:
             _log(state, f"[DRY_RUN] would {a['decision']}: {label}")
+            owner = a["_owner"]
+            events.record(_event(
+                a, cfg,
+                owner=({"type": owner[0].type, "instance": owner[0].name,
+                        "media": _media_name(owner[1]),
+                        "release_title": owner[1].get("title")} if owner else None),
+                action={"result": "would_reap", "decision": a["decision"],
+                        "removed": False, "blocklisted": False},
+                redownload={"decision": "none", "reason": "not_applicable"}))
             continue
         try:
             if a["decision"] == "arr_fail":
                 client, record = a["_owner"]
                 source_title = record.get("title", a["name"])
                 indexer = record.get("indexer") or client.grab_indexer(record.get("downloadId"))
-                _harvest_peers(a, indexer, client.name, state, cfg)  # before removal
+                peers = _harvest_peers(a, indexer, client.name, state, cfg)  # before removal
                 client.fail(record["id"])  # remove + blocklist, no auto-redownload
                 blocked = client.is_blocklisted_title(source_title)
 
                 # Requeue only if it has actually aired/released.
                 requeue = "disabled"
+                rd = {"decision": "none", "reason": "requeue_disabled"}
                 if requeue_enabled:
                     aired, when = client.airdate_status(record, grace)
                     whenstr = when.date().isoformat() if when else "unknown"
                     if aired is True:
-                        requeue = "requeued (aired)" if client.search(record) else "requeue-failed"
+                        if client.search(record):
+                            requeue = "requeued (aired)"
+                            rd = {"decision": "searched", "reason": "aired"}
+                        else:
+                            requeue = "requeue-failed"
+                            rd = {"decision": "failed", "reason": "search_failed"}
                     elif aired is False:
                         requeue = f"held (airs {whenstr})"
+                        rd = {"decision": "held", "reason": "not_yet_aired",
+                              "airs": whenstr}
                     else:
                         requeue = "held (airdate unknown)"
+                        rd = {"decision": "held", "reason": "airdate_unknown"}
                 _log(state, f"Reaped via {client.name}: {label} | "
                             f"blocklisted={'yes' if blocked else 'unconfirmed'} | {requeue}")
                 record_reap(state, client.name, indexer)
+                events.record(_event(
+                    a, cfg, indexer=indexer, peers=peers,
+                    owner={"type": client.type, "instance": client.name,
+                           "media": _media_name(record), "release_title": source_title},
+                    action={"result": "reaped", "decision": "arr_fail",
+                            "removed": True, "blocklisted": bool(blocked)},
+                    redownload=rd))
             elif a["decision"] == "qbit_delete":
-                _harvest_peers(a, None, "qBittorrent", state, cfg)  # before removal
+                peers = _harvest_peers(a, None, "qBittorrent", state, cfg)  # before removal
                 a["_qb"].delete(a["hash"], delete_files=True)
                 _log(state, f"Deleted from qBittorrent: {label}")
                 record_reap(state, "qBittorrent", a.get("category") or None)
+                events.record(_event(
+                    a, cfg, peers=peers,
+                    owner={"type": "qbittorrent", "instance": "qBittorrent",
+                           "media": None, "release_title": a.get("name")},
+                    action={"result": "reaped", "decision": "qbit_delete",
+                            "removed": True, "blocklisted": False},
+                    redownload={"decision": "none", "reason": "not_applicable"}))
         except (requests.RequestException, QbitError) as e:
             _log(state, f"Action failed for {label}: {e}")
+            owner = a["_owner"]
+            events.record(_event(
+                a, cfg,
+                owner=({"type": owner[0].type, "instance": owner[0].name,
+                        "media": _media_name(owner[1]),
+                        "release_title": owner[1].get("title")} if owner else None),
+                action={"result": "failed", "decision": a["decision"],
+                        "removed": False, "blocklisted": False, "error": str(e)},
+                redownload={"decision": "none", "reason": "not_applicable"}))
 
 
 class ProtectarrService:

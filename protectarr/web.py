@@ -23,7 +23,7 @@ PUBLIC_ENDPOINTS = {"login", "static", "ping"}
 # JSON endpoints - respond 401 rather than redirecting to the login page.
 API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data",
                  "api_index", "api_status", "api_stats", "api_watchlist",
-                 "api_log", "api_preview", "api_command"}
+                 "api_log", "api_preview", "api_command", "api_history"}
 BASIC_REALM = 'Basic realm="Protectarr", charset="UTF-8"'
 
 # Settings sub-pages: (key, label, icon, description). qBittorrent + the *arr
@@ -37,6 +37,19 @@ SETTINGS_SECTIONS_FULL = [
 ]
 SETTINGS_SECTIONS = [(k, l, i) for k, l, i, _ in SETTINGS_SECTIONS_FULL]
 SETTINGS_KEYS = {k for k, *_ in SETTINGS_SECTIONS_FULL}
+
+
+def _human_size(n):
+    """Bytes -> the sizes people recognise from a torrent client."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return None
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.2f} {unit}"
+        n /= 1024
+    return None
 
 
 def _safe_next(nxt):
@@ -212,6 +225,23 @@ def create_app(service):
         from . import harvest
         return page("watchlist.html", active="watchlist",
                     rows=harvest.watchlist())
+
+    @app.route("/history")
+    def history():
+        from . import events
+        # Default to Live so a burst of dry-run testing can't make the page look
+        # like Protectarr stopped three hundred attacks.
+        show = (request.args.get("show") or "live").lower()
+        if show not in ("live", "dry", "all"):
+            show = "live"
+        dry = {"live": False, "dry": True, "all": None}[show]
+        rows = [{
+            "ev": e,
+            "why": events.describe(e.get("finding")),
+            "requeue": events.describe_requeue(e.get("redownload")),
+            "size": _human_size((e.get("torrent") or {}).get("size")),
+        } for e in events.read(limit=250, dry_run=dry)]
+        return page("history.html", active="history", rows=rows, show=show)
 
     @app.route("/settings")
     def settings_index():
@@ -462,6 +492,7 @@ def create_app(service):
         return jsonify(app="Protectarr", version=__version__, endpoints=[
             "GET  /api/v1/system/status", "GET  /api/v1/stats",
             "GET  /api/v1/watchlist", "GET  /api/v1/log?limit=N",
+            "GET  /api/v1/history?limit=N&show=all|live|dry",
             "GET  /api/v1/preview",
             "POST /api/v1/command {name: start|stop|scan|blocklistUpdate}",
         ])
@@ -486,6 +517,14 @@ def create_app(service):
     def api_watchlist():
         from . import harvest
         return jsonify(harvest.watchlist(min_fakes=request.args.get("min_fakes", type=int) or 1))
+
+    @app.route("/api/v1/history")
+    def api_history():
+        from . import events
+        n = min(max(request.args.get("limit", type=int) or 100, 1), 1000)
+        dry = {"live": False, "dry": True}.get(
+            (request.args.get("show") or "all").lower())
+        return jsonify(events.read(limit=n, dry_run=dry))
 
     @app.route("/api/v1/log")
     def api_log():

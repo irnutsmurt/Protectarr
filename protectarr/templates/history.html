@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>History <span class="hint" style="font-weight:400">- every release Protectarr acted on, and what happened next</span></h2>
+  <div class="body">
+    <p class="hint" style="margin-top:0">
+      The dashboard counts reaps; this is the detail behind each one - which release it was,
+      which app owned it, whether the blocklist entry stuck, and <b>why</b> a replacement was
+      or wasn't searched for. A held item is Protectarr working correctly, not a failure:
+      nothing legitimate can exist before the air date.
+    </p>
+
+    <div class="toolbar" style="margin-bottom:14px">
+      <a class="tool-btn {{ 'active' if show=='live' }}" href="{{ url_for('history', show='live') }}">Live</a>
+      <a class="tool-btn {{ 'active' if show=='dry' }}" href="{{ url_for('history', show='dry') }}">Dry run</a>
+      <a class="tool-btn {{ 'active' if show=='all' }}" href="{{ url_for('history', show='all') }}">All</a>
+    </div>
+
+    {% if rows %}
+    <div style="overflow-x:auto">
+      <table class="applist">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Release</th>
+            <th>Why</th>
+            <th>Action</th>
+            <th>Replacement</th>
+            <th style="text-align:right">Peers</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          {% set e = r.ev %}
+          {% set t = e.torrent or {} %}
+          {% set o = e.owner or {} %}
+          {% set act = e.action or {} %}
+          <tr>
+            <td class="hint" style="white-space:nowrap">{{ e.timestamp }}</td>
+            <td>
+              <div><code>{{ t.name }}</code></div>
+              <div class="hint">
+                {% if o.instance %}{{ o.instance }}{% endif %}
+                {% if o.media %} · {{ o.media }}{% endif %}
+                {% if t.indexer %} · {{ t.indexer }}{% endif %}
+                {% if r.size %} · {{ r.size }}{% endif %}
+              </div>
+            </td>
+            <td>
+              {{ r.why }}
+              {% if e.finding and e.finding.severity %}
+              <span class="hint">({{ e.finding.severity }})</span>
+              {% endif %}
+            </td>
+            <td style="white-space:nowrap">
+              {% if act.result == 'reaped' %}<span class="pill live">reaped</span>
+              {% elif act.result == 'would_reap' %}<span class="pill dry">dry run</span>
+              {% else %}<span class="pill off">failed</span>{% endif %}
+              <div class="hint" style="margin-top:4px">
+                {% if act.result == 'reaped' %}
+                  removed · blocklist {{ 'confirmed' if act.blocklisted else 'unconfirmed' }}
+                {% elif act.result == 'would_reap' %}
+                  would {{ act.decision }}
+                {% else %}
+                  {{ act.error or 'error' }}
+                {% endif %}
+              </div>
+            </td>
+            <td class="hint">{{ r.requeue }}</td>
+            <td style="text-align:right">{{ e.peers_harvested or '-' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint" style="margin-top:12px">
+      Showing {{ rows | length }} event(s){% if show != 'all' %}, {{ show }} only{% endif %}.
+      History is kept in <code>events.jsonl</code> next to your config and rotates at 5 MB.
+    </p>
+    {% else %}
+    <p class="hint">
+      {% if show == 'live' %}
+      No live actions recorded yet. Anything Protectarr reaps for real shows up here;
+      switch to <b>Dry run</b> to see what it would have caught while testing.
+      {% elif show == 'dry' %}
+      No dry-run detections recorded yet.
+      {% else %}
+      Nothing recorded yet.
+      {% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

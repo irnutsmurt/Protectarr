@@ -51,6 +51,7 @@
   <div class="body">
     <div class="chart-wrap" id="reaped_chart"></div>
     <p class="hint" id="reaped_empty" hidden>No reaps recorded yet. Once Protectarr fails a fake via one of your apps, the indexer it came from shows up here.</p>
+    <p class="hint" style="margin-top:12px"><a href="{{ url_for('history') }}">History</a> has the detail behind each of these: the release, the app that owned it, and whether a replacement was searched for.</p>
     {% if state.stats.by_app %}
     <p class="hint" style="margin-top:12px">By app:
       {% for app, c in state.stats.by_app | dictsort(by='value', reverse=true) %}<b>{{ app }}</b> {{ c }}{% if not loop.last %} · {% endif %}{% endfor %}

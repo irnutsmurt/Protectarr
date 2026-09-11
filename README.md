@@ -27,6 +27,28 @@ Handing it back to the *arr - instead of just deleting it in qBittorrent - is
 the whole trick: deleting it directly leaves the *arr's queue stuck and it never
 searches again.
 
+## What it looks like
+
+The dashboard: what's connected, what's been caught, and which indexers the
+fakes are coming from.
+
+<p align="center">
+  <img src="screenshots/dashboard.png" alt="Protectarr dashboard" width="820">
+</p>
+
+Applications: qBittorrent and each *arr, with a Test button per connection.
+
+<p align="center">
+  <img src="screenshots/applications.png" alt="Protectarr applications page" width="820">
+</p>
+
+Monitored Extensions: the extensions that flag a download, plus the lure-filename
+and archive rules.
+
+<p align="center">
+  <img src="screenshots/extensions.png" alt="Protectarr monitored extensions settings" width="820">
+</p>
+
 ## What happens when a fake is caught
 
 On a hit, Protectarr calls the owning *arr's queue API to remove the download
@@ -42,6 +64,12 @@ with `removeFromClient=true` and `blocklist=true`. That does three things:
 
 The blocklist entry is what stops the fake from coming straight back, and because
 the *arr performs the removal its queue never ends up stuck.
+
+Every one of those decisions is recorded on the **History** page: the release,
+the app that owned it, what triggered the catch, whether the blocklist entry was
+confirmed, and whether a replacement was searched for or deliberately held. Dry-run
+detections are recorded too and filtered out of the Live view, so testing never
+inflates the numbers.
 
 ## Why not just use qBittorrent's "Excluded file names" or Sonarr's "Fail Downloads"?
 
@@ -273,6 +301,7 @@ GET  /api/v1                    # index of available endpoints
 GET  /api/v1/system/status      # version, running, dryRun, lastScan, lastError
 GET  /api/v1/stats              # reaped totals (by app / by indexer), blocklist, banned
 GET  /api/v1/watchlist          # harvested seeder-IP ledger (?min_fakes=N)
+GET  /api/v1/history            # structured event history (?limit=N&show=all|live|dry)
 GET  /api/v1/log?limit=N        # recent activity log lines
 GET  /api/v1/preview            # dry-run scan - what would be reaped right now
 POST /api/v1/command            # {"name": "start|stop|scan|blocklistUpdate"}

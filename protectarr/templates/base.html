@@ -32,6 +32,7 @@
       </div>
       {% endif %}
 
+      <a href="{{ url_for('history') }}" class="{{ 'active' if active=='history' }}">History</a>
       <a href="{{ url_for('watchlist') }}" class="{{ 'active' if active=='watchlist' }}">Watchlist</a>
       <a href="{{ url_for('system') }}" class="{{ 'active' if active=='system' }}">System</a>
     </nav>

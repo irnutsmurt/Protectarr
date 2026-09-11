@@ -97,6 +97,8 @@ a { color: var(--accent); text-decoration: none; }
 }
 .tool-btn:hover { background: #2e2e2e; }
 .tool-btn .ti { font-size: 23px; line-height: 1; }
+a.tool-btn { text-decoration: none; }
+.tool-btn.active { box-shadow: inset 0 -2px 0 var(--accent); font-weight: 600; }
 
 /* ---- status pills ---- */
 .statusbar { display: flex; flex-wrap: wrap; gap: 22px; align-items: center; margin-bottom: 18px; }
