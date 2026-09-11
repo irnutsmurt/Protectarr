@@ -474,3 +474,63 @@ class TestServerSideFilter(unittest.TestCase):
         seen.clear()
         qb.torrents()
         self.assertNotIn("filter", seen)
+
+
+class TestSafetyModes(unittest.TestCase):
+    """Each mode has a different blind spot. `either` is the union, added
+    because an *arr that fails a release drops it from its queue while the
+    torrent keeps downloading in qBittorrent, owned by nobody."""
+
+    SAFETY = {"allowed_categories": ["tv"], "allowed_tags": []}
+    TRACKED = object()          # stands in for (client, record)
+
+    def verdict(self, mode, category, tracked):
+        from protectarr import core
+        safety = dict(self.SAFETY, mode=mode)
+        torrent = {"category": category, "tags": ""}
+        return core.evaluate(torrent, "bad.exe",
+                             self.TRACKED if tracked else None, safety)
+
+    def test_arr_tracked_leaves_orphans_alone(self):
+        self.assertEqual(self.verdict("arr_tracked", "tv", True), "arr_fail")
+        self.assertIsNone(self.verdict("arr_tracked", "tv", False))
+
+    def test_allowlist_misses_tracked_outside_the_list(self):
+        self.assertEqual(self.verdict("allowlist", "tv", True), "arr_fail")
+        self.assertEqual(self.verdict("allowlist", "tv", False), "qbit_delete")
+        self.assertIsNone(self.verdict("allowlist", "movies", True))
+
+    def test_both_is_an_and(self):
+        self.assertEqual(self.verdict("both", "tv", True), "arr_fail")
+        self.assertIsNone(self.verdict("both", "movies", True))
+        self.assertIsNone(self.verdict("both", "tv", False))
+
+    def test_either_catches_the_orphan(self):
+        """The live case: Sonarr failed the release and dropped it, the torrent
+        kept downloading a .exe, and arr_tracked would not touch it."""
+        self.assertEqual(self.verdict("either", "tv", False), "qbit_delete")
+
+    def test_either_still_prefers_the_arr_when_one_owns_it(self):
+        # Only the *arr path blocklists the release and decides about requeue,
+        # so it must win even when the category is also allowlisted.
+        self.assertEqual(self.verdict("either", "tv", True), "arr_fail")
+
+    def test_either_covers_tracked_outside_the_allowlist(self):
+        self.assertEqual(self.verdict("either", "movies", True), "arr_fail")
+
+    def test_either_still_protects_unlisted_orphans(self):
+        # A hand-added torrent in a category you never listed stays untouched.
+        self.assertIsNone(self.verdict("either", "linux-isos", False))
+
+    def test_either_is_a_superset_of_the_others(self):
+        for category in ("tv", "movies", "linux-isos"):
+            for tracked in (True, False):
+                for mode in ("arr_tracked", "allowlist", "both"):
+                    if self.verdict(mode, category, tracked) is not None:
+                        with self.subTest(mode=mode, cat=category, tracked=tracked):
+                            self.assertIsNotNone(
+                                self.verdict("either", category, tracked),
+                                "either must act wherever a narrower mode would")
+
+    def test_unknown_mode_does_nothing(self):
+        self.assertIsNone(self.verdict("nonsense", "tv", True))

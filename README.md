@@ -106,11 +106,6 @@ Or with Compose - the provided `docker-compose.yml` already points at the image:
 docker compose up -d
 ```
 
-> GHCR packages have their own visibility, separate from the repo. If the package
-> is still private, either make it public (your GitHub profile -> Packages ->
-> protectarr -> Package settings -> Change visibility -> Public) so anyone can
-> pull it, or `docker login ghcr.io` first with a token that has `read:packages`.
-
 ### Docker - build from source
 
 ```bash
@@ -181,12 +176,27 @@ username/password. Older versions fall back to the Web UI username/password.
 | mode          | reaps                                                                 |
 |---------------|-----------------------------------------------------------------------|
 | `arr_tracked` | only torrents a configured *arr has in its queue (**safest** - your hand-added downloads like Linux ISOs are never touched) |
+| `either`      | *arr-tracked **or** allowlisted - the union, and the only mode that catches orphans |
 | `allowlist`   | any torrent whose category/tag is in your allowlist                   |
 | `both`        | must be *arr-tracked **and** allowlisted                              |
 
 When a reaped torrent is *arr-tracked, it's failed+blocklisted via that *arr.
-In `allowlist` mode a matching torrent that no *arr owns is deleted straight
-from qBittorrent.
+In `allowlist` and `either` modes a matching torrent that no *arr owns is
+deleted straight from qBittorrent.
+
+### The orphan problem, and why `either` exists
+
+When an *arr fails a release it removes it from its own queue and blocklists it,
+but **the torrent can stay in qBittorrent and keep downloading.** It is then
+owned by nobody: the *arr has moved on, and `arr_tracked` mode deliberately will
+not touch anything no *arr claims. The fake finishes anyway.
+
+`either` closes that. A tracked torrent is still handed back to its *arr, which
+is always preferred because only that path blocklists the release and decides
+about requeueing. An orphan whose category/tag is allowlisted is deleted from
+qBittorrent directly. Put the categories your *arrs already use (`tv`, `movies`,
+…) in the allowlist and orphans stop surviving; the tradeoff is that a torrent
+you hand-added into one of those categories is also in scope.
 
 ### Security profiles
 

@@ -136,6 +136,17 @@ def evaluate(torrent, bad_name, arr_hit, safety):
 
     Returns one of: 'arr_fail' (hand back to the owning arr), 'qbit_delete'
     (remove directly), or None (leave it alone).
+
+    Each mode has a different blind spot, which is why `either` exists:
+
+        arr_tracked  misses orphans - a download an *arr grabbed and then
+                     abandoned (it failed the release and dropped it from its
+                     queue) is owned by nobody, so nothing reaps it while
+                     qBittorrent keeps pulling the payload.
+        allowlist    misses *arr-tracked torrents in a category you did not list.
+        both         is an AND, so it is narrower than either half.
+        either       the union: let the *arr handle it whenever it can, and fall
+                     back to deleting orphans in categories you trust.
     """
     mode = safety.get("mode", "arr_tracked")
     is_allowed = allowlisted(torrent, safety)
@@ -150,6 +161,12 @@ def evaluate(torrent, bad_name, arr_hit, safety):
         if not is_allowed:
             return None
         return "arr_fail" if arr_hit else "qbit_delete"
+    if mode == "either":
+        # An *arr owning it always wins: that path blocklists the release and
+        # decides about requeueing, which deleting from qBittorrent cannot do.
+        if arr_hit:
+            return "arr_fail"
+        return "qbit_delete" if is_allowed else None
     return None
 
 

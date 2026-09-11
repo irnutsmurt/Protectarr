@@ -10,9 +10,19 @@
       <label>Which torrents may be reaped?</label>
       <select name="safety_mode">
         <option value="arr_tracked" {% if cfg.safety.mode=='arr_tracked' %}selected{% endif %}>arr_tracked - only torrents an application is tracking (protects hand-added downloads)</option>
+        <option value="either" {% if cfg.safety.mode=='either' %}selected{% endif %}>either - tracked OR in the allowlist (catches orphans an application gave up on)</option>
         <option value="both" {% if cfg.safety.mode=='both' %}selected{% endif %}>both - tracked AND in the allowlist</option>
         <option value="allowlist" {% if cfg.safety.mode=='allowlist' %}selected{% endif %}>allowlist - any torrent in an allowed category/tag</option>
       </select>
+      <p class="hint" style="margin-top:6px">
+        <b>either</b> covers a gap the others leave open. When an application fails a
+        release it drops it from its queue but the torrent can keep downloading in
+        qBittorrent, owned by nobody - <code>arr_tracked</code> will not touch it and
+        the payload finishes anyway. In <b>either</b> mode a tracked torrent is still
+        handed back to its application (which blocklists it and decides about
+        requeueing), and an orphan in an allowed category is deleted from
+        qBittorrent directly.
+      </p>
       <div class="row">
         <div><label>Allowed categories</label><textarea name="allowed_categories">{{ cfg.safety.allowed_categories | join(', ') }}</textarea></div>
         <div><label>Allowed tags</label><textarea name="allowed_tags">{{ cfg.safety.allowed_tags | join(', ') }}</textarea></div>
