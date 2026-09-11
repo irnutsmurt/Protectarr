@@ -21,7 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from protectarr import config as cfg_mod  # noqa: E402
 from protectarr import logs  # noqa: E402
 
-REAL_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# Shaped like a real Protectarr key (64 hex chars) so redaction is tested against
+# something realistic. Never put an actual key here: this repo is public, and the
+# tests would then leak exactly what they exist to prove never leaks.
+REAL_KEY = "0123456789abcdef" * 4
 
 
 class LogTestCase(unittest.TestCase):
