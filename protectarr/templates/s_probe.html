@@ -36,9 +36,14 @@
         path: a share at <code>/volume2/Media/torrents</code> may be <code>/Media/torrents</code> to
         qBittorrent. Press the button below and compare the two paths it prints, rather than guessing.
       </p>
+      <label>Path mappings <span class="hint">(one per line: <code>qbittorrent path = protectarr path</code>. Leave empty if you mirrored qBittorrent's path)</span></label>
       <textarea name="probe_mappings" id="probe_mappings" rows="4"
-        placeholder="/downloads = /downloads">{% for m in pr.path_mappings %}{{ m['from'] if m is mapping else m }}{% if m is mapping %} = {{ m['to'] }}{% endif %}
+        placeholder="/General Storage/torrents = /downloads">{% for m in pr.path_mappings %}{{ m['from'] if m is mapping else m }}{% if m is mapping %} = {{ m['to'] }}{% endif %}
 {% endfor %}</textarea>
+      <p class="hint" style="margin-top:6px">
+        This is not Docker volume syntax. A line without an <code>=</code> cannot be read as a
+        mapping and is reported back to you rather than saved.
+      </p>
       <button type="button" class="btn" style="margin-top:10px" onclick="checkPaths()">Test against current downloads</button>
       <p id="probe_msg" class="hint" style="margin-top:8px"></p>
       <div id="probe_rows"></div>

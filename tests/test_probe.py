@@ -504,6 +504,48 @@ class TestWiring(ProbeCase):
         self.assertFalse(probe.enabled(cfg_mod.load()))
 
 
+try:
+    from protectarr import web as web_mod
+except ImportError:                     # Flask not installed
+    web_mod = None
+
+
+@unittest.skipIf(web_mod is None, "Flask is not installed")
+class TestMappingEntry(unittest.TestCase):
+    """The settings box used to drop anything it could not parse, which read as
+    "saving does not work" and pointed at nothing."""
+
+    def test_a_well_formed_mapping_round_trips(self):
+        got, bad = web_mod._parse_mappings(
+            "/General Storage/torrents = /downloads")
+        self.assertEqual(got, [{"from": "/General Storage/torrents",
+                                "to": "/downloads"}])
+        self.assertEqual(bad, [])
+
+    def test_paths_containing_spaces_survive(self):
+        got, _ = web_mod._parse_mappings("/General Storage/t = /a b/c")
+        self.assertEqual(got[0], {"from": "/General Storage/t", "to": "/a b/c"})
+
+    def test_a_line_without_an_equals_is_reported_not_swallowed(self):
+        got, bad = web_mod._parse_mappings("/General Storage/torrents")
+        self.assertEqual(got, [])
+        self.assertEqual(bad, ["/General Storage/torrents"])
+
+    def test_docker_volume_syntax_is_refused_rather_than_guessed(self):
+        """Docker writes host:container; this box wants qbittorrent=protectarr.
+        Accepting it would silently build a mapping in the wrong direction,
+        which is worse than refusing it."""
+        line = "/volume2/General Storage/torrents:/General Storage/torrents"
+        got, bad = web_mod._parse_mappings(line)
+        self.assertEqual(got, [])
+        self.assertIn("Docker volume syntax", web_mod._mapping_complaint(bad[0]))
+
+    def test_blank_and_commented_lines_are_not_complaints(self):
+        got, bad = web_mod._parse_mappings("\n  \n# a note\n/a = /b\n")
+        self.assertEqual(got, [{"from": "/a", "to": "/b"}])
+        self.assertEqual(bad, [])
+
+
 class ScanQb(FakeQb):
     """Enough qBittorrent for core.scan() to run a whole pass."""
 

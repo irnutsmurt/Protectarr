@@ -49,13 +49,38 @@ SETTINGS_KEYS = {k for k, *_ in SETTINGS_SECTIONS_FULL}
 
 
 def _parse_mappings(text):
-    """One `qbittorrent/path = local/path` per line -> the config form."""
-    out = []
+    """One `qbittorrent/path = local/path` per line -> (mappings, rejected).
+
+    Rejected lines come back rather than being dropped. Silently swallowing a
+    line someone typed is the worst possible outcome here: the probe then reads
+    a path nobody chose, finds nothing, and looks broken for a reason that
+    nothing in the UI points at.
+    """
+    out, rejected = [], []
     for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
         src, sep, dst = line.partition("=")
         if sep and src.strip() and dst.strip():
             out.append({"from": src.strip(), "to": dst.strip()})
-    return out
+        else:
+            rejected.append(line)
+    return out, rejected
+
+
+def _mapping_complaint(line):
+    """Why one line was not accepted, in terms of what the user probably did."""
+    if ":" in line:
+        return (f"Saved, but {line!r} was ignored: that is Docker volume "
+                f"syntax. This box takes the path qBittorrent reports, then "
+                f"the path Protectarr sees, separated by = - not the host "
+                f"path, and not a colon. For example: "
+                f"/General Storage/torrents = /downloads")
+    return (f"Saved, but {line!r} was ignored: a mapping needs two paths "
+            f"separated by =, for example "
+            f"/General Storage/torrents = /downloads. Leave the box empty if "
+            f"you mounted the downloads at the same path qBittorrent uses.")
 
 
 def _human_size(n):
@@ -336,7 +361,11 @@ def create_app(service):
             pr = cfg["detection"].setdefault("probe", {})
             pr["enabled"] = f.get("probe_enabled") == "on"
             pr["steer"] = f.get("probe_steer") == "on"
-            pr["path_mappings"] = _parse_mappings(f.get("probe_mappings", ""))
+            pr["path_mappings"], bad = _parse_mappings(f.get("probe_mappings", ""))
+            if bad:
+                flash(_mapping_complaint(bad[0]) +
+                      (f" ({len(bad) - 1} more line(s) ignored too.)"
+                       if len(bad) > 1 else ""))
             # Clamped rather than trusted: these bound how long a scan can block
             # and how much bandwidth a probe may spend.
             for key, field, lo, hi in (("max_torrents_per_scan", "probe_max", 0, 20),
@@ -550,8 +579,8 @@ def create_app(service):
         that nothing ever happens. This turns that into an answer, and it takes
         the mapping from the form so it can be tested before it is saved.
         """
-        mappings = probe.paths.parse_mappings(
-            _parse_mappings((request.json or {}).get("mappings", "")))
+        parsed, _rejected = _parse_mappings((request.json or {}).get("mappings", ""))
+        mappings = probe.paths.parse_mappings(parsed)
         cfg = cfg_mod.load()
         qc = cfg["qbittorrent"]
         try:
