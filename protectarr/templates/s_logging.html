@@ -97,9 +97,4 @@
     {% endif %}
   </div>
 </div>
-
-<div class="card" style="margin-top:18px">
-  <h2>Recent activity <span class="hint" style="font-weight:400">- last {{ log_lines | length }} line(s) in memory</span></h2>
-  <div class="body"><pre class="log">{{ log_lines | join('\n') or "(no activity yet)" }}</pre></div>
-</div>
 {% endblock %}
