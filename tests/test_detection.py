@@ -292,3 +292,66 @@ class TestWarnFingerprint(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBlocklistConfirmation(unittest.TestCase):
+    """The live reap of 2026-09-11 19:10 reported blocklisted=false because the
+    queue title and the blocklist's sourceTitle differ only by separator."""
+
+    def setUp(self):
+        from protectarr.arr import ArrClient
+        self.client = ArrClient("Sonarr", "sonarr", "http://x", "k")
+        self.records = []
+        self.calls = 0
+
+        class FakeResp:
+            def __init__(inner, records):
+                inner._r = records
+
+            def raise_for_status(inner):
+                pass
+
+            def json(inner):
+                return {"records": inner._r}
+
+        def fake_get(url, params=None, timeout=None):
+            self.calls += 1
+            return FakeResp(self.records)
+
+        self.client._s.get = fake_get
+
+    QUEUE = "Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb"
+    RAW = "Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"
+
+    def test_dotted_blocklist_entry_matches_spaced_queue_title(self):
+        self.records = [{"sourceTitle": self.RAW}]
+        self.assertTrue(self.client.is_blocklisted_title(self.QUEUE, retries=1))
+
+    def test_spaced_blocklist_entry_matches_too(self):
+        self.records = [{"sourceTitle": self.QUEUE}]
+        self.assertTrue(self.client.is_blocklisted_title(self.RAW, retries=1))
+
+    def test_several_candidate_titles(self):
+        self.records = [{"sourceTitle": self.RAW}]
+        self.assertTrue(self.client.is_blocklisted_title(
+            ["something else entirely", self.QUEUE], retries=1))
+
+    def test_a_different_release_still_does_not_match(self):
+        self.records = [{"sourceTitle":
+                         "Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-OTHER"}]
+        self.assertFalse(self.client.is_blocklisted_title(self.QUEUE, retries=1))
+
+    def test_a_different_episode_still_does_not_match(self):
+        self.records = [{"sourceTitle":
+                         "Ted.Lasso.S04E06.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"}]
+        self.assertFalse(self.client.is_blocklisted_title(self.QUEUE, retries=1))
+
+    def test_empty_titles_short_circuit_without_calling_the_api(self):
+        self.assertFalse(self.client.is_blocklisted_title(["", None], retries=3))
+        self.assertEqual(self.calls, 0)
+
+    def test_polls_because_sonarr_writes_the_entry_late(self):
+        self.records = []
+        self.assertFalse(self.client.is_blocklisted_title(
+            self.QUEUE, retries=3, delay=0))
+        self.assertEqual(self.calls, 3)

@@ -6,10 +6,19 @@ lookup differ. This is the reused 'login/connection' logic the WebUI's Test
 button and Protectarr rely on.
 """
 
+import re
 import time
 from datetime import datetime, timezone, timedelta
 
 import requests
+
+# Release titles differ only by separator between the download client's name for
+# a torrent and the indexer's raw release name, so compare them on words alone.
+_SEPARATORS = re.compile(r"[^a-z0-9]+")
+
+
+def _norm_title(s):
+    return _SEPARATORS.sub(" ", (s or "").lower()).strip()
 
 # Per app type:
 #   version       - API version segment
@@ -181,10 +190,28 @@ class ArrClient:
         aired = datetime.now(timezone.utc) >= earliest + timedelta(hours=grace_hours)
         return aired, earliest
 
-    def is_blocklisted_title(self, source_title, retries=4, delay=1.0):
-        """Check that a release title made it into the blocklist. Sonarr writes
-        the entry a moment after the queue delete returns, so we poll briefly."""
-        want = (source_title or "").lower()
+    def is_blocklisted_title(self, titles, retries=6, delay=1.5):
+        """Confirm a release made it into the blocklist.
+
+        Matching is normalised rather than exact. The queue record's `title` is
+        the download client's name for the torrent, which is usually
+        space-separated, while the blocklist stores the raw release name, which
+        is usually dot-separated:
+
+            Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb
+            Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb
+
+        Those are the same release, and an exact compare says they are not, so
+        it reported "unconfirmed" for entries that were written correctly. All
+        separators collapse to single spaces before comparing; the release group
+        and quality still distinguish genuinely different releases.
+
+        Sonarr also writes the entry a moment after the queue delete returns,
+        hence the polling. `titles` may be one string or several candidates.
+        """
+        if isinstance(titles, str):
+            titles = [titles]
+        want = {_norm_title(t) for t in titles if t and _norm_title(t)}
         if not want:
             return False
         for attempt in range(retries):
@@ -193,7 +220,7 @@ class ArrClient:
                                     "sortDirection": "descending"},
                             timeout=self.timeout)
             r.raise_for_status()
-            if any((b.get("sourceTitle") or "").lower() == want
+            if any(_norm_title(b.get("sourceTitle")) in want
                    for b in r.json().get("records", [])):
                 return True
             if attempt < retries - 1:

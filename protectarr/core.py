@@ -349,7 +349,9 @@ def apply_actions(actions, state, cfg):
                 peers = _harvest_peers(a, indexer, client.name, state, cfg)  # before removal
                 client.fail(record["id"])  # remove + blocklist, no auto-redownload
                 removed = True
-                blocked = client.is_blocklisted_title(source_title)
+                # The queue title and the torrent name can each be the form the
+                # blocklist recorded, so offer both as candidates.
+                blocked = client.is_blocklisted_title([source_title, a["name"]])
 
                 # Requeue only if it has actually aired/released.
                 requeue = "disabled"
