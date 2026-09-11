@@ -78,9 +78,10 @@ Or with Compose - the provided `docker-compose.yml` already points at the image:
 docker compose up -d
 ```
 
-> The image is private while the repo is private, so `docker login ghcr.io`
-> first (any GitHub Personal Access Token with `read:packages`). Make the GHCR
-> package public and no login is needed.
+> GHCR packages have their own visibility, separate from the repo. If the package
+> is still private, either make it public (your GitHub profile -> Packages ->
+> protectarr -> Package settings -> Change visibility -> Public) so anyone can
+> pull it, or `docker login ghcr.io` first with a token that has `read:packages`.
 
 ### Docker - build from source
 
