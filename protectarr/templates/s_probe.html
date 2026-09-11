@@ -26,24 +26,33 @@
     <h2>Path Mapping</h2>
     <div class="body">
       <p class="hint" style="margin-bottom:12px">
-        Protectarr has to be able to <b>read the files qBittorrent is writing</b>. If they run in
-        different containers, mount the download directory into Protectarr too, then either mirror
-        qBittorrent's path exactly (no mapping needed) or map it here. One per line,
-        <code>qbittorrent path = protectarr path</code>.
+        Protectarr has to be able to <b>read the files qBittorrent is writing</b>, so mount the
+        download directory into Protectarr as well. If it lands at the same path qBittorrent
+        reports, you are done and need nothing here.
       </p>
       <p class="hint" style="margin-bottom:12px">
-        The path to match is the one <b>qBittorrent reports</b>, which on a NAS is often not the host
-        path: a share at <code>/volume2/Media/torrents</code> may be <code>/Media/torrents</code> to
-        qBittorrent. Press the button below and compare the two paths it prints, rather than guessing.
+        Add a mapping only when the two see the same folder at <b>different paths</b>: it translates
+        one into the other. Note the path to match is the one <b>qBittorrent reports</b>, which on a
+        NAS is often not the host path - a share at <code>/volume2/Media/torrents</code> may be
+        <code>/Media/torrents</code> to qBittorrent. The button below prints both paths for a live
+        download, so you can check rather than guess.
       </p>
-      <label>Path mappings <span class="hint">(one per line: <code>qbittorrent path = protectarr path</code>. Leave empty if you mirrored qBittorrent's path)</span></label>
-      <textarea name="probe_mappings" id="probe_mappings" rows="4"
-        placeholder="/General Storage/torrents = /downloads">{% for m in pr.path_mappings %}{{ m['from'] if m is mapping else m }}{% if m is mapping %} = {{ m['to'] }}{% endif %}
-{% endfor %}</textarea>
-      <p class="hint" style="margin-top:6px">
-        This is not Docker volume syntax. A line without an <code>=</code> cannot be read as a
-        mapping and is reported back to you rather than saved.
+      <div id="map_rows">
+        {% for m in mapping_rows %}
+        <div class="row maprow">
+          <div><label>Path qBittorrent reports</label>
+            <input type="text" name="map_from" value="{{ m['from'] }}" placeholder="/General Storage/torrents"></div>
+          <div><label>Same folder, as Protectarr sees it</label>
+            <input type="text" name="map_to" value="{{ m['to'] }}" placeholder="/downloads"></div>
+          <button type="button" class="btn" onclick="this.closest('.maprow').remove(); mapEmpty()">Remove</button>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="hint" id="map_empty" {% if mapping_rows %}style="display:none"{% endif %}>
+        No mappings, which is correct if Protectarr already sees the downloads at the same path
+        qBittorrent reports. Add one only if the two differ.
       </p>
+      <button type="button" class="btn" style="margin-top:10px" onclick="addMapping()">Add mapping</button>
       <button type="button" class="btn" style="margin-top:10px" onclick="checkPaths()">Test against current downloads</button>
       <p id="probe_msg" class="hint" style="margin-top:8px"></p>
       <div id="probe_rows"></div>
@@ -95,6 +104,31 @@
 <script>
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+function mapEmpty() {
+  var rows = document.querySelectorAll('#map_rows .maprow');
+  document.getElementById('map_empty').style.display = rows.length ? 'none' : '';
+}
+function addMapping(from, to) {
+  var div = document.createElement('div');
+  div.className = 'row maprow';
+  div.innerHTML =
+    '<div><label>Path qBittorrent reports</label>'
+    + '<input type="text" name="map_from" placeholder="/General Storage/torrents" value="' + esc(from || '') + '"></div>'
+    + '<div><label>Same folder, as Protectarr sees it</label>'
+    + '<input type="text" name="map_to" placeholder="/downloads" value="' + esc(to || '') + '"></div>'
+    + '<button type="button" class="btn" onclick="this.closest(\'.maprow\').remove(); mapEmpty()">Remove</button>';
+  document.getElementById('map_rows').appendChild(div);
+  mapEmpty();
+  div.querySelector('input').focus();
+}
+function currentMappings() {
+  return Array.from(document.querySelectorAll('#map_rows .maprow')).map(function(r){
+    return {from: r.querySelector('[name=map_from]').value.trim(),
+            to: r.querySelector('[name=map_to]').value.trim()};
+  }).filter(function(m){ return m.from && m.to; });
+}
+mapEmpty();
+
 function checkPaths() {
   var msg = document.getElementById('probe_msg');
   var rows = document.getElementById('probe_rows');
@@ -103,7 +137,7 @@ function checkPaths() {
   fetch('{{ url_for("probe_check") }}', {
     method: 'POST',
     headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.CSRF || ''},
-    body: JSON.stringify({mappings: document.getElementById('probe_mappings').value})
+    body: JSON.stringify({mappings: currentMappings()})
   }).then(function(r){ return r.json(); }).then(function(r){
     if (!r.ok) { msg.textContent = '✗ ' + r.message; msg.style.color = 'var(--danger)'; return; }
     var any = (r.data.rows || []).some(function(x){ return x.found; });

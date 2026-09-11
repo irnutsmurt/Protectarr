@@ -512,38 +512,50 @@ except ImportError:                     # Flask not installed
 
 @unittest.skipIf(web_mod is None, "Flask is not installed")
 class TestMappingEntry(unittest.TestCase):
-    """The settings box used to drop anything it could not parse, which read as
-    "saving does not work" and pointed at nothing."""
+    """Two labelled fields per mapping, rather than one "a = b" text box.
 
-    def test_a_well_formed_mapping_round_trips(self):
-        got, bad = web_mod._parse_mappings(
-            "/General Storage/torrents = /downloads")
+    The text box silently dropped anything it could not parse, so typing a bare
+    folder path - the obvious thing to do - looked exactly like "saving is
+    broken" and pointed at nothing.
+    """
+
+    def form(self, froms, tos):
+        from werkzeug.datastructures import MultiDict
+        return MultiDict([("map_from", v) for v in froms]
+                         + [("map_to", v) for v in tos])
+
+    def test_a_pair_of_paths_becomes_a_mapping(self):
+        got, partial = web_mod._mappings_from_form(
+            self.form(["/General Storage/torrents"], ["/downloads"]))
         self.assertEqual(got, [{"from": "/General Storage/torrents",
                                 "to": "/downloads"}])
-        self.assertEqual(bad, [])
+        self.assertEqual(partial, [])
 
     def test_paths_containing_spaces_survive(self):
-        got, _ = web_mod._parse_mappings("/General Storage/t = /a b/c")
+        got, _ = web_mod._mappings_from_form(
+            self.form(["/General Storage/t"], ["/a b/c"]))
         self.assertEqual(got[0], {"from": "/General Storage/t", "to": "/a b/c"})
 
-    def test_a_line_without_an_equals_is_reported_not_swallowed(self):
-        got, bad = web_mod._parse_mappings("/General Storage/torrents")
-        self.assertEqual(got, [])
-        self.assertEqual(bad, ["/General Storage/torrents"])
+    def test_no_mappings_is_a_valid_answer(self):
+        """Mirroring qBittorrent's path in the compose file needs no mapping at
+        all, so an empty form must save cleanly and say nothing."""
+        got, partial = web_mod._mappings_from_form(self.form([], []))
+        self.assertEqual((got, partial), ([], []))
 
-    def test_docker_volume_syntax_is_refused_rather_than_guessed(self):
-        """Docker writes host:container; this box wants qbittorrent=protectarr.
-        Accepting it would silently build a mapping in the wrong direction,
-        which is worse than refusing it."""
-        line = "/volume2/General Storage/torrents:/General Storage/torrents"
-        got, bad = web_mod._parse_mappings(line)
+    def test_a_half_filled_row_is_reported_not_swallowed(self):
+        got, partial = web_mod._mappings_from_form(
+            self.form(["/General Storage/torrents"], [""]))
         self.assertEqual(got, [])
-        self.assertIn("Docker volume syntax", web_mod._mapping_complaint(bad[0]))
+        self.assertEqual(partial, ["/General Storage/torrents"])
 
-    def test_blank_and_commented_lines_are_not_complaints(self):
-        got, bad = web_mod._parse_mappings("\n  \n# a note\n/a = /b\n")
-        self.assertEqual(got, [{"from": "/a", "to": "/b"}])
-        self.assertEqual(bad, [])
+    def test_hand_edited_yaml_still_renders_in_the_form(self):
+        """config.example.yaml documents the dict form, and the old text box
+        wrote "a = b" strings. Both have to come back as fields."""
+        self.assertEqual(web_mod._mapping_rows([{"from": "/a", "to": "/b"}]),
+                         [{"from": "/a", "to": "/b"}])
+        self.assertEqual(web_mod._mapping_rows(["/a = /b"]),
+                         [{"from": "/a", "to": "/b"}])
+        self.assertEqual(web_mod._mapping_rows([{"from": "/a"}, None, 7]), [])
 
 
 class ScanQb(FakeQb):

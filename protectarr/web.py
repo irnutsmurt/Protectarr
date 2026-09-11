@@ -48,39 +48,39 @@ SETTINGS_SECTIONS = [(k, l, i) for k, l, i, _ in SETTINGS_SECTIONS_FULL]
 SETTINGS_KEYS = {k for k, *_ in SETTINGS_SECTIONS_FULL}
 
 
-def _parse_mappings(text):
-    """One `qbittorrent/path = local/path` per line -> (mappings, rejected).
+def _mappings_from_form(form):
+    """Paired path inputs -> (mappings, half-filled rows).
 
-    Rejected lines come back rather than being dropped. Silently swallowing a
-    line someone typed is the worst possible outcome here: the probe then reads
-    a path nobody chose, finds nothing, and looks broken for a reason that
-    nothing in the UI points at.
+    Two labelled fields rather than one "a = b" text box, so that "a mapping is
+    two paths" is something the form shows rather than something an error
+    message has to explain after the fact.
     """
-    out, rejected = [], []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        src, sep, dst = line.partition("=")
-        if sep and src.strip() and dst.strip():
-            out.append({"from": src.strip(), "to": dst.strip()})
+    out, partial = [], []
+    for src, dst in zip(form.getlist("map_from"), form.getlist("map_to")):
+        src, dst = src.strip(), dst.strip()
+        if src and dst:
+            out.append({"from": src, "to": dst})
+        elif src or dst:
+            partial.append(src or dst)
+    return out, partial
+
+
+def _mapping_rows(raw):
+    """Stored mappings -> rows for the form, tolerating the hand-edited YAML
+    forms (`{from, to}` or `"a = b"`) that config.example.yaml documents."""
+    rows = []
+    for item in raw or []:
+        if isinstance(item, dict):
+            src = item.get("from") or item.get("src") or ""
+            dst = item.get("to") or item.get("dst") or ""
+        elif isinstance(item, str):
+            src, _, dst = item.partition("=")
         else:
-            rejected.append(line)
-    return out, rejected
-
-
-def _mapping_complaint(line):
-    """Why one line was not accepted, in terms of what the user probably did."""
-    if ":" in line:
-        return (f"Saved, but {line!r} was ignored: that is Docker volume "
-                f"syntax. This box takes the path qBittorrent reports, then "
-                f"the path Protectarr sees, separated by = - not the host "
-                f"path, and not a colon. For example: "
-                f"/General Storage/torrents = /downloads")
-    return (f"Saved, but {line!r} was ignored: a mapping needs two paths "
-            f"separated by =, for example "
-            f"/General Storage/torrents = /downloads. Leave the box empty if "
-            f"you mounted the downloads at the same path qBittorrent uses.")
+            continue
+        src, dst = str(src).strip(), str(dst).strip()
+        if src and dst:
+            rows.append({"from": src, "to": dst})
+    return rows
 
 
 def _human_size(n):
@@ -314,6 +314,10 @@ def create_app(service):
                                                 time.localtime(f["modified"]))
             extra = {"log_files": files,
                      "log_total_h": _human_size(sum(f["size"] for f in files))}
+        elif section == "probe":
+            extra = {"mapping_rows": _mapping_rows(
+                (cfg_mod.load().get("detection") or {}).get("probe", {})
+                .get("path_mappings"))}
         return page(f"s_{section}.html", active="settings", active_sub=section, **extra)
 
     @app.route("/settings/<section>/save", methods=["POST"])
@@ -361,11 +365,10 @@ def create_app(service):
             pr = cfg["detection"].setdefault("probe", {})
             pr["enabled"] = f.get("probe_enabled") == "on"
             pr["steer"] = f.get("probe_steer") == "on"
-            pr["path_mappings"], bad = _parse_mappings(f.get("probe_mappings", ""))
-            if bad:
-                flash(_mapping_complaint(bad[0]) +
-                      (f" ({len(bad) - 1} more line(s) ignored too.)"
-                       if len(bad) > 1 else ""))
+            pr["path_mappings"], partial = _mappings_from_form(f)
+            if partial:
+                flash(f"A mapping needs both paths, so the row containing "
+                      f"{partial[0]!r} was left out.")
             # Clamped rather than trusted: these bound how long a scan can block
             # and how much bandwidth a probe may spend.
             for key, field, lo, hi in (("max_torrents_per_scan", "probe_max", 0, 20),
@@ -579,8 +582,8 @@ def create_app(service):
         that nothing ever happens. This turns that into an answer, and it takes
         the mapping from the form so it can be tested before it is saved.
         """
-        parsed, _rejected = _parse_mappings((request.json or {}).get("mappings", ""))
-        mappings = probe.paths.parse_mappings(parsed)
+        mappings = probe.paths.parse_mappings(
+            (request.json or {}).get("mappings") or [])
         cfg = cfg_mod.load()
         qc = cfg["qbittorrent"]
         try:
