@@ -27,9 +27,14 @@
     <div class="body">
       <p class="hint" style="margin-bottom:12px">
         Protectarr has to be able to <b>read the files qBittorrent is writing</b>. If they run in
-        different containers, mount the download directory into Protectarr too and map qBittorrent's
-        path to the path Protectarr sees. One per line, <code>qbittorrent path = protectarr path</code>.
-        Leave empty if both see the same paths.
+        different containers, mount the download directory into Protectarr too, then either mirror
+        qBittorrent's path exactly (no mapping needed) or map it here. One per line,
+        <code>qbittorrent path = protectarr path</code>.
+      </p>
+      <p class="hint" style="margin-bottom:12px">
+        The path to match is the one <b>qBittorrent reports</b>, which on a NAS is often not the host
+        path: a share at <code>/volume2/Media/torrents</code> may be <code>/Media/torrents</code> to
+        qBittorrent. Press the button below and compare the two paths it prints, rather than guessing.
       </p>
       <textarea name="probe_mappings" id="probe_mappings" rows="4"
         placeholder="/downloads = /downloads">{% for m in pr.path_mappings %}{{ m['from'] if m is mapping else m }}{% if m is mapping %} = {{ m['to'] }}{% endif %}

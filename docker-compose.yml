@@ -13,14 +13,21 @@ services:
       # directory here, read-only - the probe only ever reads headers, and it
       # steers qBittorrent through its API, never through the filesystem.
       #
-      # Easiest: mount it at the SAME path qBittorrent uses, and no path
-      # mapping is needed at all:
-      # - /mnt/downloads:/downloads:ro  # and in qBittorrent: - /mnt/downloads:/downloads
+      # Easiest by far: make the path INSIDE this container identical to the
+      # path qBittorrent reports, and no mapping is needed at all. The path to
+      # mirror is the one qBittorrent reports, which is often NOT the host path.
+      # On a Synology, a share living at /volume2/General Storage/torrents that
+      # qBittorrent sees as /General Storage/torrents is mirrored with:
+      # - "/volume2/General Storage/torrents:/General Storage/torrents:ro"
+      # Quote the whole entry when the path contains spaces.
       #
-      # If the paths differ, mount it anywhere and add a mapping on the
-      # Content Probe page, e.g. qBittorrent's /downloads = Protectarr's /dl.
-      # That page has a "Test against current downloads" button that tells you
-      # whether Protectarr can actually see the files.
+      # Don't guess which path qBittorrent reports. Settings > Content Probe >
+      # "Test against current downloads" prints it for a live download, next to
+      # the path Protectarr looked at, so a mismatch is obvious.
+      #
+      # If you would rather not mirror it, mount it anywhere and add a mapping
+      # on that page instead, e.g.
+      #   /General Storage/torrents = /downloads
       #
       # For the optional IP blocklist: mount a shared volume that qBittorrent
       # ALSO mounts (at the same path), and set ip_blocklist.path to it, e.g.:

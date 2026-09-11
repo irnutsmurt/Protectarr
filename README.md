@@ -128,14 +128,27 @@ Three Docker gotchas:
   Protectarr container itself.
 - **Only if you turn on the Content Probe:** it has to read the files
   qBittorrent is writing, so mount the download directory into Protectarr as
-  well, read-only. Mounting it at the *same path* qBittorrent uses means no path
-  mapping is needed:
+  well, read-only.
+
+  The simplest setup is to make the path *inside the Protectarr container*
+  identical to the path **qBittorrent reports**, which means no path mapping at
+  all. The catch is that the path to mirror is usually not the host path. A
+  Synology share sitting at `/volume2/General Storage/torrents` that qBittorrent
+  sees as `/General Storage/torrents` is mirrored like this:
 
   ```yaml
   volumes:
     - ./config:/config
-    - /mnt/downloads:/downloads:ro    # qBittorrent has: /mnt/downloads:/downloads
+    - "/volume2/General Storage/torrents:/General Storage/torrents:ro"
   ```
+
+  Quote the whole entry if the path has spaces in it. Don't guess which path
+  qBittorrent reports: **Settings → Content Probe → Test against current
+  downloads** prints it for a live download, right next to the path Protectarr
+  looked at, so a mismatch is obvious at a glance.
+
+  If mirroring is awkward, mount it anywhere you like and add a mapping on that
+  page instead (`/General Storage/torrents = /downloads`).
 
   Read-only is deliberate and sufficient: the probe only ever reads headers, and
   it steers qBittorrent through the API, never through the filesystem. Nothing
