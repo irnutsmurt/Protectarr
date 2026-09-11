@@ -180,7 +180,10 @@ textarea { min-height: 70px; font-family: ui-monospace, Menlo, Consolas, monospa
 /* ---- secret fields (masked API keys with reveal) ---- */
 .secret-field { display: flex; gap: 6px; align-items: stretch; }
 .secret-field input { flex: 1; }
-.secret-field .reveal { flex: 0 0 auto; padding: 0 12px; }
+.secret-field .reveal,
+.secret-field .copybtn { flex: 0 0 auto; padding: 0 12px; }
+/* fixed width so swapping to "Copied"/"Failed" doesn't shift the row */
+.secret-field .copybtn { min-width: 68px; text-align: center; }
 
 /* ---- arr instance blocks ---- */
 .instance { border: 1px solid var(--border); border-radius: 5px; padding: 12px; margin-bottom: 12px; background: #262626; }

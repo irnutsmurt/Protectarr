@@ -31,6 +31,7 @@
       <label>API key <span class="hint">(HTTP API - send as the <code>X-Api-Key</code> header or <code>?apikey=</code>; see <code>GET /api/v1</code>)</span></label>
       <div class="secret-field">
         <input type="password" value="{{ cfg.web.api_key }}" readonly autocomplete="off">
+        <button type="button" class="btn small copybtn" tabindex="-1" title="Copy to clipboard without showing it" onclick="copySecret(this)">Copy</button>
         <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>
       </div>
       {% endif %}

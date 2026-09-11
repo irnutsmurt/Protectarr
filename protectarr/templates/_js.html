@@ -5,6 +5,36 @@ function toggleSecret(btn) {
   inp.type = show ? 'text' : 'password';
   btn.textContent = show ? 'Hide' : 'Show';
 }
+function fallbackCopy(text) {
+  // navigator.clipboard only exists in a secure context, and most people reach
+  // a self-hosted app over plain HTTP on a LAN address. The off-screen textarea
+  // keeps the value hidden, so the key is still never shown.
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+function copySecret(btn) {
+  const inp = btn.parentNode.querySelector('input');
+  const flash = ok => {
+    btn.textContent = ok ? 'Copied' : 'Failed';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(inp.value).then(
+      () => flash(true), () => flash(fallbackCopy(inp.value)));
+  } else {
+    flash(fallbackCopy(inp.value));
+  }
+}
 function post(url, body) {
   return fetch(url, {method:'POST', headers:{'Content-Type':'application/json', 'X-CSRF-Token': window.CSRF || ''}, body:JSON.stringify(body)}).then(r=>r.json());
 }
