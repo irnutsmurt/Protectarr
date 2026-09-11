@@ -49,11 +49,14 @@
             </td>
             <td>
               {{ r.why }}
-              {# severity lives on the policy block from schema v2; v1 events carry it on the finding #}
-              {% set sev = (e.policy and e.policy.severity) or (e.finding and e.finding.severity) %}
-              {% if sev %}<span class="hint">({{ sev }}{% if e.policy and e.policy.profile %}, {{ e.policy.profile }} profile{% endif %})</span>{% endif %}
-              {% if e.other_findings %}
-              <div class="hint" style="margin-top:4px">+{{ e.other_findings | length }} more finding(s)</div>
+              {% if r.severity %}<span class="hint">({{ r.severity }}{% if r.profile %}, {{ r.profile }} profile{% endif %})</span>{% endif %}
+              {% if r.also %}
+              <div class="hint" style="margin-top:4px">
+                Also detected:
+                <ul style="margin:2px 0 0 16px; padding:0">
+                  {% for line in r.also %}<li>{{ line }}</li>{% endfor %}
+                </ul>
+              </div>
               {% endif %}
             </td>
             <td style="white-space:nowrap">

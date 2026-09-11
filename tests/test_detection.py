@@ -1,9 +1,14 @@
 """Detection + policy tests.
 
-The point of the detector/policy split was that it changes *structure*, not
-behaviour. `test_media_profile_matches_legacy_behaviour` is the one that matters:
-it replays the pre-refactor rules over a corpus of file lists and asserts the new
-pipeline reaches the same reap-or-not answer every time.
+The detector/policy split changes structure, not what Protectarr *does*.
+`test_media_profile_matches_legacy_behaviour` is the one that matters: it replays
+the pre-refactor rules over a corpus of file lists and asserts the new pipeline
+reaches the same reap-or-not answer every time.
+
+Note the precise claim: **action** behaviour is unchanged. Recorded output did
+change, deliberately - detectors no longer stop at the first hit, so a torrent
+with both an `.exe` and a `PASSWORD.txt` now reports both and names the `.exe` as
+decisive rather than whichever happened to come first in the file list.
 
 Run with:  python -m unittest discover -s tests
 """
@@ -97,7 +102,7 @@ CORPUS = [
 ]
 
 
-class TestNoBehaviourChange(unittest.TestCase):
+class TestActionBehaviourUnchanged(unittest.TestCase):
     def test_media_profile_matches_legacy_behaviour(self):
         for fl, arr_type, tracked, indexer in CORPUS:
             with self.subTest(files=[f["name"] for f in fl], arr=arr_type,
@@ -213,6 +218,76 @@ class TestPolicy(unittest.TestCase):
             "media": {"extension_match": {"severity": "nonsense", "decision": "vape"}}}}}
         self.assertEqual(policy.judge(cfg, "media", run(files("a.exe"))[0])["decision"],
                          "block")
+
+
+class TestEventNormalisation(unittest.TestCase):
+    """Every schema version has to keep rendering; history is append-only."""
+
+    def setUp(self):
+        from protectarr import events
+        self.events = events
+
+    def test_v1_severity_on_the_finding(self):
+        ev = {"schema_version": 1,
+              "finding": {"detector": "extension", "severity": "critical",
+                          "reason": "blocked_extension",
+                          "evidence": {"filename": "a.exe", "extension": ".exe"}}}
+        found, decisive, sev, profile = self.events.normalize(ev)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(decisive["reason"], "blocked_extension")
+        self.assertEqual(sev, "critical")
+        self.assertIsNone(profile)
+        self.assertIn("Monitored extension .exe", self.events.describe(decisive))
+
+    def test_v2_decisive_plus_tail(self):
+        ev = {"schema_version": 2,
+              "finding": {"detector": "extension", "reason": "extension_match",
+                          "evidence": {"filename": "a.exe"}},
+              "other_findings": [{"detector": "filename", "reason": "lure_filename",
+                                  "evidence": {"filename": "PASSWORD.txt"}}],
+              "policy": {"profile": "media", "severity": "critical", "decision": "block"}}
+        found, decisive, sev, profile = self.events.normalize(ev)
+        self.assertEqual(len(found), 2)
+        self.assertEqual(decisive["reason"], "extension_match")
+        self.assertEqual((sev, profile), ("critical", "media"))
+
+    def test_v3_indexed_into_the_list(self):
+        ev = {"schema_version": 3,
+              "findings": [{"detector": "filename", "reason": "lure_filename",
+                            "evidence": {"filename": "PASSWORD.txt"}},
+                           {"detector": "extension", "reason": "extension_match",
+                            "evidence": {"filename": "a.exe"}}],
+              "policy": {"profile": "media", "severity": "critical",
+                         "decision": "block", "decisive_finding": 1}}
+        found, decisive, sev, _ = self.events.normalize(ev)
+        self.assertEqual(len(found), 2)
+        self.assertEqual(decisive["reason"], "extension_match")
+        self.assertEqual(sev, "critical")
+
+    def test_out_of_range_index_does_not_explode(self):
+        ev = {"findings": [{"detector": "x", "reason": "y", "evidence": {}}],
+              "policy": {"decisive_finding": 7}}
+        _, decisive, _, _ = self.events.normalize(ev)
+        self.assertEqual(decisive["reason"], "y")
+
+    def test_empty_event(self):
+        self.assertEqual(self.events.normalize({}), ([], None, None, None))
+
+
+class TestWarnFingerprint(unittest.TestCase):
+    def test_same_observations_dedupe_but_a_new_one_does_not(self):
+        from protectarr import core
+        a = {"hash": "abc", "findings": [
+            {"detector": "filename", "reason": "lure_filename",
+             "evidence": {"filename": "PASSWORD.txt"}}]}
+        same = {"hash": "abc", "findings": [dict(a["findings"][0])]}
+        more = {"hash": "abc", "findings": a["findings"] + [
+            {"detector": "probe", "reason": "content_type_mismatch",
+             "evidence": {"filename": "movie.mkv"}}]}
+        other_torrent = {"hash": "def", "findings": a["findings"]}
+        self.assertEqual(core._warn_fingerprint(a), core._warn_fingerprint(same))
+        self.assertNotEqual(core._warn_fingerprint(a), core._warn_fingerprint(more))
+        self.assertNotEqual(core._warn_fingerprint(a), core._warn_fingerprint(other_torrent))
 
 
 if __name__ == "__main__":

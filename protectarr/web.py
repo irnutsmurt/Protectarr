@@ -235,12 +235,18 @@ def create_app(service):
         if show not in ("live", "dry", "all"):
             show = "live"
         dry = {"live": False, "dry": True, "all": None}[show]
-        rows = [{
-            "ev": e,
-            "why": events.describe(e.get("finding")),
-            "requeue": events.describe_requeue(e.get("redownload")),
-            "size": _human_size((e.get("torrent") or {}).get("size")),
-        } for e in events.read(limit=250, dry_run=dry)]
+        rows = []
+        for e in events.read(limit=250, dry_run=dry):
+            findings, decisive, severity, profile = events.normalize(e)
+            rows.append({
+                "ev": e,
+                "why": events.describe(decisive),
+                "also": [events.describe(f) for f in findings if f is not decisive],
+                "severity": severity,
+                "profile": profile,
+                "requeue": events.describe_requeue(e.get("redownload")),
+                "size": _human_size((e.get("torrent") or {}).get("size")),
+            })
         return page("history.html", active="history", rows=rows, show=show)
 
     @app.route("/settings")

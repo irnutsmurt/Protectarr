@@ -33,9 +33,11 @@ from .detectors import finding  # noqa: F401 - re-export; construction lives wit
 
 # 1: finding carried its own severity.
 # 2: severity moved to the policy block, where context can decide it; the
-#    `blocked_extension` reason became the neutral `extension_match`. Readers
-#    below still render v1 events, so nothing needs migrating.
-SCHEMA_VERSION = 2
+#    `blocked_extension` reason became the neutral `extension_match`.
+# 3: detectors report everything they see, so events carry the whole `findings`
+#    list and policy points at the decisive one by index.
+# `normalize()` reads every version, so nothing needs migrating.
+SCHEMA_VERSION = 3
 MAX_BYTES = 5 * 1024 * 1024
 KEEP_FILES = 3                  # events.jsonl + .1 + .2
 _lock = threading.Lock()
@@ -117,6 +119,30 @@ def read(limit=200, dry_run=None, event_type=None):
             if len(out) >= limit:
                 return out
     return out
+
+
+def normalize(ev):
+    """Flatten any schema version into (findings, decisive, severity, profile).
+
+    v1/v2 stored one decisive finding plus an `other_findings` tail and, in v1,
+    the severity on the finding itself. v3 stores the full list with an index.
+    Readers work off this so the templates never branch on version.
+    """
+    pol = ev.get("policy") or {}
+    findings = ev.get("findings")
+    if findings is None:                       # v1 / v2
+        head = ev.get("finding")
+        findings = ([head] if head else []) + list(ev.get("other_findings") or [])
+        idx = 0
+    else:
+        idx = pol.get("decisive_finding", 0)
+    if not findings:
+        return [], None, pol.get("severity"), pol.get("profile")
+    if not 0 <= idx < len(findings):
+        idx = 0
+    decisive = findings[idx]
+    severity = pol.get("severity") or decisive.get("severity")
+    return findings, decisive, severity, pol.get("profile")
 
 
 # ---- rendering ----

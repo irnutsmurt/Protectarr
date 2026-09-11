@@ -221,9 +221,12 @@ def scan(cfg, state):
             "name": t.get("name", thash),
             "bad_file": top_find.get("evidence", {}).get("filename", ""),
             "reason": reason_text(top_find),
-            "finding": top_find,
-            "policy": top_policy,
-            "other_findings": [f for f, _ in judged if f is not top_find],
+            # Every observation is kept, with policy pointing at the one that
+            # drove the outcome. The rest is corroborating evidence, which is
+            # worth a lot more once the probe lane starts adding to it.
+            "findings": findings,
+            "finding": top_find,        # internal convenience; not stored
+            "policy": dict(top_policy, decisive_finding=findings.index(top_find)),
             "size": t.get("size"),
             "category": t.get("category", ""),
             "tags": t.get("tags", ""),
@@ -270,15 +273,24 @@ def _event(a, cfg, **over):
             "indexer": over.pop("indexer", None),
         },
         "owner": over.pop("owner", None),
-        "finding": a.get("finding"),
+        "findings": a.get("findings") or [],
         "policy": a.get("policy"),
         "peers_harvested": over.pop("peers", 0),
         "dry_run": bool(cfg.get("dry_run", True)),
     }
-    if a.get("other_findings"):
-        ev["other_findings"] = a["other_findings"]
     ev.update(over)
     return ev
+
+
+def _warn_fingerprint(a):
+    """Identity of a warning: the torrent plus everything observed about it.
+
+    Hash alone is too coarse - a torrent can legitimately acquire a new finding
+    later (the probe lane will make that routine), and that deserves a fresh
+    entry rather than being swallowed as a repeat.
+    """
+    return (a["hash"], json.dumps(a.get("findings") or [],
+                                  sort_keys=True, separators=(",", ":")))
 
 
 def _owner_block(owner):
@@ -300,11 +312,15 @@ def apply_actions(actions, state, cfg):
         label = f"{a['name']!r} (bad: {a['bad_file']!r}{' - ' + _r if _r else ''})"
 
         if a["decision"] == "warn":
-            # The profile flagged it without calling for removal. Record it
-            # once per torrent so a 20-second poll doesn't fill the history.
-            if a["hash"] in warned:
+            # The profile flagged it without calling for removal. Recorded once
+            # per distinct set of observations, so a 20-second poll doesn't fill
+            # the history but a genuinely new finding still surfaces.
+            key = _warn_fingerprint(a)
+            if key in warned:
                 continue
-            warned.add(a["hash"])
+            if len(warned) > 5000:      # long uptimes shouldn't leak memory
+                warned.clear()
+            warned.add(key)
             _log(state, f"Flagged (no action, {a['policy']['profile']} profile): {label}")
             events.record(_event(
                 a, cfg, owner=_owner_block(a["_owner"]),
