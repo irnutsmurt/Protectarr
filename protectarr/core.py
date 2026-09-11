@@ -120,8 +120,11 @@ def reason_text(find):
 
 
 def allowlisted(torrent, safety):
-    cats = {c.lower() for c in safety.get("allowed_categories", [])}
-    tags = {t.lower() for t in safety.get("allowed_tags", [])}
+    # Blank entries are dropped deliberately. A stray empty line in the config
+    # would otherwise match every torrent with no category, which is exactly
+    # the hand-added downloads this is supposed to protect.
+    cats = {c.strip().lower() for c in safety.get("allowed_categories", []) if c and c.strip()}
+    tags = {t.strip().lower() for t in safety.get("allowed_tags", []) if t and t.strip()}
     tcat = (torrent.get("category") or "").lower()
     ttags = {t.strip().lower() for t in (torrent.get("tags") or "").split(",") if t.strip()}
     if cats and tcat in cats:
@@ -131,11 +134,16 @@ def allowlisted(torrent, safety):
     return False
 
 
-def evaluate(torrent, bad_name, arr_hit, safety):
+def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True):
     """Decide what to do with a torrent that contains a blocked file.
 
     Returns one of: 'arr_fail' (hand back to the owning arr), 'qbit_delete'
     (remove directly), or None (leave it alone).
+
+    `ownership_known` is False when an *arr queue could not be read. Absence
+    from a queue we never managed to fetch is not evidence that nothing owns
+    the torrent, and treating it as such would delete real downloads the moment
+    Sonarr restarts. Uncertainty fails safe: no direct deletion.
 
     Each mode has a different blind spot, which is why `either` exists:
 
@@ -160,12 +168,16 @@ def evaluate(torrent, bad_name, arr_hit, safety):
     if mode == "allowlist":
         if not is_allowed:
             return None
-        return "arr_fail" if arr_hit else "qbit_delete"
+        if arr_hit:
+            return "arr_fail"
+        return "qbit_delete" if ownership_known else None
     if mode == "either":
         # An *arr owning it always wins: that path blocklists the release and
         # decides about requeueing, which deleting from qBittorrent cannot do.
         if arr_hit:
             return "arr_fail"
+        if not ownership_known:
+            return None
         return "qbit_delete" if is_allowed else None
     return None
 
@@ -196,6 +208,9 @@ def scan(cfg, state):
     arr_by_name = {a.get("name"): a for a in cfg.get("arrs", []) if a.get("name")}
     # hash -> (client, queue_record)
     owner = {}
+    # If any queue read fails we cannot tell an orphan from a torrent whose
+    # owner we simply could not reach, so direct deletion is suppressed below.
+    ownership_known = True
     for client in arr_clients:
         try:
             queue = client.queue_by_hash()
@@ -203,7 +218,12 @@ def scan(cfg, state):
             for h, rec in queue.items():
                 owner.setdefault(h, (client, rec))
         except requests.RequestException as e:
+            ownership_known = False
             _log(state, f"Could not read {client.name} queue: {e}", logging.ERROR)
+    if not ownership_known:
+        log.warning("At least one application queue could not be read, so "
+                    "ownership is unknown this pass. Torrents will not be "
+                    "deleted directly from qBittorrent.")
 
     safety = cfg["safety"]
     actions = []
@@ -223,6 +243,10 @@ def scan(cfg, state):
             files = qb.files(thash)
         except requests.RequestException as e:
             log.warning("Could not read file list for %s: %s", t.get("name"), e)
+            continue
+        if not isinstance(files, list):
+            log.warning("Unexpected file list for %s (%s), skipping",
+                        t.get("name"), type(files).__name__)
             continue
         inspected += 1
         arr_hit = owner.get(thash.lower())
@@ -286,12 +310,13 @@ def scan(cfg, state):
         if verdict == "warn":
             # Worth recording, not worth destroying over. The safety mode still
             # decides whether this torrent was ever ours to touch.
-            if evaluate(t, row["bad_file"], arr_hit, safety) is not None:
+            if evaluate(t, row["bad_file"], arr_hit, safety,
+                        ownership_known) is not None:
                 row["decision"] = "warn"
                 actions.append(row)
             continue
 
-        decision = evaluate(t, row["bad_file"], arr_hit, safety)
+        decision = evaluate(t, row["bad_file"], arr_hit, safety, ownership_known)
         if decision is None:
             log.info("Blocked by the %s profile but safety mode %r does not "
                      "cover it, leaving alone: %s",
@@ -558,6 +583,13 @@ class ProtectarrService:
             _log(self.state, f"Banned-IP apply failed: {e}", logging.ERROR)
 
     def _run(self):
+        try:
+            self._loop()
+        finally:
+            # Never leave the UI claiming it is running when it is not.
+            self.state["running"] = False
+
+    def _loop(self):
         while not self._stop.is_set():
             cfg = cfg_mod.load()
             try:
@@ -568,6 +600,11 @@ class ProtectarrService:
             except (QbitError, requests.RequestException) as e:
                 self.state["last_error"] = str(e)
                 _log(self.state, f"Scan error: {e}", logging.ERROR)
+            except Exception as e:  # noqa: BLE001 - one bad pass must not end
+                # the loop. Dying here used to leave running=True forever, so
+                # Protectarr looked healthy while silently scanning nothing.
+                self.state["last_error"] = f"{type(e).__name__}: {e}"
+                log.exception("Unexpected error during scan; continuing")
             self.update_blocklist(cfg)  # refreshes only when due
             # Sleep in small chunks so reload/stop are responsive.
             interval = max(5, int(cfg.get("poll_interval", 20)))

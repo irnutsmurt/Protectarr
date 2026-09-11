@@ -17,7 +17,7 @@ def detect(files, det, ctx):
         return []
     out = []
     for f in files:
-        name = f.get("name", "")
+        name = f.get("name") or ""
         if ext(name) not in LURE_EXTS:
             continue
         base = posixpath.basename(name).lower()

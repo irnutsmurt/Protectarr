@@ -14,7 +14,7 @@ def detect(files, det, ctx):
         return []
     out = []
     for f in files:
-        name = f.get("name", "")
+        name = f.get("name") or ""      # a null name must not abort the pass
         e = ext(name)
         if e in exts:
             out.append(finding("extension", "extension_match",

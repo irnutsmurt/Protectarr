@@ -127,6 +127,11 @@ class Redactor(logging.Filter):
     def scrub(self, text):
         if not text:
             return text
+        # A filename can contain newlines, and a log line is newline delimited.
+        # Left alone, a crafted release name could forge entries that look like
+        # Protectarr wrote them.
+        if "\n" in text or "\r" in text:
+            text = text.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\r")
         for s in self.secrets:
             if s in text:
                 text = text.replace(s, MASK)

@@ -32,6 +32,11 @@ _NUM_PART = re.compile(r"^\.\d{3}$")    # .001 .002 ...  (split archives)
 
 
 def ext(name):
+    """Lowercased extension. Tolerates anything that is not a usable string,
+    because one malformed entry in a file list must never cost the findings
+    from every other file in the torrent."""
+    if not isinstance(name, str):
+        return ""
     return posixpath.splitext(name)[1].lower()
 
 
