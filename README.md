@@ -188,6 +188,38 @@ When a reaped torrent is *arr-tracked, it's failed+blocklisted via that *arr.
 In `allowlist` mode a matching torrent that no *arr owns is deleted straight
 from qBittorrent.
 
+### Security profiles
+
+A detector reports what it saw; the profile decides how serious that is and what
+to do about it. The same observation gets opposite verdicts depending on what the
+download is supposed to be:
+
+| observation | Media | Software |
+|-------------|-------|----------|
+| monitored extension (`setup.exe`) | critical, block | info, allow (it's the release) |
+| lure filename (`PASSWORD.txt`) | high, block | high, warn |
+| archive with no media | high, block | info, allow |
+
+`media` is the default everywhere and blocks on everything, which is exactly what
+Protectarr has always done - existing setups are unchanged. Set a different one
+per *arr (a `profile` key on the app entry), per category
+(`safety.category_profiles`), or globally with `detection.profile`. Individual
+rules can be overridden:
+
+```yaml
+detection:
+  profile: media
+  profiles:
+    media:
+      lure_filename: {severity: medium, decision: warn}
+```
+
+Profiles are orthogonal to the safety modes above: **safety mode decides what
+Protectarr may touch, the profile decides how it judges what it touched.** A
+`warn` is recorded in History once per torrent and nothing is removed. A reason
+no profile knows about warns rather than blocks, so a future detector can never
+delete downloads before its policy is deliberately wired up.
+
 ### Requeue behaviour (air-date aware)
 
 Reaping removes + blocklists the fake and tells the *arr **not** to

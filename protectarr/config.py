@@ -57,6 +57,18 @@ DEFAULTS = {
         # libraries. Sonarr/Radarr's own "Fail Downloads" remains the backstop
         # for anything that happens to complete between polls.
         "only_active": True,
+        # How findings are judged. Detectors report what they saw; the profile
+        # decides how serious that is here and what to do about it. `media`
+        # blocks on everything, which is what Protectarr has always done - so
+        # leaving this alone changes nothing. `software` treats an executable
+        # as expected. Set per *arr (a `profile` key on the entry) or per
+        # category (safety.category_profiles); this is the fallback.
+        "profile": "media",
+        # Override individual rules, or define your own profile:
+        #   profiles:
+        #     media:
+        #       lure_filename: {severity: medium, decision: warn}
+        "profiles": {},
     },
     "safety": {
         # arr_tracked : reap only torrents a configured arr has in its queue
@@ -65,6 +77,8 @@ DEFAULTS = {
         "mode": "arr_tracked",
         "allowed_categories": [],
         "allowed_tags": [],
+        # qBittorrent category -> profile name, for torrents no *arr owns.
+        "category_profiles": {},
         # After reaping, requeue (search for a clean release) ONLY if the
         # episode/movie has already aired/released. If it hasn't, no legit
         # release can exist yet, so we hold and let the arr's normal RSS pick up

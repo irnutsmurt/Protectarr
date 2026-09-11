@@ -49,14 +49,18 @@
             </td>
             <td>
               {{ r.why }}
-              {% if e.finding and e.finding.severity %}
-              <span class="hint">({{ e.finding.severity }})</span>
+              {# severity lives on the policy block from schema v2; v1 events carry it on the finding #}
+              {% set sev = (e.policy and e.policy.severity) or (e.finding and e.finding.severity) %}
+              {% if sev %}<span class="hint">({{ sev }}{% if e.policy and e.policy.profile %}, {{ e.policy.profile }} profile{% endif %})</span>{% endif %}
+              {% if e.other_findings %}
+              <div class="hint" style="margin-top:4px">+{{ e.other_findings | length }} more finding(s)</div>
               {% endif %}
             </td>
             <td style="white-space:nowrap">
               {% if act.result == 'reaped' %}<span class="pill live">reaped</span>
               {% elif act.result == 'would_reap' %}<span class="pill dry">dry run</span>
               {% elif act.result == 'partial' %}<span class="pill dry">partial</span>
+              {% elif act.result == 'warned' %}<span class="pill off">flagged</span>
               {% else %}<span class="pill off">failed</span>{% endif %}
               <div class="hint" style="margin-top:4px">
                 {% if act.result == 'reaped' %}
@@ -65,6 +69,8 @@
                   would {{ act.decision }}
                 {% elif act.result == 'partial' %}
                   removed · follow-up failed: {{ act.error or 'error' }}
+                {% elif act.result == 'warned' %}
+                  flagged only, nothing removed
                 {% else %}
                   {{ act.error or 'error' }}
                 {% endif %}

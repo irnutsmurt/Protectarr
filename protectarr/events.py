@@ -28,7 +28,14 @@ import threading
 
 from . import config as cfg_mod
 
-SCHEMA_VERSION = 1
+from .detectors import finding  # noqa: F401 - re-export; construction lives with
+                               # the detectors, which own what a Finding is.
+
+# 1: finding carried its own severity.
+# 2: severity moved to the policy block, where context can decide it; the
+#    `blocked_extension` reason became the neutral `extension_match`. Readers
+#    below still render v1 events, so nothing needs migrating.
+SCHEMA_VERSION = 2
 MAX_BYTES = 5 * 1024 * 1024
 KEEP_FILES = 3                  # events.jsonl + .1 + .2
 _lock = threading.Lock()
@@ -63,17 +70,6 @@ def _rotate():
 
 
 # ---- writing ----
-
-def finding(detector, severity, reason, **evidence):
-    """Build the structured 'why' half of an event.
-
-    `reason` is a stable machine code (the UI maps it to words); `evidence` is
-    whatever that detector saw. Detectors report, policy decides - so nothing
-    here says what should happen as a result.
-    """
-    return {"detector": detector, "severity": severity, "reason": reason,
-            "evidence": {k: v for k, v in evidence.items() if v not in (None, "")}}
-
 
 def record(event):
     """Append one event. Best-effort - history must never break a reap."""
@@ -126,8 +122,11 @@ def read(limit=200, dry_run=None, event_type=None):
 # ---- rendering ----
 
 _REASON_TEXT = {
+    "extension_match": lambda e: (
+        f"Monitored extension {e.get('extension', '')}".rstrip()),
+    # schema v1 spelling, kept so already-recorded history still renders.
     "blocked_extension": lambda e: (
-        f"Dangerous extension {e.get('extension', '')}".rstrip()),
+        f"Monitored extension {e.get('extension', '')}".rstrip()),
     "lure_filename": lambda e: "Suspicious lure filename",
     "archive_no_media": lambda e: "Archive containing no media for this app",
     # Written by the probe engine once it lands; listed now to prove a new
