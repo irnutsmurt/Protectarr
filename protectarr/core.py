@@ -298,6 +298,7 @@ def scan(cfg, state):
                      profile, safety.get("mode", "arr_tracked"), t.get("name"))
             continue
         row["decision"] = decision
+        row["safety_mode"] = safety.get("mode", "arr_tracked")
         actions.append(row)
 
     log.debug("Scan finished in %.2fs: %d inspected, %d skipped, %d action(s)",
@@ -448,6 +449,7 @@ def apply_actions(actions, state, cfg):
                     owner={"type": client.type, "instance": client.name,
                            "media": _media_name(record), "release_title": source_title},
                     action={"result": "reaped", "decision": "arr_fail",
+                            "via": "arr", "safety_mode": a.get("safety_mode"),
                             "removed": True, "blocklisted": bool(blocked),
                             # which evidence confirmed it, so a reliance on the
                             # fuzzy title fallback is visible rather than silent
@@ -457,13 +459,19 @@ def apply_actions(actions, state, cfg):
                 peers = _harvest_peers(a, None, "qBittorrent", state, cfg)  # before removal
                 a["_qb"].delete(a["hash"], delete_files=True)
                 removed = True
-                _log(state, f"Deleted from qBittorrent: {label}")
+                _log(state, f"Deleted from qBittorrent via category fallback "
+                            f"(no *arr owns it): {label}")
                 record_reap(state, "qBittorrent", a.get("category") or None)
                 events.record(_event(
                     a, cfg, peers=peers,
                     owner={"type": "qbittorrent", "instance": "qBittorrent",
                            "media": None, "release_title": a.get("name")},
                     action={"result": "reaped", "decision": "qbit_delete",
+                            # No owning *arr, so there is no release blocklist
+                            # and no requeue decision - worth saying plainly
+                            # rather than rendering this like an *arr reap.
+                            "via": "category_fallback",
+                            "safety_mode": a.get("safety_mode"),
                             "removed": True, "blocklisted": False},
                     redownload={"decision": "none", "reason": "not_applicable"}))
         except (requests.RequestException, QbitError) as e:

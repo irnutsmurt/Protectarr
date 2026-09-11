@@ -534,3 +534,55 @@ class TestSafetyModes(unittest.TestCase):
 
     def test_unknown_mode_does_nothing(self):
         self.assertIsNone(self.verdict("nonsense", "tv", True))
+
+
+class TestFallbackIsLabelled(unittest.TestCase):
+    """An orphan deleted from qBittorrent and a release failed through its *arr
+    are different events: the fallback path cannot blocklist the release or make
+    a requeue decision. History has to say which happened."""
+
+    def _run(self, decision, tracked):
+        import os, tempfile, datetime
+        from protectarr import config as c, detectors
+        c.CONFIG_PATH = os.path.join(tempfile.mkdtemp(), "config.yaml")
+        from protectarr import core, events
+
+        class Qb:
+            def peers(self, h): return []
+            def delete(self, h, delete_files=False): pass
+
+        class Client:
+            name, type = "Sonarr", "sonarr"
+            def grab_indexer(self, d): return "IX"
+            def fail(self, i): pass
+            def blocklist_match(self, torrent_hash=None, titles=()): return "normalized"
+            def airdate_status(self, rec, g): return True, datetime.datetime(
+                2026, 9, 17, tzinfo=datetime.timezone.utc)
+            def search(self, rec): return True
+
+        f = detectors.finding("extension", "extension_match", filename="x.exe")
+        a = {"hash": "abc", "name": "Rel", "bad_file": "x.exe", "reason": "r",
+             "finding": f, "findings": [f], "policy": {"profile": "media",
+             "severity": "critical", "decision": "block", "decisive_finding": 0},
+             "size": 1, "category": "tv", "tags": "", "decision": decision,
+             "safety_mode": "either", "arr": None,
+             "_owner": (Client(), {"id": 1, "title": "Rel"}) if tracked else None,
+             "_qb": Qb()}
+        core.apply_actions([a], {"stats": core.load_stats()},
+                           {"dry_run": False, "harvest": {"enabled": False},
+                            "safety": {"requeue_after_airdate": True,
+                                       "airdate_grace_hours": 0}})
+        return events.read()[0]["action"]
+
+    def test_arr_path_is_labelled_arr(self):
+        act = self._run("arr_fail", tracked=True)
+        self.assertEqual(act["via"], "arr")
+        self.assertEqual(act["safety_mode"], "either")
+        self.assertTrue(act["blocklisted"])
+
+    def test_fallback_path_is_labelled_and_claims_no_blocklist(self):
+        act = self._run("qbit_delete", tracked=False)
+        self.assertEqual(act["via"], "category_fallback")
+        self.assertEqual(act["safety_mode"], "either")
+        self.assertFalse(act["blocklisted"],
+                         "no owning *arr means no release blocklist to claim")

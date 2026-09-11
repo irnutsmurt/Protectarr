@@ -66,7 +66,9 @@
               {% elif act.result == 'warned' %}<span class="pill off">flagged</span>
               {% else %}<span class="pill off">failed</span>{% endif %}
               <div class="hint" style="margin-top:4px">
-                {% if act.result == 'reaped' %}
+                {% if act.result == 'reaped' and act.via == 'category_fallback' %}
+                  removed from qBittorrent · category fallback, no *arr owned it
+                {% elif act.result == 'reaped' %}
                   removed · blocklist {{ 'confirmed' if act.blocklisted else 'unconfirmed' }}
                 {% elif act.result == 'would_reap' %}
                   would {{ act.decision }}
