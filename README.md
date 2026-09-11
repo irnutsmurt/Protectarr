@@ -27,6 +27,22 @@ Handing it back to the *arr - instead of just deleting it in qBittorrent - is
 the whole trick: deleting it directly leaves the *arr's queue stuck and it never
 searches again.
 
+## What happens when a fake is caught
+
+On a hit, Protectarr calls the owning *arr's queue API to remove the download
+with `removeFromClient=true` and `blocklist=true`. That does three things:
+
+1. **Removes the torrent from qBittorrent** (the client entry and its files).
+2. **Blocklists the release in the *arr.** Sonarr, Radarr, Lidarr, Readarr and
+   Whisparr each keep their own blocklist; the caught release is added to it, so
+   the *arr will not grab that same release again on the next RSS/search pass.
+3. **Skips the *arr's own auto-redownload** (`skipRedownload=true`) - Protectarr
+   decides whether to requeue itself, based on the air/release date (see
+   [Requeue behaviour](#requeue-behaviour-air-date-aware)).
+
+The blocklist entry is what stops the fake from coming straight back, and because
+the *arr performs the removal its queue never ends up stuck.
+
 ## Why not just use qBittorrent's "Excluded file names" or Sonarr's "Fail Downloads"?
 
 - **qBittorrent excluded files** stop the download but leave the torrent in a
