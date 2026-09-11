@@ -31,8 +31,27 @@ DEFAULTS = {
         "blocked_extensions": [
             ".exe", ".scr", ".bat", ".com", ".cmd", ".msi", ".pif",
             ".vbs", ".vbe", ".js", ".jse", ".jar", ".lnk", ".ps1",
-            ".apk", ".dll", ".msc", ".hta",
+            ".apk", ".dll", ".msc", ".hta", ".url", ".wsf", ".reg", ".cpl",
         ],
+        # Tier 2 — flag by *filename*, not just extension: a lure file (readme /
+        # url / nfo) whose name contains one of these substrings. Only checked
+        # against text-like companion files, so a legit release simply titled
+        # "Password" isn't a false positive.
+        "blocked_name_keywords": [
+            "password", "passw0rd", "how to download", "how to play",
+        ],
+        # Tier 3 — archive-with-no-media. RISKY (legit scene releases ship as
+        # RARs), so it's OPT-IN and scoped to specific indexers: it only fires
+        # for an *arr-tracked torrent whose indexer is in this list. Private
+        # trackers (where RARs are legit) are safe by default.
+        "archive_detection": {
+            "enabled": False,
+            "indexers": [],
+            "archive_extensions": [
+                ".rar", ".zip", ".7z", ".z01", ".zipx", ".tar",
+                ".gz", ".bz2", ".arj", ".cab",
+            ],
+        },
         # Only inspect torrents still acquiring data (the point is to catch a
         # fake before it finishes). Skips finished seeds — huge speedup on big
         # libraries. Sonarr/Radarr's own "Fail Downloads" remains the backstop
@@ -167,6 +186,28 @@ def ensure_secret_key():
         if not key:
             key = secrets.token_hex(32)
             file_cfg.setdefault("web", {})["secret_key"] = key
+            clean = _deep_merge(DEFAULTS, file_cfg)
+            os.makedirs(os.path.dirname(CONFIG_PATH) or ".", exist_ok=True)
+            tmp = CONFIG_PATH + ".tmp"
+            with open(tmp, "w") as fh:
+                yaml.safe_dump(clean, fh, sort_keys=False, default_flow_style=False)
+            os.replace(tmp, CONFIG_PATH)
+        return key
+
+
+def ensure_api_key():
+    """Return a stable web API key, generating + persisting one on first run so
+    the HTTP API is usable out of the box (like the *arr apps). Skips generation
+    when the key is supplied via the PROTECTARR_WEB_API_KEY env override."""
+    env = os.environ.get("PROTECTARR_WEB_API_KEY")
+    if env:
+        return env
+    with _lock:
+        file_cfg = _read_file()
+        key = (file_cfg.get("web") or {}).get("api_key")
+        if not key:
+            key = secrets.token_hex(32)
+            file_cfg.setdefault("web", {})["api_key"] = key
             clean = _deep_merge(DEFAULTS, file_cfg)
             os.makedirs(os.path.dirname(CONFIG_PATH) or ".", exist_ok=True)
             tmp = CONFIG_PATH + ".tmp"

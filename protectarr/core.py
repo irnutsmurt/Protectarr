@@ -1,6 +1,7 @@
 """Detection + reap loop, wrapped in a service the WebUI can inspect/reload."""
 
 import os
+import re
 import json
 import time
 import posixpath
@@ -92,14 +93,69 @@ def _harvest_peers(a, indexer, app, state, cfg):
         _log(state, f"Peer harvest failed for {a['name']!r}: {e}")
 
 
-def blocked_file(files, blocked_exts):
-    """Return the first offending file name in a qB file list, else None."""
-    exts = {e.lower() for e in blocked_exts}
+# ---- media extensions per arr type (for the archive-with-no-media rule) ----
+VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts",
+              ".mpg", ".mpeg", ".flv", ".webm", ".vob", ".iso", ".divx", ".ogm"}
+AUDIO_EXTS = {".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac",
+              ".ape", ".wma", ".m4b"}
+BOOK_EXTS = {".epub", ".mobi", ".azw", ".azw3", ".pdf", ".cbz", ".cbr", ".djvu",
+             ".m4b", ".mp3"}
+_MEDIA_BY_TYPE = {
+    "sonarr": VIDEO_EXTS, "radarr": VIDEO_EXTS, "whisparr": VIDEO_EXTS,
+    "lidarr": AUDIO_EXTS, "readarr": BOOK_EXTS,
+}
+# Text-like companion files where fake "lures" live (readme / password / url
+# notes). Keyword matching is limited to these, so a legit release simply titled
+# "Password.mkv" is never a false positive.
+LURE_EXTS = {".txt", ".nfo", ".htm", ".html", ".url", ".rtf", ".md", ".diz", ".doc"}
+_RAR_PART = re.compile(r"^\.r\d{2}$")   # .r00 .r01 ...
+_NUM_PART = re.compile(r"^\.\d{3}$")    # .001 .002 ...  (split archives)
+
+
+def _ext(name):
+    return posixpath.splitext(name)[1].lower()
+
+
+def _is_archive(ext, archive_exts):
+    return ext in archive_exts or bool(_RAR_PART.match(ext)) or bool(_NUM_PART.match(ext))
+
+
+def detect_basic(files, det):
+    """Tier 1 + 2 — universal, high-precision. Returns (bad_name, reason) for the
+    first blocked-extension or lure-filename hit, else (None, None)."""
+    exts = {e.lower() for e in det.get("blocked_extensions", [])}
+    keywords = [k.lower() for k in det.get("blocked_name_keywords", [])]
     for f in files:
         name = f.get("name", "")
-        if posixpath.splitext(name)[1].lower() in exts:
-            return name
-    return None
+        ext = _ext(name)
+        if ext in exts:
+            return name, f"blocked extension {ext}"
+        if keywords and ext in LURE_EXTS:
+            base = posixpath.basename(name).lower()
+            if any(k in base for k in keywords):
+                return name, "suspicious lure filename"
+    return None, None
+
+
+def detect_archive(files, det, arr_type):
+    """Tier 3 (structural half) — returns (archive_name, reason) when the torrent
+    is archives-only with NO real media for this arr type, else (None, None).
+    Indexer scoping is the caller's responsibility (see scan)."""
+    ad = det.get("archive_detection", {})
+    archive_exts = {e.lower() for e in ad.get("archive_extensions", [])}
+    media = _MEDIA_BY_TYPE.get((arr_type or "").lower())
+    if media is None:
+        media = VIDEO_EXTS | AUDIO_EXTS | BOOK_EXTS  # unknown type: be permissive
+    first_archive = None
+    for f in files:
+        ext = _ext(f.get("name", ""))
+        if ext in media:
+            return None, None  # a real media file is present — not a fake
+        if first_archive is None and _is_archive(ext, archive_exts):
+            first_archive = f.get("name", "")
+    if first_archive:
+        return first_archive, "archive with no media"
+    return None, None
 
 
 def allowlisted(torrent, safety):
@@ -158,8 +214,8 @@ def scan(cfg, state):
         except requests.RequestException as e:
             _log(state, f"Could not read {client.name} queue: {e}")
 
-    blocked_exts = cfg["detection"]["blocked_extensions"]
-    only_active = cfg["detection"].get("only_active", True)
+    det = cfg["detection"]
+    only_active = det.get("only_active", True)
     safety = cfg["safety"]
     actions = []
 
@@ -174,11 +230,22 @@ def scan(cfg, state):
             files = qb.files(thash)
         except requests.RequestException:
             continue
-        bad = blocked_file(files, blocked_exts)
+        arr_hit = owner.get(thash.lower())
+        bad, reason = detect_basic(files, det)
+        # Tier 3: indexer-scoped archive rule — only for arr-tracked torrents,
+        # and only resolve the (possibly expensive) indexer for real candidates.
+        ad = det.get("archive_detection", {})
+        if not bad and ad.get("enabled") and arr_hit:
+            cand, crs = detect_archive(files, det, arr_hit[0].type)
+            if cand:
+                client, record = arr_hit
+                indexer = record.get("indexer") or client.grab_indexer(record.get("downloadId"))
+                allowed = {i.strip() for i in ad.get("indexers", []) if i.strip()}
+                if indexer and indexer in allowed:
+                    bad, reason = cand, crs
         if not bad:
             continue
 
-        arr_hit = owner.get(thash.lower())
         decision = evaluate(t, bad, arr_hit, safety)
         if decision is None:
             continue
@@ -186,6 +253,7 @@ def scan(cfg, state):
             "hash": thash,
             "name": t.get("name", thash),
             "bad_file": bad,
+            "reason": reason,
             "category": t.get("category", ""),
             "tags": t.get("tags", ""),
             "decision": decision,
@@ -202,7 +270,8 @@ def apply_actions(actions, state, cfg):
     requeue_enabled = safety.get("requeue_after_airdate", True)
     grace = safety.get("airdate_grace_hours", 0)
     for a in actions:
-        label = f"{a['name']!r} (bad: {a['bad_file']!r})"
+        _r = a.get("reason")
+        label = f"{a['name']!r} (bad: {a['bad_file']!r}{' — ' + _r if _r else ''})"
         if dry_run:
             _log(state, f"[DRY_RUN] would {a['decision']}: {label}")
             continue
@@ -331,3 +400,16 @@ class ProtectarrService:
     def stop(self):
         self._stop.set()
         self.state["running"] = False
+
+    def scan_now(self):
+        """Trigger an immediate scan. If the worker is running, wake it so it
+        re-scans without waiting out the poll interval; otherwise run one
+        synchronous scan+apply cycle here. Returns a small status dict."""
+        if self._thread and self._thread.is_alive():
+            self._reload.set()  # breaks the sleep; next loop iteration scans now
+            return {"queued": True, "running": True}
+        cfg = cfg_mod.load()
+        actions = scan(cfg, self.state)
+        apply_actions(actions, self.state, cfg)
+        self.state["last_scan"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        return {"queued": False, "running": False, "actions": len(actions)}

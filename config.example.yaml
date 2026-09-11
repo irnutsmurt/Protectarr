@@ -35,8 +35,23 @@ detection:
     - .jar
     - .lnk
     - .ps1
+    - .url
   # Only inspect torrents still downloading (fast; finished seeds are skipped).
   only_active: true
+  # Tier 2 — flag by filename: a text-like companion file (readme/nfo/url) whose
+  # name contains one of these substrings. Never matches media files, so a real
+  # release named "Password.mkv" is safe.
+  blocked_name_keywords:
+    - password
+    - passw0rd
+    - how to download
+  # Tier 3 — archive-with-no-media. OPT-IN and indexer-scoped, because legit
+  # releases (esp. private trackers) are sometimes packed as RARs. Only fires for
+  # an *arr-tracked torrent whose indexer is listed here. Empty list = disabled.
+  archive_detection:
+    enabled: false
+    indexers: []          # e.g. [Limetorrents, 1337x]
+    archive_extensions: [.rar, .zip, .7z, .z01, .zipx, .tar, .gz, .bz2, .arj, .cab]
 
 safety:
   # arr_tracked : reap only torrents a configured arr is tracking (safest;

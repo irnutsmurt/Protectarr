@@ -2,7 +2,7 @@
 {% block content %}
 
 <div class="toolbar">
-  <button class="tool-btn" type="button" onclick="preview()">Dry-run preview</button>
+  {% if cfg.dry_run %}<button class="tool-btn" type="button" onclick="preview()">Dry-run preview</button>{% endif %}
   <button class="tool-btn" type="button" onclick="loadDashboard()">Refresh</button>
 </div>
 

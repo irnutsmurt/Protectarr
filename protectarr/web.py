@@ -18,10 +18,12 @@ from .qbit import QbitClient
 from .arr import ArrClient, ARR_TYPES, build_clients
 from .core import DOWNLOADING_STATES
 
-# Endpoints reachable without a session (login form + static assets).
-PUBLIC_ENDPOINTS = {"login", "static"}
+# Endpoints reachable without a session (login form + static assets + health).
+PUBLIC_ENDPOINTS = {"login", "static", "ping"}
 # JSON endpoints — respond 401 rather than redirecting to the login page.
-API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data"}
+API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data",
+                 "api_index", "api_status", "api_stats", "api_watchlist",
+                 "api_log", "api_preview", "api_command"}
 BASIC_REALM = 'Basic realm="Protectarr", charset="UTF-8"'
 
 # Settings sub-pages: (key, label, icon, description). qBittorrent + the *arr
@@ -47,6 +49,7 @@ def _safe_next(nxt):
 def create_app(service):
     app = Flask(__name__)
     app.secret_key = cfg_mod.ensure_secret_key()
+    cfg_mod.ensure_api_key()  # auto-generate a web API key on first run
     app.permanent_session_lifetime = timedelta(days=30)
     app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax")
 
@@ -236,6 +239,15 @@ def create_app(service):
             if exts:
                 cfg["detection"]["blocked_extensions"] = exts
             cfg["detection"]["only_active"] = f.get("only_active") == "on"
+            # Tier 2 — filename lure keywords
+            cfg["detection"]["blocked_name_keywords"] = [
+                k.strip().lower() for k in
+                f.get("blocked_name_keywords", "").replace(",", "\n").splitlines()
+                if k.strip()]
+            # Tier 3 — indexer-scoped archive detection
+            ad = cfg["detection"].setdefault("archive_detection", {})
+            ad["enabled"] = f.get("archive_enabled") == "on"
+            ad["indexers"] = [i.strip() for i in f.getlist("archive_indexers") if i.strip()]
 
         elif section == "safety":
             cfg["dry_run"] = f.get("dry_run") == "on"
@@ -437,5 +449,75 @@ def create_app(service):
         elif action == "stop":
             service.stop()
         return redirect(url_for("applications"))
+
+    # ---- public HTTP API (v1) — authenticate with the X-Api-Key header ----
+    # (or ?apikey=). Same key shown in Settings > Security. Callers are exempt
+    # from CSRF; forms-auth returns 401 JSON rather than redirecting.
+    @app.route("/ping")
+    def ping():
+        return jsonify(status="ok", app="Protectarr", version=__version__)
+
+    @app.route("/api/v1")
+    def api_index():
+        return jsonify(app="Protectarr", version=__version__, endpoints=[
+            "GET  /api/v1/system/status", "GET  /api/v1/stats",
+            "GET  /api/v1/watchlist", "GET  /api/v1/log?limit=N",
+            "GET  /api/v1/preview",
+            "POST /api/v1/command {name: start|stop|scan|blocklistUpdate}",
+        ])
+
+    @app.route("/api/v1/system/status")
+    def api_status():
+        cfg = cfg_mod.load()
+        st = service.state
+        return jsonify(app="Protectarr", version=__version__,
+                       running=st.get("running", False),
+                       dryRun=bool(cfg.get("dry_run", True)),
+                       lastScan=st.get("last_scan"), lastError=st.get("last_error"))
+
+    @app.route("/api/v1/stats")
+    def api_stats():
+        st = service.state
+        return jsonify(reaped=st.get("stats", {}),
+                       blocklist=st.get("blocklist", {}),
+                       banned=st.get("banned", {}))
+
+    @app.route("/api/v1/watchlist")
+    def api_watchlist():
+        from . import harvest
+        return jsonify(harvest.watchlist(min_fakes=request.args.get("min_fakes", type=int) or 1))
+
+    @app.route("/api/v1/log")
+    def api_log():
+        n = request.args.get("limit", type=int) or 100
+        return jsonify(service.state.get("log", [])[-n:])
+
+    @app.route("/api/v1/preview")
+    def api_preview():
+        try:
+            return jsonify(ok=True, actions=service.preview())
+        except Exception as e:
+            return jsonify(ok=False, message=str(e)), 500
+
+    @app.route("/api/v1/command", methods=["POST"])
+    def api_command():
+        body = request.get_json(silent=True) or {}
+        name = (body.get("name") or request.form.get("name") or "").strip().lower()
+        if name == "start":
+            service.start()
+            return jsonify(ok=True, command="start", running=True)
+        if name == "stop":
+            service.stop()
+            return jsonify(ok=True, command="stop", running=False)
+        if name in ("scan", "scannow"):
+            try:
+                return jsonify(ok=True, command="scan", result=service.scan_now())
+            except Exception as e:
+                return jsonify(ok=False, command="scan", message=str(e)), 502
+        if name == "blocklistupdate":
+            service.update_blocklist(cfg_mod.load(), force=True)
+            return jsonify(ok=True, command="blocklistUpdate")
+        return jsonify(ok=False, message="unknown command; valid: "
+                       "start, stop, scan, blocklistUpdate"), 400
 
     return app

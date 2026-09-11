@@ -160,6 +160,9 @@ textarea { min-height: 70px; font-family: ui-monospace, Menlo, Consolas, monospa
 .row > * { flex: 1; min-width: 160px; }
 .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--text); }
 .check input { width: auto; }
+.checklist { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
+.checklist .check { margin-top: 4px; }
 
 /* ---- buttons ---- */
 .btn {
