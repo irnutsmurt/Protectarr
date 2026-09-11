@@ -22,6 +22,8 @@
     <nav class="nav">
       <a href="{{ url_for('applications') }}" class="{{ 'active' if active=='applications' }}">Applications</a>
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active=='dashboard' }}">Dashboard</a>
+      <a href="{{ url_for('history') }}" class="{{ 'active' if active=='history' }}">History</a>
+      <a href="{{ url_for('watchlist') }}" class="{{ 'active' if active=='watchlist' }}">IP Watchlist</a>
 
       <a href="{{ url_for('settings_index') }}" class="{{ 'active' if active=='settings' }}">Settings</a>
       {% if active == 'settings' %}
@@ -32,8 +34,6 @@
       </div>
       {% endif %}
 
-      <a href="{{ url_for('history') }}" class="{{ 'active' if active=='history' }}">History</a>
-      <a href="{{ url_for('watchlist') }}" class="{{ 'active' if active=='watchlist' }}">Watchlist</a>
       <a href="{{ url_for('system') }}" class="{{ 'active' if active=='system' }}">System</a>
     </nav>
     <div class="sidebar-foot">Protectarr v{{ version }}</div>
