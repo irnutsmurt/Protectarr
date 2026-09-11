@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" action="{{ url_for('save_section', section='logging') }}">
+  <div class="card">
+    <h2>Logging</h2>
+    <div class="body">
+      <div class="row">
+        <div>
+          <label>Log level <span class="hint">(file and the log below)</span></label>
+          <select name="log_level">
+            {% for lvl in log_levels %}
+            <option value="{{ lvl }}" {% if cfg.logging.level == lvl %}selected{% endif %}>{{ lvl | capitalize }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>Console level <span class="hint">(what <code>docker logs</code> shows)</span></label>
+          <select name="log_console_level">
+            {% for lvl in log_levels %}
+            <option value="{{ lvl }}" {% if cfg.logging.console_level == lvl %}selected{% endif %}>{{ lvl | capitalize }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <p class="hint" style="margin-top:0">
+        <b>Debug</b> records every step of every scan: which torrents were inspected or
+        skipped and why, what each detector saw, how the profile judged it, and the
+        air-date decision behind a requeue. Useful while something is behaving oddly,
+        noisy the rest of the time.
+      </p>
+
+      <label class="check"><input type="checkbox" name="log_file_enabled" {% if cfg.logging.file_enabled %}checked{% endif %}> Write a log file</label>
+      <div class="row">
+        <div>
+          <label>Log directory <span class="hint">(blank = alongside your config)</span></label>
+          <input type="text" name="log_path" value="{{ cfg.logging.path }}" placeholder="/config/logs">
+        </div>
+        <div>
+          <label>Keep for <span class="hint">(days; 0 keeps everything)</span></label>
+          <input type="number" name="log_retention" min="0" max="365" value="{{ cfg.logging.retention_days }}">
+        </div>
+      </div>
+      <p class="hint">
+        The file rolls over at midnight, gets renamed with the date and gzipped, and is
+        deleted once it is older than the retention above.
+        <b>Credentials are redacted from every log</b>, so a file here is safe to attach
+        to a GitHub issue.
+      </p>
+    </div>
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+
+<div class="card" style="margin-top:18px">
+  <h2>Log files <span class="hint" style="font-weight:400">- download for a bug report</span></h2>
+  <div class="body">
+    {% if log_files %}
+    <div style="overflow-x:auto">
+      <table class="applist">
+        <thead><tr><th>File</th><th style="text-align:right">Size</th><th>Modified</th><th></th></tr></thead>
+        <tbody>
+          {% for f in log_files %}
+          <tr>
+            <td><code>{{ f.name }}</code>{% if f.name.endswith('.gz') %} <span class="hint">(compressed)</span>{% endif %}</td>
+            <td style="text-align:right">{{ f.size_h }}</td>
+            <td class="hint">{{ f.modified_h }}</td>
+            <td><a class="btn small" href="{{ url_for('download_log', name=f.name) }}">Download</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:14px">
+      <a class="btn small primary" href="{{ url_for('download_all_logs') }}">Download all as .zip</a>
+      <span class="hint" style="margin-left:10px">{{ log_files | length }} file(s), {{ log_total_h }} total.</span>
+    </p>
+    {% else %}
+    <p class="hint">
+      No log files yet.
+      {% if not cfg.logging.file_enabled %}File logging is turned off above.
+      {% else %}One will appear once there is something to write.{% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:18px">
+  <h2>Recent activity <span class="hint" style="font-weight:400">- last {{ log_lines | length }} line(s) in memory</span></h2>
+  <div class="body"><pre class="log">{{ log_lines | join('\n') or "(no activity yet)" }}</pre></div>
+</div>
+{% endblock %}

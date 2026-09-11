@@ -12,6 +12,10 @@ executable can be spotted almost immediately.
 
 import requests
 
+from . import logs
+
+log = logs.get("qbit")
+
 
 class QbitError(Exception):
     pass
@@ -46,14 +50,19 @@ class QbitClient:
         except requests.RequestException as e:
             raise QbitError(f"Connection error: {e}")
         if r.text.strip() != "Ok.":
+            log.error("qBittorrent login rejected for user %r at %s",
+                      self.username, self.base)
             raise QbitError("Login failed (check username/password or Web UI host allowlist)")
+        log.debug("qBittorrent cookie login ok (%s)", self.base)
         self._ready = True
 
     def _get(self, path, **params):
         if not self._ready:
             self.login()
         r = self._s.get(f"{self.base}/api/v2/{path}", params=params, timeout=self.timeout)
+        log.debug("GET %s -> %s (%d bytes)", path, r.status_code, len(r.content or b""))
         if r.status_code in (401, 403):
+            log.warning("qBittorrent returned %s for %s", r.status_code, path)
             if self.api_key:
                 # Bearer keys can't be refreshed by us - surface the failure.
                 raise QbitError(f"Unauthorized (HTTP {r.status_code}) - check the qBittorrent API key")
@@ -108,6 +117,7 @@ class QbitClient:
         if not self._ready:
             self.login()
         r = self._s.post(f"{self.base}/api/v2/{path}", data=data, timeout=self.timeout)
+        log.debug("POST %s -> %s", path, r.status_code)
         r.raise_for_status()
         return r
 

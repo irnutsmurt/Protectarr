@@ -8,6 +8,7 @@
 import sys
 
 from protectarr import config as cfg_mod
+from protectarr import logs
 from protectarr.core import ProtectarrService
 from protectarr.web import create_app
 
@@ -15,21 +16,28 @@ from protectarr.web import create_app
 def main():
     no_web = "--no-web" in sys.argv
     cfg = cfg_mod.load()
+    # Before anything else, so startup problems land in the log too.
+    logs.configure(cfg)
+    log = logs.get()
+    log.info("Protectarr starting: config=%s dry_run=%s log_level=%s",
+             cfg_mod.CONFIG_PATH, cfg.get("dry_run"),
+             cfg.get("logging", {}).get("level", "info"))
 
     service = ProtectarrService()
     service.start()
 
     if no_web or not cfg["web"].get("enabled", True):
-        print("[Protectarr] worker running (no WebUI). Ctrl-C to stop.", flush=True)
+        log.info("Worker running (no WebUI). Ctrl-C to stop.")
         try:
             service._thread.join()
         except KeyboardInterrupt:
+            log.info("Interrupted, stopping.")
             service.stop()
         return
 
     app = create_app(service)
     web = cfg["web"]
-    print(f"[Protectarr] WebUI on http://{web['host']}:{web['port']}", flush=True)
+    log.info("WebUI on http://%s:%s", web["host"], web["port"])
     app.run(host=web["host"], port=int(web["port"]), threaded=True)
 
 

@@ -23,6 +23,9 @@ import time
 import threading
 
 from . import config as cfg_mod
+from . import logs
+
+log = logs.get("harvest")
 
 # progress at/above this counts the peer as a seeder (the likely fake *source*,
 # not an innocent victim still downloading).
@@ -56,7 +59,7 @@ def _save(ledger):
             json.dump(ledger, fh, indent=2)
         os.replace(tmp, path)
     except OSError as e:
-        print(f"[Protectarr] could not persist harvest ledger: {e}", flush=True)
+        log.error("Could not persist harvest ledger to %s: %s", path, e)
 
 
 def _add_unique(lst, val, cap=8):

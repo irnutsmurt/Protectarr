@@ -311,6 +311,34 @@ overwrite it. Use this for one-off bans; use the IP filter above for bulk lists.
 Protectarr replaces that feature. If both are active, qBittorrent's exclusion
 jams the download into a state Protectarr (and the *arr) can't cleanly fail.
 
+## Logging
+
+Protectarr logs every step: which torrents were inspected or skipped and why,
+what each detector saw, how the profile judged it, and the air-date decision
+behind a requeue. Level, retention and log downloads live in
+**Settings -> Logging**.
+
+- **Levels:** `debug`, `info`, `warning`, `error`. The file level and the
+  console level (what `docker logs` shows) are set separately, so the file can
+  be verbose while the console stays readable.
+- **Rotation:** the file rolls over at midnight, is renamed with the date and
+  gzipped, and is deleted once older than `retention_days` (default 14).
+- **Downloads:** each file, or all of them as a `.zip`, straight from the WebUI.
+
+**Credentials are redacted from every log**, both literal values from your
+config and anything that merely looks like a key (`?apikey=`, `qbt_…`,
+`Authorization: Bearer …`). A log file is therefore safe to attach to a GitHub
+issue.
+
+```yaml
+logging:
+  level: info           # debug | info | warning | error
+  console_level: info
+  file_enabled: true
+  path: ""              # blank = alongside your config
+  retention_days: 14
+```
+
 ## Detection scope
 
 Detection is by **file extension** in the torrent's file list - which is exactly
@@ -335,6 +363,7 @@ GET  /api/v1/stats              # reaped totals (by app / by indexer), blocklist
 GET  /api/v1/watchlist          # harvested seeder-IP ledger (?min_fakes=N)
 GET  /api/v1/history            # structured event history (?limit=N&show=all|live|dry)
 GET  /api/v1/log?limit=N        # recent activity log lines
+GET  /api/v1/logfiles           # log files available to download
 GET  /api/v1/preview            # dry-run scan - what would be reaped right now
 POST /api/v1/command            # {"name": "start|stop|scan|blocklistUpdate"}
 ```

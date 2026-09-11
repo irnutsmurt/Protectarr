@@ -90,6 +90,19 @@ DEFAULTS = {
     },
     "poll_interval": 20,
     "dry_run": True,
+    # Logging. The file is rotated at midnight, gzipped, and kept for
+    # retention_days before deletion. `level` applies to the file and the WebUI
+    # log; `console_level` is what goes to stdout (what `docker logs` shows), so
+    # the file can be verbose while the console stays readable.
+    # Credentials are redacted from every sink, so a log is safe to attach to a
+    # GitHub issue.
+    "logging": {
+        "level": "info",           # debug | info | warning | error
+        "console_level": "info",
+        "file_enabled": True,
+        "path": "",                # blank = <config dir>/logs
+        "retention_days": 14,
+    },
     # Seeder-IP harvest: on each reap, enumerate the fake's swarm from
     # qBittorrent and log the peers to an observation ledger (harvest.json) for
     # pattern-spotting. Passive - collects data only, never bans on its own.

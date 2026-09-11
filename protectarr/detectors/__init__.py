@@ -16,12 +16,15 @@ here would bake a media-library assumption into the observation itself, which is
 the thing that stops profiles from ever working properly.
 """
 
+from .. import logs
 from ._util import finding  # noqa: F401 - re-exported for callers and tests
 from . import extension, filenames, archives
 
 # Order matters only for which finding ends up "decisive" when several fire and
 # tie on severity - cheapest and most precise first.
 DETECTORS = (extension, filenames, archives)
+
+log = logs.get("detectors")
 
 
 def run(files, det, ctx):
@@ -41,5 +44,5 @@ def run(files, det, ctx):
             out.extend(mod.detect(files, det, ctx) or [])
         except Exception as e:  # noqa: BLE001 - one broken detector must not
             # take down the scan; the others still get their say.
-            print(f"[Protectarr] detector {mod.__name__} failed: {e}", flush=True)
+            log.exception("Detector %s failed", mod.__name__)
     return out

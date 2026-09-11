@@ -12,6 +12,10 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
+from . import logs
+
+log = logs.get("arr")
+
 # Release titles differ only by separator between the download client's name for
 # a torrent and the indexer's raw release name, so compare them on words alone.
 _SEPARATORS = re.compile(r"[^a-z0-9]+")
@@ -145,7 +149,7 @@ class ArrClient:
                 out[dlid] = rec
         return out
 
-    def fail(self, queue_id):
+    def fail(self, queue_id):  # noqa: D401
         """Remove from client + blocklist, and DON'T let the arr auto-redownload
         (skipRedownload). We decide whether to requeue ourselves, based on the
         air/release date - see `airdate_status` and the caller."""
@@ -155,6 +159,7 @@ class ArrClient:
                     "skipRedownload": "true"},
             timeout=self.timeout,
         )
+        log.debug("%s DELETE queue/%s -> %s", self.name, queue_id, r.status_code)
         r.raise_for_status()
 
     def search(self, record):
@@ -169,6 +174,8 @@ class ArrClient:
             json={"name": cmd, ids_field: [target]},
             timeout=self.timeout,
         )
+        log.debug("%s command %s %s=%s -> %s", self.name, cmd, ids_field,
+                  target, r.status_code)
         r.raise_for_status()
         return True
 
@@ -240,6 +247,8 @@ class ArrClient:
             return None
 
         for attempt in range(retries):
+            log.debug("%s blocklist check, attempt %d/%d", self.name,
+                      attempt + 1, retries)
             r = self._s.get(self._url("blocklist"),
                             params={"pageSize": 50, "sortKey": "date",
                                     "sortDirection": "descending"},

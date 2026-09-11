@@ -1,17 +1,21 @@
 """Flask WebUI: Servarr-style settings page + Forms login server."""
 
+import io
+import os
 import time
 import hmac
+import zipfile
 import base64
 import secrets
 import threading
 from datetime import timedelta
 
 from flask import (Flask, render_template, request, redirect, url_for,
-                   jsonify, flash, session, Response, g)
+                   jsonify, flash, session, Response, send_file, g)
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from . import config as cfg_mod
+from . import logs
 from . import __version__
 from .netauth import resolve_client_ip, is_local
 from .qbit import QbitClient
@@ -23,7 +27,8 @@ PUBLIC_ENDPOINTS = {"login", "static", "ping"}
 # JSON endpoints - respond 401 rather than redirecting to the login page.
 API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data",
                  "api_index", "api_status", "api_stats", "api_watchlist",
-                 "api_log", "api_preview", "api_command", "api_history"}
+                 "api_log", "api_preview", "api_command", "api_history",
+                 "api_logfiles"}
 BASIC_REALM = 'Basic realm="Protectarr", charset="UTF-8"'
 
 # Settings sub-pages: (key, label, icon, description). qBittorrent + the *arr
@@ -34,6 +39,7 @@ SETTINGS_SECTIONS_FULL = [
     ("blocklist", "IP Blocklist", "", "Bulk peer IP filter applied to qBittorrent (BT_BlockLists)."),
     ("bannedips", "Banned IPs", "", "A small hand-curated list of banned IPs (API only)."),
     ("security", "Security", "", "Authentication for this WebUI."),
+    ("logging", "Logging", "", "Log level, daily rotation and retention, and log downloads."),
 ]
 SETTINGS_SECTIONS = [(k, l, i) for k, l, i, _ in SETTINGS_SECTIONS_FULL]
 SETTINGS_KEYS = {k for k, *_ in SETTINGS_SECTIONS_FULL}
@@ -207,6 +213,7 @@ def create_app(service):
             version=__version__, config_path=cfg_mod.CONFIG_PATH,
             user=session.get("user"), basic_user=getattr(g, "auth_user", None),
             api_key_from_env=cfg_mod.api_key_is_from_env(),
+            log_lines=logs.ring(), log_levels=logs.LEVELS,
             **ctx)
 
     @app.route("/")
@@ -258,7 +265,16 @@ def create_app(service):
     def settings_page(section):
         if section not in SETTINGS_KEYS:
             return redirect(url_for("settings_index"))
-        return page(f"s_{section}.html", active="settings", active_sub=section)
+        extra = {}
+        if section == "logging":
+            files = logs.list_files(cfg_mod.load())
+            for f in files:
+                f["size_h"] = _human_size(f["size"])
+                f["modified_h"] = time.strftime("%Y-%m-%d %H:%M:%S",
+                                                time.localtime(f["modified"]))
+            extra = {"log_files": files,
+                     "log_total_h": _human_size(sum(f["size"] for f in files))}
+        return page(f"s_{section}.html", active="settings", active_sub=section, **extra)
 
     @app.route("/settings/<section>/save", methods=["POST"])
     def save_section(section):
@@ -313,6 +329,17 @@ def create_app(service):
                 f.get("bip_ips", "").replace(",", "\n").splitlines() if x.strip()]
             bip["merge_existing"] = f.get("bip_merge") == "on"
 
+        elif section == "logging":
+            lg = cfg.setdefault("logging", {})
+            for key, field in (("level", "log_level"),
+                               ("console_level", "log_console_level")):
+                val = (f.get(field) or "").strip().lower()
+                if val in logs.LEVELS:
+                    lg[key] = val
+            lg["file_enabled"] = f.get("log_file_enabled") == "on"
+            lg["path"] = f.get("log_path", "").strip()
+            lg["retention_days"] = max(0, int(f.get("log_retention", 14) or 0))
+
         elif section == "security":
             auth = cfg["web"].setdefault("auth", {})
             auth["method"] = f.get("auth_method", "none")
@@ -324,6 +351,8 @@ def create_app(service):
                 f.get("trusted_proxies", "").replace(",", "\n").splitlines() if c.strip()]
 
         cfg_mod.save(cfg)
+        if section == "logging":
+            logs.configure(cfg)   # new level/rotation takes effect immediately
         service.reload()
         # Optional "…and apply/update now" - runs against the just-saved config
         # so the action reflects the current form values (not stale ones).
@@ -483,6 +512,32 @@ def create_app(service):
             flash("New API key generated. The previous key no longer works.")
         return redirect(url_for("settings_page", section="security"))
 
+    @app.route("/logs/download/<path:name>")
+    def download_log(name):
+        # resolve_file validates by membership in the real listing, so a
+        # traversal attempt is simply not in the set.
+        path = logs.resolve_file(cfg_mod.load(), name)
+        if not path:
+            return Response("No such log file", 404)
+        return send_file(path, as_attachment=True, download_name=name)
+
+    @app.route("/logs/download-all")
+    def download_all_logs():
+        cfg = cfg_mod.load()
+        files = logs.list_files(cfg)
+        if not files:
+            return Response("No log files", 404)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for entry in files:
+                path = logs.resolve_file(cfg, entry["name"])
+                if path:
+                    z.write(path, arcname=entry["name"])
+        buf.seek(0)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return send_file(buf, mimetype="application/zip", as_attachment=True,
+                         download_name=f"protectarr-logs-{stamp}.zip")
+
     @app.route("/bannedips/apply", methods=["POST"])
     def bannedips_apply():
         service.apply_banned_ips(cfg_mod.load())
@@ -510,6 +565,7 @@ def create_app(service):
             "GET  /api/v1/system/status", "GET  /api/v1/stats",
             "GET  /api/v1/watchlist", "GET  /api/v1/log?limit=N",
             "GET  /api/v1/history?limit=N&show=all|live|dry",
+            "GET  /api/v1/logfiles",
             "GET  /api/v1/preview",
             "POST /api/v1/command {name: start|stop|scan|blocklistUpdate}",
         ])
@@ -543,10 +599,14 @@ def create_app(service):
             (request.args.get("show") or "all").lower())
         return jsonify(events.read(limit=n, dry_run=dry))
 
+    @app.route("/api/v1/logfiles")
+    def api_logfiles():
+        return jsonify(logs.list_files(cfg_mod.load()))
+
     @app.route("/api/v1/log")
     def api_log():
         n = request.args.get("limit", type=int) or 100
-        return jsonify(service.state.get("log", [])[-n:])
+        return jsonify(logs.ring(n))
 
     @app.route("/api/v1/preview")
     def api_preview():

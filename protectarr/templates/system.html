@@ -23,6 +23,6 @@
 
 <div class="card">
   <h2>Recent activity</h2>
-  <div class="body"><pre class="log">{{ state.log | join('\n') or "(no activity yet)" }}</pre></div>
+  <div class="body"><pre class="log">{{ log_lines | join('\n') or "(no activity yet)" }}</pre></div>
 </div>
 {% endblock %}

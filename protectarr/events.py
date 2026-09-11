@@ -28,6 +28,7 @@ import threading
 
 from . import config as cfg_mod
 
+from . import logs
 from .detectors import finding  # noqa: F401 - re-export; construction lives with
                                # the detectors, which own what a Finding is.
 
@@ -37,6 +38,8 @@ from .detectors import finding  # noqa: F401 - re-export; construction lives wit
 # 3: detectors report everything they see, so events carry the whole `findings`
 #    list and policy points at the decisive one by index.
 # `normalize()` reads every version, so nothing needs migrating.
+log = logs.get("events")
+
 SCHEMA_VERSION = 3
 MAX_BYTES = 5 * 1024 * 1024
 KEEP_FILES = 3                  # events.jsonl + .1 + .2
@@ -88,7 +91,7 @@ def record(event):
             with open(path, "a") as fh:
                 fh.write(json.dumps(event, separators=(",", ":")) + "\n")
         except OSError as e:
-            print(f"[Protectarr] could not persist event: {e}", flush=True)
+            log.error("Could not persist event to %s: %s", path, e)
     return event
 
 
