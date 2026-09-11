@@ -104,6 +104,64 @@ class QbitClient:
             })
         return out
 
+    def _post(self, path, **data):
+        if not self._ready:
+            self.login()
+        r = self._s.post(f"{self.base}/api/v2/{path}", data=data, timeout=self.timeout)
+        r.raise_for_status()
+        return r
+
+    # ---- partial-content probing (see scripts/probe_spike.py) ----
+    # Reaching a file's header means steering qBittorrent to fetch the piece
+    # that contains it, then reading the bytes off disk. These are the pieces of
+    # API that make that possible.
+
+    def torrent(self, torrent_hash):
+        """Single torrent's info record, or None."""
+        for t in self._get("torrents/info", hashes=torrent_hash).json():
+            if (t.get("hash") or "").lower() == torrent_hash.lower():
+                return t
+        return None
+
+    def properties(self, torrent_hash):
+        """Extended properties: piece_size, pieces_num, pieces_have, save_path."""
+        return self._get("torrents/properties", hash=torrent_hash).json()
+
+    def piece_states(self, torrent_hash):
+        """Per-piece state: 0 unavailable, 1 downloading, 2 downloaded.
+
+        A piece only reaches 2 after its hash verifies. That does NOT promise
+        the bytes are flushed somewhere another process can read yet, so a
+        reader still has to tolerate a short or zero-filled result and retry.
+        """
+        return self._get("torrents/pieceStates", hash=torrent_hash).json()
+
+    def set_file_priority(self, torrent_hash, file_ids, priority):
+        """Priority for specific files: 0 skip, 1 normal, 6 high, 7 maximal."""
+        ids = "|".join(str(i) for i in file_ids)
+        if not ids:
+            return
+        self._post("torrents/filePrio", hash=torrent_hash, id=ids,
+                   priority=int(priority))
+
+    def set_sequential(self, torrent_hash, on):
+        """qBittorrent only exposes a toggle, so read the current value first."""
+        t = self.torrent(torrent_hash)
+        if t is None or bool(t.get("seq_dl")) == bool(on):
+            return False
+        self._post("torrents/toggleSequentialDownload", hashes=torrent_hash)
+        return True
+
+    def set_first_last_prio(self, torrent_hash, on):
+        """Also a toggle. Note this is a torrent-level flag; whether it boosts
+        the first piece of every enabled file or only the first piece of the
+        torrent is the thing the spike exists to find out."""
+        t = self.torrent(torrent_hash)
+        if t is None or bool(t.get("f_l_piece_prio")) == bool(on):
+            return False
+        self._post("torrents/toggleFirstLastPiecePrio", hashes=torrent_hash)
+        return True
+
     def categories(self):
         return list(self._get("torrents/categories").json().keys())
 
