@@ -118,7 +118,7 @@ docker compose up -d --build     # uncomment `build: .` in docker-compose.yml
 Open the WebUI at `http://<host>:8090` to configure connections, test them, and
 watch a live dry-run preview.
 
-Two Docker gotchas:
+Three Docker gotchas:
 
 - **Port clash:** if qBittorrent already uses `8090` on the same host, publish
   Protectarr on another port, e.g. `-> "8099:8090"`.
@@ -126,6 +126,20 @@ Two Docker gotchas:
   addresses reachable *from inside the container* - use the host's LAN IP
   (`http://192.168.1.100:8090`), **not** `localhost`, which points at the
   Protectarr container itself.
+- **Only if you turn on the Content Probe:** it has to read the files
+  qBittorrent is writing, so mount the download directory into Protectarr as
+  well, read-only. Mounting it at the *same path* qBittorrent uses means no path
+  mapping is needed:
+
+  ```yaml
+  volumes:
+    - ./config:/config
+    - /mnt/downloads:/downloads:ro    # qBittorrent has: /mnt/downloads:/downloads
+  ```
+
+  Read-only is deliberate and sufficient: the probe only ever reads headers, and
+  it steers qBittorrent through the API, never through the filesystem. Nothing
+  else in Protectarr needs this mount.
 
 ### Bare Python
 
@@ -171,7 +185,12 @@ qBittorrent **≥ 5.2.0** supports API keys (Web UI → Options → Web UI → g
 key, `qbt_…`). Set `qbittorrent.api_key` and it's used instead of the
 username/password. Older versions fall back to the Web UI username/password.
 
-### Safety modes
+### Reaping rules
+
+Settings → **Reaping Rules** decides what Protectarr is allowed to touch. The
+allowed categories and tags are checkboxes populated from qBittorrent itself, so
+there is no name to mistype; anything already saved stays on the list even if
+qBittorrent is unreachable or the category has since been deleted.
 
 | mode          | reaps                                                                 |
 |---------------|-----------------------------------------------------------------------|
@@ -366,10 +385,72 @@ logging:
 
 ## Detection scope
 
-Detection is by **file extension** in the torrent's file list - which is exactly
-how these fakes are named. It does **not** catch a payload disguised with a
-genuine media extension (an `.mkv` that's actually a PE binary); that needs
-content/magic-byte inspection and a partial download.
+Two lanes, kept separate because they cost wildly different amounts.
+
+The **fast lane** is always on and is what Protectarr is for: extension, lure
+filename and archive-structure checks read the torrent's *file list*, which
+arrives with the metadata. No bandwidth, a verdict in seconds, and it is exactly
+how these fakes are named today.
+
+The **content probe** is opt-in and closes the one gap the fast lane cannot see:
+a payload wearing a genuine `.mkv` or `.mp4` extension, where nothing in the
+metadata is lying. See below.
+
+### Content probe (opt-in)
+
+Settings → **Content Probe**. Off by default.
+
+It downloads the **first piece of one file** - a few MB out of many GB, typically
+well under 1% of the torrent - and asks whether those bytes really are the format
+the extension claims. A 4 MiB piece on a 3.8 GB release is a verdict for 0.1% of
+the download.
+
+The checking is *positive* validation: "does this parse as Matroska?", not "is
+this on a list of bad magic numbers". One question that stays true, rather than a
+list that grows forever and that attackers iterate against.
+
+Three answers, and only one of them does anything:
+
+| answer  | meaning                                        | what happens |
+|---------|------------------------------------------------|--------------|
+| VALID   | the bytes match the extension                  | nothing      |
+| INVALID | the bytes are confidently something a media file could never be | a finding, judged by the usual profile and reaping rules |
+| UNKNOWN | anything else                                  | nothing      |
+
+UNKNOWN is deliberately wide. An unreadable file, a sparse file that reads back
+as zeros, an unrecognised header, a budget that ran out, and an `.mkv` that turns
+out to be a genuine AVI all land here and all produce silence. Over-caution costs
+a missed fake; the opposite costs somebody's real release.
+
+**Requirements and costs, plainly:**
+
+- Protectarr must be able to **read the files qBittorrent writes**. In Docker
+  that means mounting the download directory into Protectarr too (read-only is
+  enough - see the Docker gotchas above), and adding a path mapping if the two
+  see it at different paths. The settings page has a *Test against current
+  downloads* button that tells you whether it can actually see them, so this is
+  not something you have to find out by waiting for nothing to happen.
+- Fetching a piece on purpose means briefly setting the torrent's other files to
+  "do not download" and turning on sequential download. Every change is written
+  to `probe.json` **before** it is made and restored afterwards - including on
+  the next start if Protectarr is killed mid-probe, and including when the probe
+  lane has since been turned off.
+- Steering only influences which piece qBittorrent picks **next**; it cannot
+  recall one already in flight. On a torrent crawling from a single seed the
+  piece may be twenty minutes away, so Protectarr does not spend the budget on
+  it. Fakes are heavily seeded by design, so the torrents that matter are the
+  ones this works best on.
+- The probe only runs on torrents the fast lane had nothing to say about, and
+  only on torrents your reaping rules would let it act on. A scan with a fake
+  already queued for removal reaps it first and probes on the next pass.
+
+Set `steer: false` to keep the checking but never touch a setting - it then only
+reads pieces the torrent already happens to have, which costs nothing at all and
+still resolves a surprising number of torrents.
+
+Honest calibration: the blatant `.exe` in a season pack is what people hit today,
+and the fast lane already kills it for free. This lane is hardening against the
+next move, not a fix for something broken.
 
 ## HTTP API
 

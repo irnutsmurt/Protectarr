@@ -149,6 +149,12 @@ def normalize(ev):
 
 # ---- rendering ----
 
+def _probe_label(detected):
+    """Deferred so importing the history does not drag in the probe lane."""
+    from .probe.validators import label
+    return label(detected)
+
+
 _REASON_TEXT = {
     "extension_match": lambda e: (
         f"Monitored extension {e.get('extension', '')}".rstrip()),
@@ -157,11 +163,9 @@ _REASON_TEXT = {
         f"Monitored extension {e.get('extension', '')}".rstrip()),
     "lure_filename": lambda e: "Suspicious lure filename",
     "archive_no_media": lambda e: "Archive containing no media for this app",
-    # Written by the probe engine once it lands; listed now to prove a new
-    # detector costs one line here and no schema change.
     "content_type_mismatch": lambda e: (
-        f"Claims {e.get('claimed_type', '?')} but contains "
-        f"{e.get('detected_type', 'unrecognised')} data"),
+        f"Claims to be {e.get('claimed_type', 'media')} but the file is "
+        f"{_probe_label(e.get('detected_type'))}"),
 }
 
 _REQUEUE_TEXT = {

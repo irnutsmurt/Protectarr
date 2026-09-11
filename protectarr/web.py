@@ -10,6 +10,7 @@ import secrets
 import threading
 from datetime import timedelta
 
+import requests
 from flask import (Flask, render_template, request, redirect, url_for,
                    jsonify, flash, session, Response, send_file, g)
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -18,7 +19,8 @@ from . import config as cfg_mod
 from . import logs
 from . import __version__
 from .netauth import resolve_client_ip, is_local
-from .qbit import QbitClient
+from . import probe
+from .qbit import QbitClient, QbitError
 from .arr import ArrClient, ARR_TYPES, build_clients
 from .core import DOWNLOADING_STATES
 
@@ -28,14 +30,15 @@ PUBLIC_ENDPOINTS = {"login", "static", "ping"}
 API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data",
                  "api_index", "api_status", "api_stats", "api_watchlist",
                  "api_log", "api_preview", "api_command", "api_history",
-                 "api_logfiles"}
+                 "api_logfiles", "qbit_taxonomy", "probe_check"}
 BASIC_REALM = 'Basic realm="Protectarr", charset="UTF-8"'
 
 # Settings sub-pages: (key, label, icon, description). qBittorrent + the *arr
 # apps live on their own top-level "Applications" page, not under Settings.
 SETTINGS_SECTIONS_FULL = [
     ("detection", "Monitored Extensions", "", "File extensions that flag a download for removal (e.g. .exe), and scan scope."),
-    ("safety", "Safety", "", "Which torrents may be reaped, and air-date-aware requeue."),
+    ("safety", "Reaping Rules", "", "Which torrents may be reaped, and air-date-aware requeue."),
+    ("probe", "Content Probe", "", "Check a media file really is media, from its first piece. Off by default."),
     ("blocklist", "IP Blocklist", "", "Bulk peer IP filter applied to qBittorrent (BT_BlockLists)."),
     ("bannedips", "Banned IPs", "", "A small hand-curated list of banned IPs (API only)."),
     ("security", "Security", "", "Authentication for this WebUI."),
@@ -43,6 +46,16 @@ SETTINGS_SECTIONS_FULL = [
 ]
 SETTINGS_SECTIONS = [(k, l, i) for k, l, i, _ in SETTINGS_SECTIONS_FULL]
 SETTINGS_KEYS = {k for k, *_ in SETTINGS_SECTIONS_FULL}
+
+
+def _parse_mappings(text):
+    """One `qbittorrent/path = local/path` per line -> the config form."""
+    out = []
+    for line in (text or "").splitlines():
+        src, sep, dst = line.partition("=")
+        if sep and src.strip() and dst.strip():
+            out.append({"from": src.strip(), "to": dst.strip()})
+    return out
 
 
 def _human_size(n):
@@ -308,12 +321,33 @@ def create_app(service):
             cfg["dry_run"] = f.get("dry_run") == "on"
             s = cfg["safety"]
             s["mode"] = f.get("safety_mode", "arr_tracked")
+            # Checkbox lists now, sourced from qBittorrent. The page always
+            # renders a box for an already-saved value, even one qBittorrent no
+            # longer reports, so saving cannot quietly drop a choice made when
+            # the category still existed.
             s["allowed_categories"] = [c.strip() for c in
-                f.get("allowed_categories", "").replace(",", "\n").splitlines() if c.strip()]
-            s["allowed_tags"] = [c.strip() for c in
-                f.get("allowed_tags", "").replace(",", "\n").splitlines() if c.strip()]
+                                       f.getlist("allowed_categories") if c.strip()]
+            s["allowed_tags"] = [t.strip() for t in
+                                 f.getlist("allowed_tags") if t.strip()]
             s["requeue_after_airdate"] = f.get("requeue_after_airdate") == "on"
             s["airdate_grace_hours"] = max(0, int(f.get("airdate_grace_hours", 0) or 0))
+
+        elif section == "probe":
+            pr = cfg["detection"].setdefault("probe", {})
+            pr["enabled"] = f.get("probe_enabled") == "on"
+            pr["steer"] = f.get("probe_steer") == "on"
+            pr["path_mappings"] = _parse_mappings(f.get("probe_mappings", ""))
+            # Clamped rather than trusted: these bound how long a scan can block
+            # and how much bandwidth a probe may spend.
+            for key, field, lo, hi in (("max_torrents_per_scan", "probe_max", 0, 20),
+                                       ("torrent_timeout_seconds", "probe_timeout", 5, 900),
+                                       ("scan_budget_seconds", "probe_budget", 5, 1800),
+                                       ("min_speed_kib", "probe_minspeed", 0, 1048576),
+                                       ("recheck_minutes", "probe_recheck", 1, 1440)):
+                try:
+                    pr[key] = min(hi, max(lo, int(float(f.get(field) or 0))))
+                except (TypeError, ValueError):
+                    pass
 
         elif section == "blocklist":
             bl = cfg.setdefault("ip_blocklist", {})
@@ -484,6 +518,85 @@ def create_app(service):
                         verify_ssl=d.get("verify_ssl", True))
         ok, msg = qb.test()
         return jsonify(ok=ok, message=msg)
+
+    @app.route("/qbit/taxonomy", endpoint="qbit_taxonomy")
+    def qbit_taxonomy():
+        """Categories and tags as qBittorrent currently defines them.
+
+        Feeds the Reaping Rules pickers so nobody has to retype a category name
+        and get it subtly wrong. A failure here is reported rather than papered
+        over: the page keeps whatever is already saved, because an unreachable
+        qBittorrent is not evidence that a category stopped existing.
+        """
+        qc = cfg_mod.load()["qbittorrent"]
+        try:
+            qb = QbitClient(qc["url"], qc.get("username", ""), qc.get("password", ""),
+                            api_key=qc.get("api_key", ""),
+                            verify_ssl=qc.get("verify_ssl", True))
+            qb.login()
+            cats = [{"name": name, "meta": (rec or {}).get("savePath") or ""}
+                    for name, rec in (qb.categories() or {}).items()]
+            tags = [{"name": t, "meta": ""} for t in (qb.tags() or []) if t]
+        except (QbitError, requests.RequestException, ValueError) as e:
+            return jsonify(ok=False, message=str(e))
+        return jsonify(ok=True, data={"categories": cats, "tags": tags})
+
+    @app.route("/probe/check", methods=["POST"], endpoint="probe_check")
+    def probe_check():
+        """Dry-run a path mapping against whatever is downloading right now.
+
+        The probe lane's one hard prerequisite is that this process can read the
+        files qBittorrent is writing, and when it cannot the symptom is simply
+        that nothing ever happens. This turns that into an answer, and it takes
+        the mapping from the form so it can be tested before it is saved.
+        """
+        mappings = probe.paths.parse_mappings(
+            _parse_mappings((request.json or {}).get("mappings", "")))
+        cfg = cfg_mod.load()
+        qc = cfg["qbittorrent"]
+        try:
+            qb = QbitClient(qc["url"], qc.get("username", ""), qc.get("password", ""),
+                            api_key=qc.get("api_key", ""),
+                            verify_ssl=qc.get("verify_ssl", True))
+            qb.login()
+            torrents = qb.torrents(state_filter="downloading")
+        except (QbitError, requests.RequestException, ValueError) as e:
+            return jsonify(ok=False, message=f"Could not reach qBittorrent: {e}")
+
+        rows, readable = [], 0
+        for t in torrents[:25]:
+            try:
+                files = qb.files(t.get("hash", ""))
+            except requests.RequestException:
+                continue
+            targets = probe.targets(files)
+            if not targets:
+                continue
+            _, entry = targets[0]
+            local = probe.paths.local_path(t, entry, len(files) == 1, mappings)
+            read = probe.paths.read_head(local, 64)
+            # "Not readable" and "not downloaded yet" are different problems and
+            # only the first one is the mapping's fault.
+            exists = os.path.exists(local) or os.path.exists(
+                local + probe.paths.INCOMPLETE_SUFFIX)
+            if exists:
+                readable += 1
+            rows.append({"torrent": t.get("name", ""), "file": entry.get("name", ""),
+                         "qbit_path": t.get("content_path") or t.get("save_path") or "",
+                         "local_path": local, "found": exists,
+                         "note": "" if exists else read.why})
+            if len(rows) >= 8:
+                break
+
+        if not rows:
+            return jsonify(ok=True, data={"rows": [], "message":
+                           "Nothing is downloading with a media file to check. "
+                           "Start a download and try again."})
+        msg = (f"{readable} of {len(rows)} checked file(s) are readable here."
+               if readable else
+               "None of the checked files are readable here - the probe lane "
+               "would find nothing. Add or correct a path mapping below.")
+        return jsonify(ok=True, data={"rows": rows, "message": msg})
 
     @app.route("/test/arr", methods=["POST"], endpoint="test_arr")
     def test_arr():

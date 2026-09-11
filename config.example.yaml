@@ -52,6 +52,30 @@ detection:
     enabled: false
     indexers: []          # e.g. [Limetorrents, 1337x]
     archive_extensions: [.rar, .zip, .7z, .z01, .zipx, .tar, .gz, .bz2, .arj, .cab]
+  # Tier 4 - content probe. Everything above reads the torrent's file list, so
+  # it cannot see a payload wearing a real .mkv/.mp4 extension. This downloads
+  # the first piece of one file (a few MB, not the torrent) and checks the bytes
+  # are the format the name claims. OFF by default: it costs bandwidth, it needs
+  # to read qBittorrent's download directory, and it briefly changes per-file
+  # priorities (always restored, and restored on the next start if Protectarr is
+  # killed mid-probe). A file it cannot read, cannot recognise, or runs out of
+  # budget on produces NO finding - never a removal.
+  probe:
+    enabled: false
+    # Protectarr must be able to read the files qBittorrent writes. Map
+    # qBittorrent's path to the path Protectarr sees. Omit if they match.
+    path_mappings: []
+    #  - {from: /downloads, to: /downloads}
+    # false = only ever read pieces the torrent already happens to have. Costs
+    # nothing and changes no settings, but resolves fewer torrents.
+    steer: true
+    max_torrents_per_scan: 1      # how many torrents may be steered per scan
+    torrent_timeout_seconds: 120  # give up on one torrent after this
+    scan_budget_seconds: 120      # ...and on the whole probe pass after this
+    # Steering only influences the NEXT piece qBittorrent picks, so a torrent
+    # this slow will not produce the piece before the budget runs out.
+    min_speed_kib: 20
+    recheck_minutes: 15           # don't re-probe the same torrent sooner
 
 safety:
   # arr_tracked : reap only torrents a configured arr is tracking (safest;

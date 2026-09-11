@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block content %}
+{% set pr = cfg.detection.probe %}
+<form method="post" action="{{ url_for('save_section', section='probe') }}">
+  <div class="card">
+    <h2>Content Probe <span class="hint" style="font-weight:400">- advanced, opt-in</span></h2>
+    <div class="body">
+      <p class="hint" style="margin-bottom:12px">
+        Everything else Protectarr does reads the torrent's <i>file list</i>, which is why it
+        costs no bandwidth and answers in seconds. That cannot catch a payload wearing a real
+        <code>.mkv</code> or <code>.mp4</code> extension, because nothing in the metadata is lying.
+        The probe downloads the <b>first piece of one file</b> - a few MB out of many GB - and checks
+        the bytes really are the format the name claims.
+      </p>
+      <p class="hint" style="margin-bottom:12px">
+        It only runs on torrents the fast checks had nothing to say about, and only on torrents your
+        reaping rules would let Protectarr act on. A file that cannot be read, cannot be recognised,
+        or runs out of budget produces <b>no finding</b> - never a removal.
+      </p>
+      <label class="check"><input type="checkbox" name="probe_enabled" {% if pr.enabled %}checked{% endif %}>
+        Enable the content probe</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Path Mapping</h2>
+    <div class="body">
+      <p class="hint" style="margin-bottom:12px">
+        Protectarr has to be able to <b>read the files qBittorrent is writing</b>. If they run in
+        different containers, mount the download directory into Protectarr too and map qBittorrent's
+        path to the path Protectarr sees. One per line, <code>qbittorrent path = protectarr path</code>.
+        Leave empty if both see the same paths.
+      </p>
+      <textarea name="probe_mappings" id="probe_mappings" rows="4"
+        placeholder="/downloads = /downloads">{% for m in pr.path_mappings %}{{ m['from'] if m is mapping else m }}{% if m is mapping %} = {{ m['to'] }}{% endif %}
+{% endfor %}</textarea>
+      <button type="button" class="btn" style="margin-top:10px" onclick="checkPaths()">Test against current downloads</button>
+      <p id="probe_msg" class="hint" style="margin-top:8px"></p>
+      <div id="probe_rows"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Budget</h2>
+    <div class="body">
+      <p class="hint" style="margin-bottom:12px">
+        Reading a piece the torrent already happens to have is free, and always allowed. Fetching one
+        on purpose means briefly switching off the torrent's other files and turning on sequential
+        download - always restored afterwards, and restored on the next start if Protectarr is killed
+        mid-probe. These limits bound what that is allowed to cost.
+      </p>
+      <label class="check"><input type="checkbox" name="probe_steer" {% if pr.steer %}checked{% endif %}>
+        Allowed to fetch a piece on purpose <span class="hint">(uncheck to only ever read what is already downloaded)</span></label>
+      <div class="row" style="margin-top:12px">
+        <div><label>Torrents steered per scan</label>
+          <input type="number" name="probe_max" min="0" max="20" value="{{ pr.max_torrents_per_scan }}"></div>
+        <div><label>Seconds per torrent</label>
+          <input type="number" name="probe_timeout" min="5" max="900" value="{{ pr.torrent_timeout_seconds }}"></div>
+      </div>
+      <div class="row">
+        <div><label>Seconds per scan, all torrents</label>
+          <input type="number" name="probe_budget" min="5" max="1800" value="{{ pr.scan_budget_seconds }}"></div>
+        <div><label>Minutes before re-probing a torrent</label>
+          <input type="number" name="probe_recheck" min="1" max="1440" value="{{ pr.recheck_minutes }}"></div>
+      </div>
+      <label>Minimum download speed to bother steering (KiB/s)</label>
+      <input type="number" name="probe_minspeed" min="0" value="{{ pr.min_speed_kib }}" style="max-width:160px">
+      <p class="hint" style="margin-top:6px">
+        Steering only influences which piece qBittorrent picks <b>next</b>; it cannot recall one
+        already in flight. On a torrent crawling from one seed the piece may be twenty minutes away,
+        so the budget is better not spent. Fakes are heavily seeded by design - the attacker wants
+        downloads - so the torrents that matter are the ones this works best on.
+      </p>
+      <p class="hint" style="margin-top:10px">
+        A scan that has a fake queued for removal reaps it first and probes on the next pass, so
+        probing never delays a removal the fast checks already decided on.
+      </p>
+    </div>
+  </div>
+
+  <button type="submit" class="btn primary">Save</button>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function checkPaths() {
+  var msg = document.getElementById('probe_msg');
+  var rows = document.getElementById('probe_rows');
+  msg.textContent = 'checking…'; msg.style.color = 'var(--text-dim)';
+  rows.innerHTML = '';
+  fetch('{{ url_for("probe_check") }}', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.CSRF || ''},
+    body: JSON.stringify({mappings: document.getElementById('probe_mappings').value})
+  }).then(function(r){ return r.json(); }).then(function(r){
+    if (!r.ok) { msg.textContent = '✗ ' + r.message; msg.style.color = 'var(--danger)'; return; }
+    var any = (r.data.rows || []).some(function(x){ return x.found; });
+    msg.textContent = (any ? '✓ ' : '✗ ') + r.data.message;
+    msg.style.color = any ? 'var(--accent)' : 'var(--danger)';
+    rows.innerHTML = (r.data.rows || []).map(function(x){
+      return '<p class="hint" style="margin:8px 0 0">'
+        + (x.found ? '✓ ' : '✗ ') + '<b>' + esc(x.torrent) + '</b><br>'
+        + 'qBittorrent: <code>' + esc(x.qbit_path) + '</code><br>'
+        + 'Protectarr: <code>' + esc(x.local_path) + '</code>'
+        + (x.note ? '<br>' + esc(x.note) : '') + '</p>';
+    }).join('');
+  }).catch(function(e){
+    msg.textContent = '✗ ' + String(e); msg.style.color = 'var(--danger)';
+  });
+}
+</script>
+{% endblock %}

@@ -2,13 +2,13 @@
 {% block content %}
 <form method="post" action="{{ url_for('save_section', section='safety') }}">
   <div class="card">
-    <h2>Safety</h2>
+    <h2>Reaping Rules</h2>
     <div class="body">
       <label class="check"><input type="checkbox" name="dry_run" {% if cfg.dry_run %}checked{% endif %}>
         Dry run - scan and log only, never remove anything <span class="hint">(uncheck to go Live)</span></label>
       <p class="hint" style="margin:-4px 0 14px">Currently: {% if cfg.dry_run %}<b>Dry run</b> - nothing will be reaped.{% else %}<b style="color:var(--danger)">Live</b> - fakes will be removed for real.{% endif %}</p>
       <label>Which torrents may be reaped?</label>
-      <select name="safety_mode">
+      <select name="safety_mode" id="safety_mode">
         <option value="arr_tracked" {% if cfg.safety.mode=='arr_tracked' %}selected{% endif %}>arr_tracked - only torrents an application is tracking (protects hand-added downloads)</option>
         <option value="either" {% if cfg.safety.mode=='either' %}selected{% endif %}>either - tracked OR in the allowlist (catches orphans an application gave up on)</option>
         <option value="both" {% if cfg.safety.mode=='both' %}selected{% endif %}>both - tracked AND in the allowlist</option>
@@ -23,11 +23,30 @@
         requeueing), and an orphan in an allowed category is deleted from
         qBittorrent directly.
       </p>
+      <p class="hint" id="allow_note" style="margin-top:12px"></p>
       <div class="row">
-        <div><label>Allowed categories</label><textarea name="allowed_categories">{{ cfg.safety.allowed_categories | join(', ') }}</textarea></div>
-        <div><label>Allowed tags</label><textarea name="allowed_tags">{{ cfg.safety.allowed_tags | join(', ') }}</textarea></div>
+        <div>
+          <label>Allowed categories</label>
+          <div id="cat_boxes" class="checklist">
+            {# Rendered server-side first so the saved selection survives even if
+               the fetch below never runs - an empty POST would wipe the list. #}
+            {% for c in cfg.safety.allowed_categories %}
+            <label class="check"><input type="checkbox" name="allowed_categories" value="{{ c }}" checked> {{ c }}</label>
+            {% endfor %}
+            <p class="hint">Loading categories from qBittorrent…</p>
+          </div>
+        </div>
+        <div>
+          <label>Allowed tags</label>
+          <div id="tag_boxes" class="checklist">
+            {% for t in cfg.safety.allowed_tags %}
+            <label class="check"><input type="checkbox" name="allowed_tags" value="{{ t }}" checked> {{ t }}</label>
+            {% endfor %}
+            <p class="hint">Loading tags from qBittorrent…</p>
+          </div>
+        </div>
       </div>
-      <label class="check"><input type="checkbox" name="requeue_after_airdate" {% if cfg.safety.requeue_after_airdate %}checked{% endif %}>
+      <label class="check" style="margin-top:14px"><input type="checkbox" name="requeue_after_airdate" {% if cfg.safety.requeue_after_airdate %}checked{% endif %}>
         Requeue after reaping - but only once the episode/movie has aired/released</label>
       <label>Air-date grace (hours)</label>
       <input type="number" name="airdate_grace_hours" min="0" value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
@@ -35,4 +54,66 @@
   </div>
   <button type="submit" class="btn primary">Save</button>
 </form>
+{% endblock %}
+{% block scripts %}
+<script>
+// Saved selections, so a category or tag that qBittorrent no longer reports is
+// still offered (checked) rather than silently dropped on the next save.
+var SAVED_CATS = {{ cfg.safety.allowed_categories | tojson }};
+var SAVED_TAGS = {{ cfg.safety.allowed_tags | tojson }};
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function renderBoxes(elId, field, noun, saved, live, err) {
+  var el = document.getElementById(elId);
+  var meta = {};
+  var names = [];
+  (live || []).forEach(function(o){ meta[o.name] = o.meta || ''; if (names.indexOf(o.name) === -1) names.push(o.name); });
+  var liveNames = names.slice();
+  saved.forEach(function(n){ if (names.indexOf(n) === -1) names.push(n); });
+
+  if (!names.length) {
+    el.innerHTML = '<p class="hint">' + (err
+      ? 'Could not reach qBittorrent to list ' + noun + ' (' + esc(err) + '). Check the connection on the Applications page, then reload.'
+      : 'qBittorrent has no ' + noun + ' defined yet. Create one there (or let your apps create it) and reload.') + '</p>';
+    return;
+  }
+  // Say so when the list is only what was already saved, rather than letting a
+  // short list look like the full picture.
+  var head = err ? '<p class="hint">Could not reach qBittorrent (' + esc(err) + ') - showing your saved ' + noun + ' only.</p>' : '';
+  el.innerHTML = head + names.sort(function(a,b){ return a.toLowerCase() < b.toLowerCase() ? -1 : 1; })
+    .map(function(n){
+      var checked = saved.indexOf(n) !== -1 ? ' checked' : '';
+      var note = liveNames.indexOf(n) === -1
+        ? ' <span class="hint">not in qBittorrent - saved selection kept</span>'
+        : (meta[n] ? ' <span class="hint">' + esc(meta[n]) + '</span>' : '');
+      return '<label class="check"><input type="checkbox" name="' + field + '" value="' + esc(n) + '"' + checked + '> ' + esc(n) + note + '</label>';
+    }).join('');
+}
+
+function updateAllowNote() {
+  var mode = document.getElementById('safety_mode').value;
+  var el = document.getElementById('allow_note');
+  if (mode === 'arr_tracked') {
+    el.innerHTML = 'The allowlist is <b>not used</b> in <code>arr_tracked</code> mode - ownership by an application decides everything. Your selection is kept for when you switch modes.';
+  } else if (mode === 'both') {
+    el.innerHTML = 'A torrent must be tracked by an application <b>and</b> match one of these to be reaped.';
+  } else if (mode === 'either') {
+    el.innerHTML = 'Torrents matching one of these are reaped even when no application owns them. Everything an application does own is still handled by the application.';
+  } else {
+    el.innerHTML = 'Only torrents matching one of these may be reaped. Nothing outside the allowlist is ever touched.';
+  }
+}
+document.getElementById('safety_mode').addEventListener('change', updateAllowNote);
+updateAllowNote();
+
+fetch('{{ url_for("qbit_taxonomy") }}').then(function(r){ return r.json(); }).then(function(r){
+  var d = r.ok ? r.data : {};
+  var err = r.ok ? null : r.message;
+  renderBoxes('cat_boxes', 'allowed_categories', 'categories', SAVED_CATS, d.categories, err);
+  renderBoxes('tag_boxes', 'allowed_tags', 'tags', SAVED_TAGS, d.tags, err);
+}).catch(function(e){
+  renderBoxes('cat_boxes', 'allowed_categories', 'categories', SAVED_CATS, [], String(e));
+  renderBoxes('tag_boxes', 'allowed_tags', 'tags', SAVED_TAGS, [], String(e));
+});
+</script>
 {% endblock %}

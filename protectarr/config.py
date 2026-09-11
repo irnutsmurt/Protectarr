@@ -52,6 +52,36 @@ DEFAULTS = {
                 ".gz", ".bz2", ".arj", ".cab",
             ],
         },
+        # Content probe: read the first piece of a media file and check it
+        # really is that kind of file. Catches a payload wearing a genuine
+        # `.mkv`/`.mp4` extension, which no amount of metadata inspection can
+        # see. OFF by default: it costs a few MB per torrent, it needs to be
+        # able to read qBittorrent's download directory, and it temporarily
+        # changes per-file priorities (always restored - see probe/ledger.py).
+        "probe": {
+            "enabled": False,
+            # qBittorrent's path -> the path this process can read it at.
+            # [{from: /downloads, to: /downloads}]. Required unless both run in
+            # the same filesystem namespace with identical paths.
+            "path_mappings": [],
+            # False = only ever read pieces the torrent already happens to have.
+            # Costs nothing and changes nothing, but resolves fewer torrents.
+            "steer": True,
+            # Steering budget. Reading already-downloaded headers is free and is
+            # not capped; these cap only the steered half.
+            "max_torrents_per_scan": 1,
+            "torrent_timeout_seconds": 120,
+            "scan_budget_seconds": 120,
+            # Don't spend budget on a torrent too slow to fetch the piece in
+            # time: steering only influences the NEXT piece libtorrent picks.
+            "min_speed_kib": 20,
+            "min_seeds": 0,
+            "header_bytes": 4096,
+            # Don't re-steer the same torrent more often than this.
+            "recheck_minutes": 15,
+            "poll_seconds": 3,
+            "stall_checks": 5,
+        },
         # Only inspect torrents still acquiring data (the point is to catch a
         # fake before it finishes). Skips finished seeds - huge speedup on big
         # libraries. Sonarr/Radarr's own "Fail Downloads" remains the backstop

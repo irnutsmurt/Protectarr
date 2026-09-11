@@ -13,6 +13,7 @@ from . import harvest
 from . import events
 from . import detectors
 from . import policy
+from . import probe
 from . import logs
 from .qbit import QbitClient, QbitError
 from .arr import build_clients
@@ -108,6 +109,9 @@ _REASON_TEXT = {
     "extension_match": lambda e: f"blocked extension {e.get('extension', '')}",
     "lure_filename": lambda e: "suspicious lure filename",
     "archive_no_media": lambda e: "archive with no media",
+    "content_type_mismatch": lambda e: (
+        f"claims {e.get('claimed_type', 'media')} but the bytes are "
+        f"{probe.validators.label(e.get('detected_type'))}"),
 }
 
 
@@ -182,6 +186,101 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True):
     return None
 
 
+def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb):
+    """Findings about one torrent -> an action row, or None to leave it alone.
+
+    Shared by both detection lanes, so a probe finding is judged by exactly the
+    same profile and safety rules as an extension match. The lane a finding came
+    from decides nothing about what happens to it.
+    """
+    arr_entry = arr_by_name.get(arr_hit[0].name) if arr_hit else None
+    profile = policy.resolve(cfg, arr_entry, t.get("category") or "")
+    judged = [(f, policy.judge(cfg, profile, f)) for f in findings]
+    verdict = policy.outcome(judged)
+    log.debug("Policy %r on %s -> %s (%s)", profile, t.get("name"), verdict,
+              "; ".join(f"{f['reason']}={p['severity']}/{p['decision']}"
+                        for f, p in judged))
+    if verdict == "allow":
+        log.info("Allowed by the %s profile, no action: %s", profile, t.get("name"))
+        return None
+    top_find, top_policy = policy.decisive(judged)
+
+    row = {
+        "hash": t.get("hash", ""),
+        "name": t.get("name", t.get("hash", "")),
+        "bad_file": top_find.get("evidence", {}).get("filename", ""),
+        "reason": reason_text(top_find),
+        # Every observation is kept, with policy pointing at the one that drove
+        # the outcome. The rest is corroborating evidence, which is worth a lot
+        # more now that the probe lane adds to it.
+        "findings": findings,
+        "finding": top_find,        # internal convenience; not stored
+        "policy": dict(top_policy, decisive_finding=findings.index(top_find)),
+        "size": t.get("size"),
+        "category": t.get("category", ""),
+        "tags": t.get("tags", ""),
+        "arr": arr_hit[0].name if arr_hit else None,
+        "_owner": arr_hit,
+        "_qb": qb,
+    }
+
+    decision = evaluate(t, row["bad_file"], arr_hit, safety, ownership_known)
+    if verdict == "warn":
+        # Worth recording, not worth destroying over. The safety mode still
+        # decides whether this torrent was ever ours to touch.
+        if decision is None:
+            return None
+        row["decision"] = "warn"
+        return row
+    if decision is None:
+        log.info("Blocked by the %s profile but safety mode %r does not cover "
+                 "it, leaving alone: %s", profile,
+                 safety.get("mode", "arr_tracked"), t.get("name"))
+        return None
+    row["decision"] = decision
+    row["safety_mode"] = safety.get("mode", "arr_tracked")
+    return row
+
+
+def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name):
+    """Second lane: the torrents the fast lane had nothing to say about.
+
+    Reading headers that are already on disk is free, so every candidate gets
+    that. Steering costs bandwidth and mutates settings, so it is rationed by
+    `max_torrents_per_scan` and a wall-clock budget for the whole pass.
+    """
+    p = probe.settings(cfg)
+    deadline = time.time() + p["scan_budget_seconds"]
+    steers_left = p["max_torrents_per_scan"]
+    rows = []
+    log.debug("Probe lane: %d candidate(s), %d steering slot(s), %ds budget",
+              len(candidates), steers_left, p["scan_budget_seconds"])
+    for t, files, arr_hit in candidates:
+        if time.time() >= deadline:
+            log.debug("Probe lane: scan budget spent, %d candidate(s) not "
+                      "reached this pass", len(candidates) - len(rows))
+            break
+        try:
+            res = probe.inspect(qb, t, files, cfg, state, deadline,
+                                allow_steer=steers_left > 0)
+        except Exception:  # noqa: BLE001 - the probe lane must never be able to
+            # take down a scan; the fast lane has already had its say.
+            log.exception("Probe failed on %s", t.get("name"))
+            continue
+        if res.steered:
+            steers_left -= 1
+        if not res.findings:
+            continue
+        log.info("Probe findings for %s: %s", t.get("name"),
+                 ", ".join(f"{f['reason']}({f.get('evidence', {}).get('filename', '?')})"
+                           for f in res.findings))
+        row = _assess(t, list(res.findings), arr_hit, arr_by_name, cfg, safety,
+                      ownership_known, qb)
+        if row:
+            rows.append(row)
+    return rows
+
+
 def scan(cfg, state):
     """One pass over qBittorrent's torrents. Returns list of action dicts
     (used both for live reaping and the WebUI dry-run preview)."""
@@ -228,6 +327,19 @@ def scan(cfg, state):
     safety = cfg["safety"]
     actions = []
     inspected = skipped = 0
+    probe_on = probe.enabled(cfg)
+    probe_candidates = []
+
+    # Unconditional, and deliberately not gated on the probe being enabled: a
+    # process that died mid-probe left a torrent with most of its files switched
+    # off, and turning the feature off afterwards must not strand it. Restore is
+    # idempotent, so doing this once per process is enough.
+    if not state.get("probe_reconciled"):
+        state["probe_reconciled"] = True
+        try:
+            probe.reconcile(qb)
+        except Exception:  # noqa: BLE001 - never let cleanup break a scan
+            log.exception("Probe ledger reconcile failed")
 
     for t in torrents:
         thash = t.get("hash", "")
@@ -268,6 +380,14 @@ def scan(cfg, state):
             "resolve_indexer": _resolve_indexer,
         })
         if not findings:
+            # Nothing in the metadata. The probe lane may still find a payload
+            # wearing a real media extension - but only for torrents the safety
+            # mode would have let us act on. Nothing else is worth the bytes,
+            # and steering a torrent Protectarr may never touch would be a
+            # change made for no possible outcome.
+            if probe_on and evaluate(t, "", arr_hit, safety,
+                                     ownership_known) is not None:
+                probe_candidates.append((t, files, arr_hit))
             continue
 
         log.info("Findings for %s: %s", t.get("name"),
@@ -275,56 +395,23 @@ def scan(cfg, state):
                            f"({f.get('evidence', {}).get('filename', '?')})"
                            for f in findings))
 
-        # Policy judges. Which profile applies depends on who owns the torrent.
-        arr_entry = arr_by_name.get(arr_hit[0].name) if arr_hit else None
-        profile = policy.resolve(cfg, arr_entry, t.get("category") or "")
-        judged = [(f, policy.judge(cfg, profile, f)) for f in findings]
-        verdict = policy.outcome(judged)
-        log.debug("Policy %r on %s -> %s (%s)", profile, t.get("name"), verdict,
-                  "; ".join(f"{f['reason']}={p['severity']}/{p['decision']}"
-                            for f, p in judged))
-        if verdict == "allow":
-            log.info("Allowed by the %s profile, no action: %s", profile, t.get("name"))
-            continue
-        top_find, top_policy = policy.decisive(judged)
+        row = _assess(t, findings, arr_hit, arr_by_name, cfg, safety,
+                      ownership_known, qb)
+        if row:
+            actions.append(row)
 
-        row = {
-            "hash": thash,
-            "name": t.get("name", thash),
-            "bad_file": top_find.get("evidence", {}).get("filename", ""),
-            "reason": reason_text(top_find),
-            # Every observation is kept, with policy pointing at the one that
-            # drove the outcome. The rest is corroborating evidence, which is
-            # worth a lot more once the probe lane starts adding to it.
-            "findings": findings,
-            "finding": top_find,        # internal convenience; not stored
-            "policy": dict(top_policy, decisive_finding=findings.index(top_find)),
-            "size": t.get("size"),
-            "category": t.get("category", ""),
-            "tags": t.get("tags", ""),
-            "arr": arr_hit[0].name if arr_hit else None,
-            "_owner": arr_hit,
-            "_qb": qb,
-        }
-
-        if verdict == "warn":
-            # Worth recording, not worth destroying over. The safety mode still
-            # decides whether this torrent was ever ours to touch.
-            if evaluate(t, row["bad_file"], arr_hit, safety,
-                        ownership_known) is not None:
-                row["decision"] = "warn"
-                actions.append(row)
-            continue
-
-        decision = evaluate(t, row["bad_file"], arr_hit, safety, ownership_known)
-        if decision is None:
-            log.info("Blocked by the %s profile but safety mode %r does not "
-                     "cover it, leaving alone: %s",
-                     profile, safety.get("mode", "arr_tracked"), t.get("name"))
-            continue
-        row["decision"] = decision
-        row["safety_mode"] = safety.get("mode", "arr_tracked")
-        actions.append(row)
+    # The probe lane waits its turn. A known fake already queued for removal is
+    # worth more than a suspected one, and probing blocks this pass for as long
+    # as its budget allows, so a pass with something to reap reaps it now and
+    # probes on the next one.
+    if probe_candidates:
+        pending = any(a.get("decision") != "warn" for a in actions)
+        if pending:
+            log.debug("Probe lane: skipped this pass, %d reap(s) queued first",
+                      sum(1 for a in actions if a.get("decision") != "warn"))
+        else:
+            actions.extend(_probe_pass(qb, probe_candidates, cfg, state, safety,
+                                       ownership_known, arr_by_name))
 
     log.debug("Scan finished in %.2fs: %d inspected, %d skipped, %d action(s)",
               time.time() - started, inspected, skipped, len(actions))

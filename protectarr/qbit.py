@@ -183,9 +183,15 @@ class QbitClient:
         return True
 
     def categories(self):
-        return list(self._get("torrents/categories").json().keys())
+        """Category name -> qBittorrent's record for it (savePath and friends).
+
+        The whole record rather than just the names, because the save path is
+        what tells two similarly named categories apart in the picker.
+        """
+        return self._get("torrents/categories").json()
 
     def tags(self):
+        """Every tag qBittorrent knows about, including ones nothing is using."""
         return self._get("torrents/tags").json()
 
     def get_preferences(self):
