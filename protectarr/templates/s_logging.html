@@ -29,6 +29,20 @@
         noisy the rest of the time.
       </p>
 
+      <label>Timezone <span class="hint">(applies to every timestamp Protectarr writes, not just logs)</span></label>
+      <select name="timezone">
+        <option value="" {% if not cfg.timezone %}selected{% endif %}>System default / TZ environment variable</option>
+        {% for z in timezones %}
+        <option value="{{ z }}" {% if cfg.timezone == z %}selected{% endif %}>{{ z }}</option>
+        {% endfor %}
+      </select>
+      <p class="hint">
+        Currently <b>{{ current_tz }}</b>. A container with no timezone set runs on UTC,
+        so its logs read hours away from your own clock with nothing in the file saying
+        which is which. You can set this here, or with <code>TZ=America/Los_Angeles</code>
+        in docker-compose. Every timestamp carries its UTC offset either way.
+      </p>
+
       <label class="check"><input type="checkbox" name="log_file_enabled" {% if cfg.logging.file_enabled %}checked{% endif %}> Write a log file</label>
       <div class="row">
         <div>

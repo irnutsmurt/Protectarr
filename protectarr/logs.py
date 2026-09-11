@@ -16,6 +16,7 @@ Every record passes through `Redactor` before it reaches any sink.
 
 import os
 import re
+import time
 import gzip
 import shutil
 import logging
@@ -23,6 +24,52 @@ import logging.handlers
 from collections import deque
 
 LOGGER_NAME = "protectarr"
+
+# Every timestamp Protectarr writes carries its UTC offset. Without it a log is
+# ambiguous the moment it leaves the machine that produced it: a container
+# defaults to UTC while its owner reads it in local time, and nothing in the
+# file says which is which.
+TS_FORMAT = "%Y-%m-%d %H:%M:%S %z"
+
+
+def now():
+    """Current local time as a string, offset included."""
+    return time.strftime(TS_FORMAT)
+
+
+def apply_timezone(cfg):
+    """Point the process at the configured timezone.
+
+    Everything here uses `time.localtime` under the hood, so setting TZ once
+    covers log lines, event history, the harvest ledger and stats together.
+    A blank setting leaves the TZ environment variable alone, which is what
+    `TZ=America/Los_Angeles` in docker-compose sets. Returns the zone in effect.
+    """
+    name = (cfg.get("timezone") or "").strip()
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            ZoneInfo(name)          # raises if the zone is not real
+        except Exception as e:      # noqa: BLE001 - bad zone must not stop startup
+            logging.getLogger(LOGGER_NAME).warning(
+                "Ignoring unknown timezone %r: %s", name, e)
+            name = ""
+    if name:
+        os.environ["TZ"] = name
+    if hasattr(time, "tzset"):      # Unix only, which is where this runs
+        time.tzset()
+    return name or os.environ.get("TZ") or time.strftime("%Z")
+
+
+def available_timezones():
+    """Sorted IANA zone names for the settings dropdown."""
+    try:
+        from zoneinfo import available_timezones as _az
+        return sorted(_az())
+    except Exception:  # noqa: BLE001
+        return []
+
+
 RING_SIZE = 500
 LEVELS = ("debug", "info", "warning", "error")
 
@@ -181,6 +228,8 @@ def configure(cfg):
     lg = cfg.get("logging", {})
     root = logging.getLogger(LOGGER_NAME)
 
+    apply_timezone(cfg)
+
     if _redactor is None:
         _redactor = Redactor()
     _redactor.update(cfg)
@@ -199,9 +248,9 @@ def configure(cfg):
     root.propagate = False
 
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-                            datefmt="%Y-%m-%d %H:%M:%S")
+                            datefmt=TS_FORMAT)
     ui_fmt = logging.Formatter("[%(asctime)s] %(levelname)-7s %(message)s",
-                               datefmt="%Y-%m-%d %H:%M:%S")
+                               datefmt=TS_FORMAT)
 
     # The redactor goes on every HANDLER, not on the logger. A filter attached
     # to a logger is only consulted for records logged directly through it, and

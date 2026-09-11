@@ -214,6 +214,8 @@ def create_app(service):
             user=session.get("user"), basic_user=getattr(g, "auth_user", None),
             api_key_from_env=cfg_mod.api_key_is_from_env(),
             log_lines=logs.ring(), log_levels=logs.LEVELS,
+            timezones=logs.available_timezones(),
+            current_tz=time.strftime("%Z %z"),
             **ctx)
 
     @app.route("/")
@@ -339,6 +341,11 @@ def create_app(service):
             lg["file_enabled"] = f.get("log_file_enabled") == "on"
             lg["path"] = f.get("log_path", "").strip()
             lg["retention_days"] = max(0, int(f.get("log_retention", 14) or 0))
+            tz = (f.get("timezone") or "").strip()
+            if tz and tz not in logs.available_timezones():
+                flash(f"Unknown timezone {tz!r}, leaving it unchanged.")
+            else:
+                cfg["timezone"] = tz
 
         elif section == "security":
             auth = cfg["web"].setdefault("auth", {})

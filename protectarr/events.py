@@ -22,7 +22,6 @@ of a single file in place would risk.
 
 import os
 import json
-import time
 import uuid
 import threading
 
@@ -80,7 +79,7 @@ def record(event):
     """Append one event. Best-effort - history must never break a reap."""
     event.setdefault("schema_version", SCHEMA_VERSION)
     event.setdefault("id", uuid.uuid4().hex)
-    event.setdefault("timestamp", time.strftime("%Y-%m-%d %H:%M:%S"))
+    event.setdefault("timestamp", logs.now())
     event.setdefault("event_type", "detection")
     path = _path()
     with _lock:

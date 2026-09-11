@@ -19,9 +19,11 @@ def main():
     # Before anything else, so startup problems land in the log too.
     logs.configure(cfg)
     log = logs.get()
-    log.info("Protectarr starting: config=%s dry_run=%s log_level=%s",
+    import time as _t
+    log.info("Protectarr starting: config=%s dry_run=%s log_level=%s timezone=%s",
              cfg_mod.CONFIG_PATH, cfg.get("dry_run"),
-             cfg.get("logging", {}).get("level", "info"))
+             cfg.get("logging", {}).get("level", "info"),
+             _t.strftime("%Z %z"))
 
     service = ProtectarrService()
     service.start()

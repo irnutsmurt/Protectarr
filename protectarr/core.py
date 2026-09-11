@@ -77,7 +77,7 @@ def record_reap(state, app, indexer):
     s["by_indexer"][key] = s["by_indexer"].get(key, 0) + 1
     if not s.get("first_seen"):
         s["first_seen"] = time.strftime("%Y-%m-%d")
-    s["last_reap"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    s["last_reap"] = logs.now()
     save_stats(s)
 
 
@@ -498,7 +498,7 @@ class ProtectarrService:
             res = bl_mod.update(cfg)
             self._bl_last = time.time()
             self.state["blocklist"] = {
-                "last": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "last": logs.now(),
                 "entries": res["entries"], "bytes": res["bytes"],
                 "applied": res["applied"], "error": None}
             _log(self.state, f"IP blocklist updated: {res['entries']} entries "
@@ -522,7 +522,7 @@ class ProtectarrService:
         try:
             from . import blocklist as bl_mod
             count = bl_mod.apply_banned_ips(cfg)
-            self.state["banned"] = {"last": time.strftime("%Y-%m-%d %H:%M:%S"),
+            self.state["banned"] = {"last": logs.now(),
                                     "count": count, "error": None}
             _log(self.state, f"Applied {count} manually banned IP(s) to qBittorrent.")
         except (requests.RequestException, QbitError) as e:
@@ -535,7 +535,7 @@ class ProtectarrService:
             try:
                 actions = scan(cfg, self.state)
                 apply_actions(actions, self.state, cfg)
-                self.state["last_scan"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                self.state["last_scan"] = logs.now()
                 self.state["last_error"] = None
             except (QbitError, requests.RequestException) as e:
                 self.state["last_error"] = str(e)
@@ -571,5 +571,5 @@ class ProtectarrService:
         cfg = cfg_mod.load()
         actions = scan(cfg, self.state)
         apply_actions(actions, self.state, cfg)
-        self.state["last_scan"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.state["last_scan"] = logs.now()
         return {"queued": False, "running": False, "actions": len(actions)}

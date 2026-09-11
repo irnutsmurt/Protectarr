@@ -90,6 +90,10 @@ DEFAULTS = {
     },
     "poll_interval": 20,
     "dry_run": True,
+    # IANA zone name (e.g. America/Los_Angeles). Blank uses the TZ environment
+    # variable, which is what `TZ=` in docker-compose sets; with neither, a
+    # container runs on UTC. Applies to every timestamp Protectarr writes.
+    "timezone": "",
     # Logging. The file is rotated at midnight, gzipped, and kept for
     # retention_days before deletion. `level` applies to the file and the WebUI
     # log; `console_level` is what goes to stdout (what `docker logs` shows), so

@@ -243,3 +243,58 @@ class TestRing(LogTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTimezone(LogTestCase):
+    """A container defaults to UTC while its owner reads local time, and nothing
+    in a bare timestamp says which is which. These pin both halves of the fix."""
+
+    def test_every_timestamp_carries_its_offset(self):
+        self.log.info("a line")
+        text = self.file_text()
+        self.assertRegex(text, r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}")
+
+    def test_ring_lines_carry_the_offset_too(self):
+        self.log.info("a line")
+        self.assertRegex(logs.ring()[-1],
+                         r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}")
+
+    def test_now_matches_the_log_format(self):
+        self.assertRegex(logs.now(),
+                         r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}$")
+
+    def test_setting_a_zone_changes_the_offset(self):
+        import time as _t
+        logs.apply_timezone({"timezone": "Etc/UTC"})
+        utc = _t.strftime("%z")
+        logs.apply_timezone({"timezone": "Asia/Tokyo"})
+        tokyo = _t.strftime("%z")
+        self.assertEqual(utc, "+0000")
+        self.assertEqual(tokyo, "+0900")
+
+    def test_events_and_harvest_share_the_format(self):
+        import os as _os, tempfile as _tf
+        from protectarr import config as _cfg, events
+        d = _tf.mkdtemp()
+        _cfg.CONFIG_PATH = _os.path.join(d, "config.yaml")
+        ev = events.record({"dry_run": False, "torrent": {"name": "x"}})
+        self.assertRegex(ev["timestamp"],
+                         r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}$")
+
+    def test_unknown_zone_is_ignored_rather_than_fatal(self):
+        before = logs.apply_timezone({"timezone": "Etc/UTC"})
+        after = logs.apply_timezone({"timezone": "Mars/Olympus_Mons"})
+        self.assertTrue(after)          # did not raise
+        self.assertNotEqual(after, "Mars/Olympus_Mons")
+
+    def test_blank_zone_leaves_the_env_alone(self):
+        import os as _os
+        _os.environ["TZ"] = "Asia/Tokyo"
+        logs.apply_timezone({"timezone": ""})
+        self.assertEqual(_os.environ.get("TZ"), "Asia/Tokyo")
+
+    def test_zone_list_is_available_for_the_dropdown(self):
+        zones = logs.available_timezones()
+        self.assertIn("America/Los_Angeles", zones)
+        self.assertIn("Etc/UTC", zones)
+        self.assertEqual(zones, sorted(zones))

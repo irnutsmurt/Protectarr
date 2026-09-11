@@ -12,6 +12,9 @@ services:
       # ALSO mounts (at the same path), and set ip_blocklist.path to it, e.g.:
       # - ./blocklist:/blocklist        # and in qBittorrent: - ./blocklist:/blocklist
     environment:
+      # Your timezone, so log and history timestamps match your clock. Without
+      # it a container runs on UTC. Can also be set in Settings > Logging.
+      - TZ=${TZ:-Etc/UTC}
       # Prefer secrets via env over writing them into config.yaml.
       # qBittorrent >= 5.2.0: use an API key…
       - PROTECTARR_QBIT_API_KEY=${QBIT_API_KEY:-}

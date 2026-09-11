@@ -318,6 +318,11 @@ what each detector saw, how the profile judged it, and the air-date decision
 behind a requeue. Level, retention and log downloads live in
 **Settings -> Logging**.
 
+- **Timezone:** set it in the UI, or with `TZ=America/Los_Angeles` in
+  docker-compose. Without either, a container runs on **UTC**, so its logs read
+  hours away from your own clock. Every timestamp carries its UTC offset
+  regardless, so a log is never ambiguous about which zone produced it. This
+  applies to history and the harvest ledger too, not just logs.
 - **Levels:** `debug`, `info`, `warning`, `error`. The file level and the
   console level (what `docker logs` shows) are set separately, so the file can
   be verbose while the console stays readable.
@@ -331,6 +336,8 @@ config and anything that merely looks like a key (`?apikey=`, `qbt_…`,
 issue.
 
 ```yaml
+timezone: ""            # e.g. America/Los_Angeles; blank = TZ env var, else UTC
+
 logging:
   level: info           # debug | info | warning | error
   console_level: info

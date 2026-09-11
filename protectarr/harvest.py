@@ -19,7 +19,6 @@ Stored as JSON next to the config/stats files, keyed by IP:
 
 import os
 import json
-import time
 import threading
 
 from . import config as cfg_mod
@@ -77,7 +76,7 @@ def record(peers, meta):
     thash = (meta.get("hash") or "").lower()
     if not peers or not thash:
         return 0
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    now = logs.now()
     tinfo = {
         "name": meta.get("name", ""),
         "ext": meta.get("ext", ""),
