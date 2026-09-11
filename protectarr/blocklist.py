@@ -1,4 +1,4 @@
-"""Optional peer IP blocklist — downloads Naunter/BT_BlockLists (or any P2P/dat
+"""Optional peer IP blocklist - downloads Naunter/BT_BlockLists (or any P2P/dat
 list), writes it where qBittorrent can read it, and points qBittorrent's IP
 filter at it. The list format (`label:startIP-endIP`) is what qBittorrent's IP
 filtering natively accepts.

@@ -1,7 +1,7 @@
 services:
   protectarr:
-    build: .
-    # image: ghcr.io/YOURNAME/protectarr:latest   # once published
+    image: ghcr.io/irnutsmurt/protectarr:latest
+    # build: .   # uncomment to build from source instead of pulling the image
     container_name: protectarr
     restart: unless-stopped
     ports:

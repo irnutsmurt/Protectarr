@@ -9,7 +9,7 @@
       <label>Monitored extensions <span class="hint">(comma or newline separated)</span></label>
       <textarea name="blocked_extensions">{{ cfg.detection.blocked_extensions | join(', ') }}</textarea>
       <label class="check"><input type="checkbox" name="only_active" {% if cfg.detection.only_active %}checked{% endif %}>
-        Only scan downloading torrents <span class="hint">(recommended — much faster on large libraries)</span></label>
+        Only scan downloading torrents <span class="hint">(recommended - much faster on large libraries)</span></label>
     </div>
   </div>
 
@@ -17,7 +17,7 @@
     <h2>Lure Filenames</h2>
     <div class="body">
       <p class="hint" style="margin-bottom:12px">Flag a download when a text-like companion file (readme / nfo / url)
-        is <i>named</i> like a fake's instructions — e.g. <code>password.txt</code> or <code>how to download.html</code>.
+        is <i>named</i> like a fake's instructions - e.g. <code>password.txt</code> or <code>how to download.html</code>.
         Only these note-style files are checked, so a real release titled <code>Password.mkv</code> is never flagged.</p>
       <label>Lure keywords <span class="hint">(matched as substrings of the filename; comma or newline separated)</span></label>
       <textarea name="blocked_name_keywords">{{ cfg.detection.blocked_name_keywords | join(', ') }}</textarea>
@@ -25,10 +25,10 @@
   </div>
 
   <div class="card">
-    <h2>Archive Detection <span class="hint" style="font-weight:400">— advanced, opt-in</span></h2>
+    <h2>Archive Detection <span class="hint" style="font-weight:400">- advanced, opt-in</span></h2>
     <div class="body">
       <p class="hint" style="margin-bottom:12px">Flags a download that contains <b>only archives</b> (RAR/ZIP/…) with <b>no real media file</b>.
-        Legit releases are sometimes packed in RARs — especially on private trackers — so this is
+        Legit releases are sometimes packed in RARs - especially on private trackers - so this is
         <b>off by default</b> and only applies to the indexers you list below. Leave the list empty to disable.</p>
       <label class="check"><input type="checkbox" name="archive_enabled" {% if cfg.detection.archive_detection.enabled %}checked{% endif %}>
         Enable archive-with-no-media detection</label>
@@ -44,7 +44,7 @@
 {% block scripts %}
 <script>
 // Saved selections (so we can pre-check, and preserve any indexer that's saved
-// but currently unreachable — never silently drop a user's choice).
+// but currently unreachable - never silently drop a user's choice).
 var SAVED_IDX = {{ cfg.detection.archive_detection.indexers | tojson }};
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
@@ -69,7 +69,7 @@ function renderIndexerBoxes(indexers, err) {
       var checked = saved.indexOf(n) !== -1 ? ' checked' : '';
       var meta = ix
         ? '<span class="hint">' + esc(ix.protocol || '') + (ix.apps && ix.apps.length ? ' · ' + esc(ix.apps.join(', ')) : '') + (ix.enabled === false ? ' · disabled' : '') + '</span>'
-        : '<span class="hint">not currently reachable — saved selection kept</span>';
+        : '<span class="hint">not currently reachable - saved selection kept</span>';
       return '<label class="check"><input type="checkbox" name="archive_indexers" value="' + esc(n) + '"' + checked + '> ' + esc(n) + ' ' + meta + '</label>';
     }).join('');
 }

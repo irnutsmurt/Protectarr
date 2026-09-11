@@ -10,7 +10,7 @@
   <div class="statcard">
     <div class="label">Applications</div>
     <div class="num">{{ cfg.arrs | length }}</div>
-    <div class="sub" id="apps_health">—</div>
+    <div class="sub" id="apps_health">-</div>
   </div>
   <div class="statcard">
     <div class="label">Indexers seen</div>
@@ -30,7 +30,7 @@
   {% if cfg.ip_blocklist.enabled %}
   <div class="statcard">
     <div class="label">IPs blocked</div>
-    <div class="num">{% if state.blocklist.entries %}{{ '{:,}'.format(state.blocklist.entries) }}{% else %}—{% endif %}</div>
+    <div class="num">{% if state.blocklist.entries %}{{ '{:,}'.format(state.blocklist.entries) }}{% else %}-{% endif %}</div>
     <div class="sub">{% if state.blocklist.last %}updated {{ state.blocklist.last }}{% else %}not updated yet{% endif %}</div>
   </div>
   {% endif %}
@@ -39,7 +39,7 @@
 <div id="preview"></div>
 
 <div class="card">
-  <h2>Library monitored <span class="hint" style="font-weight:400">— per application</span></h2>
+  <h2>Library monitored <span class="hint" style="font-weight:400">- per application</span></h2>
   <div class="body">
     <div class="legend" id="library_legend"></div>
     <div class="chart-wrap" id="library_chart"><p class="hint">Loading…</p></div>
@@ -60,7 +60,7 @@
 </div>
 
 <div class="card">
-  <h2>Indexers <span class="hint" style="font-weight:400">— what your apps can pull from</span></h2>
+  <h2>Indexers <span class="hint" style="font-weight:400">- what your apps can pull from</span></h2>
   <div class="body" style="overflow-x:auto">
     <table>
       <thead><tr><th>Indexer</th><th>Protocol</th><th>Seen by</th><th>Reaped</th></tr></thead>
@@ -158,7 +158,7 @@ function loadDashboard() {
   fetch('{{ url_for("dashboard_data") }}').then(r=>r.json()).then(r=>{
     if (!r.ok) return;
     const d = r.data; LAST_APPS = d.apps || [];
-    document.getElementById('stat_torrents').textContent = d.total_torrents == null ? '—' : d.total_torrents;
+    document.getElementById('stat_torrents').textContent = d.total_torrents == null ? '-' : d.total_torrents;
     document.getElementById('stat_downloading').textContent = d.active_torrents == null ? 'in qBittorrent' : (d.active_torrents + ' downloading');
     document.getElementById('stat_indexers').textContent = d.indexers.length;
 
@@ -172,7 +172,7 @@ function loadDashboard() {
 
     document.getElementById('apps_tbody').innerHTML = d.apps.length
       ? d.apps.map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(a.type)}</td><td>${a.ok?'<span class="pill on">OK</span>':'<span class="pill off">Error</span>'} <span class="hint">${esc(a.detail)}</span></td><td>${a.indexers}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="hint">No applications configured yet — add one on the Applications page.</td></tr>';
+      : '<tr><td colspan="4" class="hint">No applications configured yet - add one on the Applications page.</td></tr>';
 
     document.getElementById('dash_errors').textContent = (d.errors||[]).join(' · ');
     renderCharts();

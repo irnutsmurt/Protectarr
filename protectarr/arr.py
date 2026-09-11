@@ -71,7 +71,7 @@ class ArrClient:
         return f"{self.base}/api/{self.meta['version']}/{path.lstrip('/')}"
 
     def test(self):
-        """Return (ok, message) — mirrors the arr apps' 'Test' button."""
+        """Return (ok, message) - mirrors the arr apps' 'Test' button."""
         try:
             r = self._s.get(self._url("system/status"), timeout=self.timeout)
         except requests.RequestException as e:
@@ -98,7 +98,7 @@ class ArrClient:
         """List the indexers configured on this arr instance.
 
         Returns [{name, protocol, priority, enabled}], mirroring the arr's
-        Settings > Indexers page — used by Protectarr's dashboard to show which
+        Settings > Indexers page - used by Protectarr's dashboard to show which
         indexers each app can pull from.
         """
         r = self._s.get(self._url("indexer"), timeout=self.timeout)
@@ -129,7 +129,7 @@ class ArrClient:
     def fail(self, queue_id):
         """Remove from client + blocklist, and DON'T let the arr auto-redownload
         (skipRedownload). We decide whether to requeue ourselves, based on the
-        air/release date — see `airdate_status` and the caller."""
+        air/release date - see `airdate_status` and the caller."""
         r = self._s.delete(
             self._url(f"queue/{queue_id}"),
             params={"removeFromClient": "true", "blocklist": "true",
@@ -157,8 +157,8 @@ class ArrClient:
         """Has the item behind this queue record aired / been released yet?
 
         Returns (status, date):
-          status True  -> aired/released (grace elapsed) — safe to requeue
-          status False -> not out yet — a legit release can't exist; hold
+          status True  -> aired/released (grace elapsed) - safe to requeue
+          status False -> not out yet - a legit release can't exist; hold
           status None  -> unknown (no date, or type has no air concept)
         `date` is the earliest known air/release datetime (UTC) or None.
         """

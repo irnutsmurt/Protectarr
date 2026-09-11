@@ -38,14 +38,14 @@ detection:
     - .url
   # Only inspect torrents still downloading (fast; finished seeds are skipped).
   only_active: true
-  # Tier 2 — flag by filename: a text-like companion file (readme/nfo/url) whose
+  # Tier 2 - flag by filename: a text-like companion file (readme/nfo/url) whose
   # name contains one of these substrings. Never matches media files, so a real
   # release named "Password.mkv" is safe.
   blocked_name_keywords:
     - password
     - passw0rd
     - how to download
-  # Tier 3 — archive-with-no-media. OPT-IN and indexer-scoped, because legit
+  # Tier 3 - archive-with-no-media. OPT-IN and indexer-scoped, because legit
   # releases (esp. private trackers) are sometimes packed as RARs. Only fires for
   # an *arr-tracked torrent whose indexer is listed here. Empty list = disabled.
   archive_detection:
@@ -79,7 +79,7 @@ dry_run: true             # true = log only; set false to actually reap
 ip_blocklist:
   enabled: false
   url: https://github.com/Naunter/BT_BlockLists/raw/master/bt_blocklists.gz
-  # Where the list is written — MUST be readable by qBittorrent. In Docker,
+  # Where the list is written - MUST be readable by qBittorrent. In Docker,
   # mount a shared volume into both containers and use qBittorrent's path here.
   path: /blocklist/ipfilter.p2p
   update_interval_hours: 24

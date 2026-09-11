@@ -49,7 +49,7 @@ function preview() {
   fetch('{{ url_for("preview") }}').then(r=>r.json()).then(r=>{
     if (!r.ok) { el.innerHTML = `<div class="card"><div class="body" style="color:var(--danger)">${r.message}</div></div>`; return; }
     if (!r.actions.length) { el.innerHTML = '<div class="card"><div class="body hint">Nothing would be reaped right now.</div></div>'; return; }
-    const rows = r.actions.map(a=>`<tr><td>${a.name}</td><td>${a.bad_file}</td><td>${a.reason||'—'}</td><td>${a.decision}</td><td>${a.arr||'—'}</td></tr>`).join('');
+    const rows = r.actions.map(a=>`<tr><td>${a.name}</td><td>${a.bad_file}</td><td>${a.reason||'-'}</td><td>${a.decision}</td><td>${a.arr||'-'}</td></tr>`).join('');
     el.innerHTML = `<div class="card"><h2>Dry-run preview</h2><div class="body" style="overflow-x:auto">
       <table><tr><th>Torrent</th><th>Bad file</th><th>Why</th><th>Action</th><th>App</th></tr>${rows}</table></div></div>`;
   });

@@ -33,14 +33,14 @@ DEFAULTS = {
             ".vbs", ".vbe", ".js", ".jse", ".jar", ".lnk", ".ps1",
             ".apk", ".dll", ".msc", ".hta", ".url", ".wsf", ".reg", ".cpl",
         ],
-        # Tier 2 — flag by *filename*, not just extension: a lure file (readme /
+        # Tier 2 - flag by *filename*, not just extension: a lure file (readme /
         # url / nfo) whose name contains one of these substrings. Only checked
         # against text-like companion files, so a legit release simply titled
         # "Password" isn't a false positive.
         "blocked_name_keywords": [
             "password", "passw0rd", "how to download", "how to play",
         ],
-        # Tier 3 — archive-with-no-media. RISKY (legit scene releases ship as
+        # Tier 3 - archive-with-no-media. RISKY (legit scene releases ship as
         # RARs), so it's OPT-IN and scoped to specific indexers: it only fires
         # for an *arr-tracked torrent whose indexer is in this list. Private
         # trackers (where RARs are legit) are safe by default.
@@ -53,7 +53,7 @@ DEFAULTS = {
             ],
         },
         # Only inspect torrents still acquiring data (the point is to catch a
-        # fake before it finishes). Skips finished seeds — huge speedup on big
+        # fake before it finishes). Skips finished seeds - huge speedup on big
         # libraries. Sonarr/Radarr's own "Fail Downloads" remains the backstop
         # for anything that happens to complete between polls.
         "only_active": True,
@@ -78,13 +78,13 @@ DEFAULTS = {
     "dry_run": True,
     # Seeder-IP harvest: on each reap, enumerate the fake's swarm from
     # qBittorrent and log the peers to an observation ledger (harvest.json) for
-    # pattern-spotting. Passive — collects data only, never bans on its own.
+    # pattern-spotting. Passive - collects data only, never bans on its own.
     "harvest": {
         "enabled": True,
     },
     # Optional peer IP blocklist (Naunter/BT_BlockLists) applied to qBittorrent's
     # IP filter. The file is written to `path`, which qBittorrent must be able to
-    # read — in Docker that means a volume shared by both containers.
+    # read - in Docker that means a volume shared by both containers.
     "ip_blocklist": {
         "enabled": False,
         "url": "https://github.com/Naunter/BT_BlockLists/raw/master/bt_blocklists.gz",

@@ -28,7 +28,7 @@
       <label>Trusted proxies <span class="hint">(CIDRs whose X-Forwarded-For is trusted; needed for "Disabled for Local Addresses" behind a reverse proxy)</span></label>
       <textarea name="trusted_proxies" placeholder="e.g. 172.18.0.0/16">{{ cfg.web.auth.trusted_proxies | join(', ') }}</textarea>
       {% if cfg.web.api_key %}
-      <label>API key <span class="hint">(HTTP API — send as the <code>X-Api-Key</code> header or <code>?apikey=</code>; see <code>GET /api/v1</code>)</span></label>
+      <label>API key <span class="hint">(HTTP API - send as the <code>X-Api-Key</code> header or <code>?apikey=</code>; see <code>GET /api/v1</code>)</span></label>
       <div class="secret-field">
         <input type="password" value="{{ cfg.web.api_key }}" readonly autocomplete="off">
         <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>

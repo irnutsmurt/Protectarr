@@ -5,20 +5,20 @@
     <h2>Safety</h2>
     <div class="body">
       <label class="check"><input type="checkbox" name="dry_run" {% if cfg.dry_run %}checked{% endif %}>
-        Dry run — scan and log only, never remove anything <span class="hint">(uncheck to go Live)</span></label>
-      <p class="hint" style="margin:-4px 0 14px">Currently: {% if cfg.dry_run %}<b>Dry run</b> — nothing will be reaped.{% else %}<b style="color:var(--danger)">Live</b> — fakes will be removed for real.{% endif %}</p>
+        Dry run - scan and log only, never remove anything <span class="hint">(uncheck to go Live)</span></label>
+      <p class="hint" style="margin:-4px 0 14px">Currently: {% if cfg.dry_run %}<b>Dry run</b> - nothing will be reaped.{% else %}<b style="color:var(--danger)">Live</b> - fakes will be removed for real.{% endif %}</p>
       <label>Which torrents may be reaped?</label>
       <select name="safety_mode">
-        <option value="arr_tracked" {% if cfg.safety.mode=='arr_tracked' %}selected{% endif %}>arr_tracked — only torrents an application is tracking (protects hand-added downloads)</option>
-        <option value="both" {% if cfg.safety.mode=='both' %}selected{% endif %}>both — tracked AND in the allowlist</option>
-        <option value="allowlist" {% if cfg.safety.mode=='allowlist' %}selected{% endif %}>allowlist — any torrent in an allowed category/tag</option>
+        <option value="arr_tracked" {% if cfg.safety.mode=='arr_tracked' %}selected{% endif %}>arr_tracked - only torrents an application is tracking (protects hand-added downloads)</option>
+        <option value="both" {% if cfg.safety.mode=='both' %}selected{% endif %}>both - tracked AND in the allowlist</option>
+        <option value="allowlist" {% if cfg.safety.mode=='allowlist' %}selected{% endif %}>allowlist - any torrent in an allowed category/tag</option>
       </select>
       <div class="row">
         <div><label>Allowed categories</label><textarea name="allowed_categories">{{ cfg.safety.allowed_categories | join(', ') }}</textarea></div>
         <div><label>Allowed tags</label><textarea name="allowed_tags">{{ cfg.safety.allowed_tags | join(', ') }}</textarea></div>
       </div>
       <label class="check"><input type="checkbox" name="requeue_after_airdate" {% if cfg.safety.requeue_after_airdate %}checked{% endif %}>
-        Requeue after reaping — but only once the episode/movie has aired/released</label>
+        Requeue after reaping - but only once the episode/movie has aired/released</label>
       <label>Air-date grace (hours)</label>
       <input type="number" name="airdate_grace_hours" min="0" value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
     </div>

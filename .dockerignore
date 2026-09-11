@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 .git/
 .venv/
+protectarrlogo.png
+*.xcf
+.github/
+venv/
+swarm_sample.json
+*.md
+config.example.yaml

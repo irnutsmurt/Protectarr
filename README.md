@@ -1,4 +1,14 @@
-# Protectarr
+<p align="center">
+  <img src="protectarr/static/logo-full.png" alt="Protectarr" width="460">
+</p>
+
+<p align="center"><b>Kill fake <code>.exe</code> torrents before they finish - and keep your *arr stack self-healing.</b></p>
+
+<p align="center">
+  <img src="https://github.com/irnutsmurt/protectarr/actions/workflows/docker-publish.yml/badge.svg" alt="Docker build status">
+</p>
+
+---
 
 Public torrent trackers seed fake "releases" whose file list is a video-sized
 executable, e.g.:
@@ -8,12 +18,12 @@ Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb.exe   1.06 GB
 ```
 
 qBittorrent learns a torrent's **file list from its metadata within seconds of
-adding it — before the content downloads.** Protectarr watches that list and, on
+adding it - before the content downloads.** Protectarr watches that list and, on
 a hit, hands the release back to the owning *arr's queue API with
 `blocklist=true`, so the *arr removes it and blocklists it. Protectarr then
 decides whether to requeue based on the air/release date (see below).
 
-Handing it back to the *arr — instead of just deleting it in qBittorrent — is
+Handing it back to the *arr - instead of just deleting it in qBittorrent - is
 the whole trick: deleting it directly leaves the *arr's queue stuck and it never
 searches again.
 
@@ -30,12 +40,39 @@ Protectarr catches it up front *and* keeps the *arr self-healing.
 
 ## Run it
 
-### Docker (recommended)
+### Docker - pull the image (easiest)
+
+A pre-built image is published to the GitHub Container Registry on every push:
+`ghcr.io/irnutsmurt/protectarr:latest`.
 
 ```bash
 mkdir config
-cp config.example.yaml config/config.yaml   # then edit it
-QBIT_PASSWORD='your-qbit-password' docker compose up -d --build
+cp config.example.yaml config/config.yaml   # then edit it (or configure in the WebUI)
+
+docker run -d --name protectarr \
+  -p 8090:8090 \
+  -v "$PWD/config:/config" \
+  --restart unless-stopped \
+  ghcr.io/irnutsmurt/protectarr:latest
+```
+
+Or with Compose - the provided `docker-compose.yml` already points at the image:
+
+```bash
+docker compose up -d
+```
+
+> The image is private while the repo is private, so `docker login ghcr.io`
+> first (any GitHub Personal Access Token with `read:packages`). Make the GHCR
+> package public and no login is needed.
+
+### Docker - build from source
+
+```bash
+git clone https://github.com/irnutsmurt/protectarr.git
+cd protectarr
+mkdir config && cp config.example.yaml config/config.yaml
+docker compose up -d --build     # uncomment `build: .` in docker-compose.yml
 ```
 
 Open the WebUI at `http://<host>:8090` to configure connections, test them, and
@@ -46,18 +83,25 @@ Two Docker gotchas:
 - **Port clash:** if qBittorrent already uses `8090` on the same host, publish
   Protectarr on another port, e.g. `-> "8099:8090"`.
 - **Reaching your services:** set `qbittorrent.url` (and the *arr URLs) to
-  addresses reachable *from inside the container* — use the host's LAN IP
+  addresses reachable *from inside the container* - use the host's LAN IP
   (`http://192.168.1.100:8090`), **not** `localhost`, which points at the
   Protectarr container itself.
 
 ### Bare Python
 
+Requires Python 3.9+.
+
 ```bash
-pip install -r requirements.txt
-export PROTECTARR_CONFIG=./config.yaml          # defaults to /config/config.yaml
-cp config.example.yaml config.yaml          # edit it
-python run.py            # worker + WebUI
-python run.py --no-web   # headless worker only
+git clone https://github.com/irnutsmurt/protectarr.git
+cd protectarr
+python -m venv venv
+./venv/bin/pip install -r requirements.txt
+
+export PROTECTARR_CONFIG=./config.yaml       # defaults to /config/config.yaml
+cp config.example.yaml config.yaml           # edit it (or configure in the WebUI)
+
+./venv/bin/python run.py            # worker + WebUI
+./venv/bin/python run.py --no-web   # headless worker only
 ```
 
 ## Configuration
@@ -76,9 +120,9 @@ Modelled on the *arr apps (Settings → Security):
 - **Authentication required:** `enabled`, or `local_disabled` to skip auth for
   LAN/private clients.
 
-⚠️ `local_disabled` trusts the client's address. If Protectarr sits behind a
+`local_disabled` trusts the client's address. If Protectarr sits behind a
 reverse proxy, set `auth.trusted_proxies` to the proxy's CIDR(s) so
-`X-Forwarded-For` is honoured only from the proxy — otherwise a client can spoof
+`X-Forwarded-For` is honoured only from the proxy - otherwise a client can spoof
 that header to look local. If you don't run a trusted proxy, keep it `enabled`.
 
 ### qBittorrent auth
@@ -91,7 +135,7 @@ username/password. Older versions fall back to the Web UI username/password.
 
 | mode          | reaps                                                                 |
 |---------------|-----------------------------------------------------------------------|
-| `arr_tracked` | only torrents a configured *arr has in its queue (**safest** — your hand-added downloads like Linux ISOs are never touched) |
+| `arr_tracked` | only torrents a configured *arr has in its queue (**safest** - your hand-added downloads like Linux ISOs are never touched) |
 | `allowlist`   | any torrent whose category/tag is in your allowlist                   |
 | `both`        | must be *arr-tracked **and** allowlisted                              |
 
@@ -125,7 +169,7 @@ enables qBittorrent's IP filter pointed at that file, refreshing on a schedule.
 There's an **Update now** button in the WebUI.
 
 Because qBittorrent loads the filter from its **own** filesystem, `path` must be
-readable by qBittorrent — and Protectarr sends **one** path value to both sides,
+readable by qBittorrent - and Protectarr sends **one** path value to both sides,
 so that path has to resolve to the same file inside *both* containers.
 
 - **Same host / bare metal (Protectarr and qBittorrent on one machine, no
@@ -134,7 +178,7 @@ so that path has to resolve to the same file inside *both* containers.
   path is literally the same for both, and `qbittorrent.url` can just be
   `http://localhost:8080`. The one requirement is **permissions**: Protectarr
   writes the file, and the qBittorrent process (often a different service user)
-  must be able to *read* it — put both users in a shared group, or write it
+  must be able to *read* it - put both users in a shared group, or write it
   world-readable (`chmod 644`), and make sure the containing directory is
   traversable by qBittorrent's user.
 - **Docker:** the reliable trick is to keep the blocklist **inside qBittorrent's
@@ -168,10 +212,10 @@ Worked example with a `linuxserver/qbittorrent` container whose config lives at
 3. Set `ip_blocklist.path: /config/blocklist/ipfilter.p2p`.
 
 qBittorrent reads that file through its own `/config` mount; Protectarr writes it
-through the subfolder mount — **same path string, same file.** You do **not**
+through the subfolder mount - **same path string, same file.** You do **not**
 need to add any blocklist mount to the qBittorrent container itself; the folder
 is already under its `/config`. (If qBittorrent uses `network_mode: service:...`
-for a VPN, that's fine — the blocklist is a filesystem concern, unaffected by the
+for a VPN, that's fine - the blocklist is a filesystem concern, unaffected by the
 network mode.)
 
 The list is P2P format (`label:startIP-endIP`), which qBittorrent's IP filtering
@@ -181,7 +225,7 @@ accepts natively.
 
 For a small, hand-curated set of individual IPs there's a separate
 `banned_ips` option that Protectarr pushes to qBittorrent's *manually banned IPs*
-via the API — **no file or shared volume needed** (works cleanly across
+via the API - **no file or shared volume needed** (works cleanly across
 containers). It can merge with qBittorrent's existing banned list rather than
 overwrite it. Use this for one-off bans; use the IP filter above for bulk lists.
 
@@ -192,10 +236,38 @@ jams the download into a state Protectarr (and the *arr) can't cleanly fail.
 
 ## Detection scope
 
-Detection is by **file extension** in the torrent's file list — which is exactly
+Detection is by **file extension** in the torrent's file list - which is exactly
 how these fakes are named. It does **not** catch a payload disguised with a
 genuine media extension (an `.mkv` that's actually a PE binary); that needs
 content/magic-byte inspection and a partial download.
+
+## HTTP API
+
+Protectarr exposes a small JSON API, authenticated the same way as the *arr apps.
+A key is auto-generated on first run and shown in **Settings → Security**; send it
+as the `X-Api-Key` header (preferred) or `?apikey=` (convenient, but it can land
+in proxy/access logs). With WebUI auth set to `none`, the read endpoints are open
+like the UI - enable Basic/Forms auth to require the key. The `command` endpoint
+always requires the key (or a valid session + CSRF token).
+
+```
+GET  /ping                     # health check, no auth - {"status":"ok",...}
+GET  /api/v1                    # index of available endpoints
+GET  /api/v1/system/status      # version, running, dryRun, lastScan, lastError
+GET  /api/v1/stats              # reaped totals (by app / by indexer), blocklist, banned
+GET  /api/v1/watchlist          # harvested seeder-IP ledger (?min_fakes=N)
+GET  /api/v1/log?limit=N        # recent activity log lines
+GET  /api/v1/preview            # dry-run scan - what would be reaped right now
+POST /api/v1/command            # {"name": "start|stop|scan|blocklistUpdate"}
+```
+
+Examples:
+
+```bash
+curl -H "X-Api-Key: $KEY" http://host:8090/api/v1/system/status
+curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"name":"scan"}' http://host:8090/api/v1/command
+```
 
 ## Requires
 

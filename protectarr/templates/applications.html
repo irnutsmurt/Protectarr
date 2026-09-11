@@ -13,9 +13,9 @@
     {% if state.running %}<span class="pill on">Running</span>{% else %}<span class="pill off">Stopped</span>{% endif %}
   </span>
   <span class="stat">Mode
-    {% if cfg.dry_run %}<span class="pill dry">Dry run</span> <span class="hint">— <a href="{{ url_for('settings_page', section='safety') }}">switch to Live in Safety</a></span>{% else %}<span class="pill live">Live</span>{% endif %}
+    {% if cfg.dry_run %}<span class="pill dry">Dry run</span> <span class="hint">- <a href="{{ url_for('settings_page', section='safety') }}">switch to Live in Safety</a></span>{% else %}<span class="pill live">Live</span>{% endif %}
   </span>
-  <span class="stat">Last scan: <b>{{ state.last_scan or "—" }}</b></span>
+  <span class="stat">Last scan: <b>{{ state.last_scan or "-" }}</b></span>
   {% if state.last_error %}<span class="stat" style="color:var(--danger)">Error: {{ state.last_error }}</span>{% endif %}
 </div>
 
@@ -29,7 +29,7 @@
           <td><span class="st st-unknown" id="qbit_status" title="not tested">●</span></td>
           <td><b>qBittorrent</b></td>
           <td>qbittorrent</td>
-          <td class="hint">{{ cfg.qbittorrent.url or '—' }}</td>
+          <td class="hint">{{ cfg.qbittorrent.url or '-' }}</td>
           <td style="text-align:right;white-space:nowrap">
             <a class="iconbtn" href="{{ cfg.qbittorrent.web_url or cfg.qbittorrent.url or '#' }}" target="_blank" rel="noopener" title="Open qBittorrent">↗</a>
             <button type="button" class="iconbtn" title="Configure" onclick="openQbit()">🔧</button>
@@ -41,7 +41,7 @@
 </div>
 
 <div class="card">
-  <h2>Applications <span class="hint" style="font-weight:400">— Sonarr / Radarr / Lidarr / Readarr instances Protectarr cross-references</span></h2>
+  <h2>Applications <span class="hint" style="font-weight:400">- Sonarr / Radarr / Lidarr / Readarr instances Protectarr cross-references</span></h2>
   <div class="body" style="overflow-x:auto">
     {% if cfg.arrs %}
     <table class="applist">
@@ -62,7 +62,7 @@
       </tbody>
     </table>
     {% else %}
-    <p class="hint">No applications yet — click <b>Add Application</b> above.</p>
+    <p class="hint">No applications yet - click <b>Add Application</b> above.</p>
     {% endif %}
   </div>
 </div>
@@ -70,15 +70,15 @@
 <!-- qBittorrent config modal -->
 <div class="modal-overlay" id="qbitModal" hidden>
   <div class="modal">
-    <div class="modal-head"><span>Edit — qBittorrent</span>
+    <div class="modal-head"><span>Edit - qBittorrent</span>
       <button type="button" class="modal-x" onclick="closeQbit()">×</button></div>
     <form method="post" action="{{ url_for('save_qbit') }}">
       <div class="modal-body">
         <label>Web UI URL <span class="hint">(backend address Protectarr connects to)</span></label>
         <input type="url" name="qbit_url" id="qbit_url" value="{{ cfg.qbittorrent.url }}" placeholder="http://192.168.1.100:8090">
-        <label>Public URL <span class="hint">(optional — where <i>you</i> open qBittorrent in a browser, if different)</span></label>
+        <label>Public URL <span class="hint">(optional - where <i>you</i> open qBittorrent in a browser, if different)</span></label>
         <input type="url" name="qbit_web_url" value="{{ cfg.qbittorrent.web_url or '' }}" placeholder="https://qbit.example.com">
-        <label>API key <span class="hint">(qBittorrent ≥ 5.2.0, <code>qbt_…</code> — used instead of username/password if set)</span></label>
+        <label>API key <span class="hint">(qBittorrent ≥ 5.2.0, <code>qbt_…</code> - used instead of username/password if set)</span></label>
         <div class="secret-field">
           <input type="password" name="qbit_api_key" id="qbit_api_key" value="{{ cfg.qbittorrent.api_key }}" placeholder="qbt_…" autocomplete="off">
           <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>
@@ -114,7 +114,7 @@
         </select>
         <label>URL <span class="hint">(backend address Protectarr connects to for the API)</span></label>
         <input type="url" name="arr_url" id="m_url" placeholder="http://192.168.1.100:8989">
-        <label>Public URL <span class="hint">(optional — where <i>you</i> open this app in a browser, used by the Open link)</span></label>
+        <label>Public URL <span class="hint">(optional - where <i>you</i> open this app in a browser, used by the Open link)</span></label>
         <input type="url" name="arr_web_url" id="m_web_url" placeholder="https://sonarr.example.com">
         <label>API Key</label>
         <div class="secret-field">
@@ -149,7 +149,7 @@ function closeQbit() { document.getElementById('qbitModal').hidden = true; }
 function openApp(idx) {
   const editing = (idx !== undefined && idx !== null);
   const a = editing ? window.APPS[idx] : {};
-  document.getElementById('m_title').textContent = editing ? ('Edit — ' + (a.name||'')) : 'Add Application';
+  document.getElementById('m_title').textContent = editing ? ('Edit - ' + (a.name||'')) : 'Add Application';
   document.getElementById('m_index').value = editing ? idx : '';
   document.getElementById('m_name').value = a.name || '';
   document.getElementById('m_type').value = a.type || document.getElementById('m_type').options[0].value;

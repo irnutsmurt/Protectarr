@@ -4,7 +4,7 @@
   <div class="card">
     <h2>Manually Banned IPs</h2>
     <div class="body">
-      <p class="hint" style="margin-top:0">A small hand-curated list of individual IPs pushed to qBittorrent's <em>banned IPs</em> via the API — no file or shared volume required. Applied on Save (and via the button).</p>
+      <p class="hint" style="margin-top:0">A small hand-curated list of individual IPs pushed to qBittorrent's <em>banned IPs</em> via the API - no file or shared volume required. Applied on Save (and via the button).</p>
       <label class="check"><input type="checkbox" name="bip_enabled" {% if cfg.banned_ips.enabled %}checked{% endif %}> Manage qBittorrent's banned IPs</label>
       <label>Banned IPs <span class="hint">(one per line)</span></label>
       <textarea name="bip_ips" placeholder="203.0.113.7&#10;198.51.100.42">{{ cfg.banned_ips.ips | join('\n') }}</textarea>

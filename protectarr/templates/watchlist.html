@@ -2,11 +2,11 @@
 {% block content %}
 
 <div class="card">
-  <h2>IP Watchlist <span class="hint" style="font-weight:400">— peers seen sharing confirmed fakes</span></h2>
+  <h2>IP Watchlist <span class="hint" style="font-weight:400">- peers seen sharing confirmed fakes</span></h2>
   <div class="body">
     <p class="hint" style="margin-top:0">
       Every time Protectarr reaps a fake, it records the torrent's swarm here <b>before</b> removing it.
-      This is passive observation only — nothing is blocked automatically. Watch for IPs (and subnets)
+      This is passive observation only - nothing is blocked automatically. Watch for IPs (and subnets)
       that show up across <b>many distinct fakes</b> while <b>seeding</b>: those are the likely sources.
     </p>
 
@@ -35,11 +35,11 @@
               {% if r.was_seeder %}<span class="pill dry">seeder</span>{% else %}<span class="hint">leecher</span>{% endif %}
             </td>
             <td style="text-align:right">{{ r.hits }}{% if r.seed_hits %} <span class="hint">({{ r.seed_hits }} seeding)</span>{% endif %}</td>
-            <td class="hint">{{ r.indexers | join(', ') or '—' }}</td>
-            <td class="hint">{{ r.clients | join(', ') or '—' }}</td>
-            <td class="hint">{{ r.countries | join(', ') or '—' }}</td>
-            <td class="hint">{{ r.first_seen or '—' }}</td>
-            <td class="hint">{{ r.last_seen or '—' }}</td>
+            <td class="hint">{{ r.indexers | join(', ') or '-' }}</td>
+            <td class="hint">{{ r.clients | join(', ') or '-' }}</td>
+            <td class="hint">{{ r.countries | join(', ') or '-' }}</td>
+            <td class="hint">{{ r.first_seen or '-' }}</td>
+            <td class="hint">{{ r.last_seen or '-' }}</td>
           </tr>
           {% endfor %}
         </tbody>

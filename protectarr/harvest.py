@@ -1,7 +1,7 @@
 """Seeder-IP harvest ledger.
 
 When Protectarr reaps a fake (an extension-list hit), we first enumerate the
-torrent's swarm from qBittorrent and record every peer here — BEFORE the torrent
+torrent's swarm from qBittorrent and record every peer here - BEFORE the torrent
 is removed, since the swarm is unqueryable once it's gone.
 
 This is deliberately an *observation ledger*, not a blocklist: it collects who
@@ -114,7 +114,7 @@ def record(peers, meta):
 
 def watchlist(min_fakes=1):
     """Return IP rows sorted by how many distinct fakes they seeded, richest
-    first — ready for the watchlist UI. Each row flattens the stored entry."""
+    first - ready for the watchlist UI. Each row flattens the stored entry."""
     rows = []
     for ip, e in load().get("ips", {}).items():
         torrents = e.get("torrents", {})

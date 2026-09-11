@@ -4,7 +4,7 @@
   <div class="card">
     <h2>Peer IP Blocklist</h2>
     <div class="body">
-      <p class="hint" style="margin-top:0">Downloads a peer blocklist (default: Naunter/BT_BlockLists) and points qBittorrent's IP filter at it. The file path must be readable by qBittorrent — in Docker, a volume shared by both containers.</p>
+      <p class="hint" style="margin-top:0">Downloads a peer blocklist (default: Naunter/BT_BlockLists) and points qBittorrent's IP filter at it. The file path must be readable by qBittorrent - in Docker, a volume shared by both containers.</p>
       <label class="check"><input type="checkbox" name="bl_enabled" {% if cfg.ip_blocklist.enabled %}checked{% endif %}> Enable IP blocklist</label>
       <label>Blocklist URL</label>
       <input type="url" name="bl_url" value="{{ cfg.ip_blocklist.url }}">

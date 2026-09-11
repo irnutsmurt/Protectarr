@@ -1,12 +1,12 @@
 """Minimal qBittorrent Web API client.
 
 Supports both auth methods:
-  * API key (qBittorrent >= 5.2.0 / WebAPI >= 2.14.1) — stateless Bearer token,
+  * API key (qBittorrent >= 5.2.0 / WebAPI >= 2.14.1) - stateless Bearer token,
     key looks like `qbt_...`. Preferred when set.
-  * Username/password — cookie login via /api/v2/auth/login (older versions).
+  * Username/password - cookie login via /api/v2/auth/login (older versions).
 
-We read the torrent list and each torrent's *file list* — which comes from the
-torrent metadata and is available before the content downloads — so an
+We read the torrent list and each torrent's *file list* - which comes from the
+torrent metadata and is available before the content downloads - so an
 executable can be spotted almost immediately.
 """
 
@@ -55,9 +55,9 @@ class QbitClient:
         r = self._s.get(f"{self.base}/api/v2/{path}", params=params, timeout=self.timeout)
         if r.status_code in (401, 403):
             if self.api_key:
-                # Bearer keys can't be refreshed by us — surface the failure.
-                raise QbitError(f"Unauthorized (HTTP {r.status_code}) — check the qBittorrent API key")
-            # Cookie expired — re-auth once and retry.
+                # Bearer keys can't be refreshed by us - surface the failure.
+                raise QbitError(f"Unauthorized (HTTP {r.status_code}) - check the qBittorrent API key")
+            # Cookie expired - re-auth once and retry.
             self._ready = False
             self.login()
             r = self._s.get(f"{self.base}/api/v2/{path}", params=params, timeout=self.timeout)
@@ -85,7 +85,7 @@ class QbitClient:
 
     def peers(self, torrent_hash):
         """Enumerate the current swarm for a torrent via the sync API. Returns a
-        list of peer dicts. MUST be called before the torrent is removed — once
+        list of peer dicts. MUST be called before the torrent is removed - once
         it's gone from qBittorrent the swarm is no longer queryable."""
         data = self._get("sync/torrentPeers", hash=torrent_hash, rid=0).json()
         out = []

@@ -78,7 +78,7 @@ def record_reap(state, app, indexer):
 
 def _harvest_peers(a, indexer, app, state, cfg):
     """Before a fake is removed, enumerate its swarm and log the peers to the
-    harvest ledger. Best-effort — never let it break a reap."""
+    harvest ledger. Best-effort - never let it break a reap."""
     if not cfg.get("harvest", {}).get("enabled", True):
         return
     try:
@@ -121,7 +121,7 @@ def _is_archive(ext, archive_exts):
 
 
 def detect_basic(files, det):
-    """Tier 1 + 2 — universal, high-precision. Returns (bad_name, reason) for the
+    """Tier 1 + 2 - universal, high-precision. Returns (bad_name, reason) for the
     first blocked-extension or lure-filename hit, else (None, None)."""
     exts = {e.lower() for e in det.get("blocked_extensions", [])}
     keywords = [k.lower() for k in det.get("blocked_name_keywords", [])]
@@ -138,7 +138,7 @@ def detect_basic(files, det):
 
 
 def detect_archive(files, det, arr_type):
-    """Tier 3 (structural half) — returns (archive_name, reason) when the torrent
+    """Tier 3 (structural half) - returns (archive_name, reason) when the torrent
     is archives-only with NO real media for this arr type, else (None, None).
     Indexer scoping is the caller's responsibility (see scan)."""
     ad = det.get("archive_detection", {})
@@ -150,7 +150,7 @@ def detect_archive(files, det, arr_type):
     for f in files:
         ext = _ext(f.get("name", ""))
         if ext in media:
-            return None, None  # a real media file is present — not a fake
+            return None, None  # a real media file is present - not a fake
         if first_archive is None and _is_archive(ext, archive_exts):
             first_archive = f.get("name", "")
     if first_archive:
@@ -223,7 +223,7 @@ def scan(cfg, state):
         thash = t.get("hash", "")
         tstate = t.get("state", "")
         if only_active and tstate not in DOWNLOADING_STATES:
-            continue  # finished/seeding — nothing left to prevent
+            continue  # finished/seeding - nothing left to prevent
         if tstate in ("metaDL", "forcedMetaDL"):
             continue  # metadata not in yet; catch on a later pass
         try:
@@ -232,7 +232,7 @@ def scan(cfg, state):
             continue
         arr_hit = owner.get(thash.lower())
         bad, reason = detect_basic(files, det)
-        # Tier 3: indexer-scoped archive rule — only for arr-tracked torrents,
+        # Tier 3: indexer-scoped archive rule - only for arr-tracked torrents,
         # and only resolve the (possibly expensive) indexer for real candidates.
         ad = det.get("archive_detection", {})
         if not bad and ad.get("enabled") and arr_hit:
@@ -271,7 +271,7 @@ def apply_actions(actions, state, cfg):
     grace = safety.get("airdate_grace_hours", 0)
     for a in actions:
         _r = a.get("reason")
-        label = f"{a['name']!r} (bad: {a['bad_file']!r}{' — ' + _r if _r else ''})"
+        label = f"{a['name']!r} (bad: {a['bad_file']!r}{' - ' + _r if _r else ''})"
         if dry_run:
             _log(state, f"[DRY_RUN] would {a['decision']}: {label}")
             continue
@@ -349,7 +349,7 @@ class ProtectarrService:
             _log(self.state, f"IP blocklist update failed: {e}")
 
     def preview(self):
-        """Dry-run scan for the WebUI — returns serializable action rows."""
+        """Dry-run scan for the WebUI - returns serializable action rows."""
         cfg = cfg_mod.load()
         actions = scan(cfg, self.state)
         return [{k: v for k, v in a.items() if not k.startswith("_")} for a in actions]

@@ -20,7 +20,7 @@ from .core import DOWNLOADING_STATES
 
 # Endpoints reachable without a session (login form + static assets + health).
 PUBLIC_ENDPOINTS = {"login", "static", "ping"}
-# JSON endpoints — respond 401 rather than redirecting to the login page.
+# JSON endpoints - respond 401 rather than redirecting to the login page.
 API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data",
                  "api_index", "api_status", "api_stats", "api_watchlist",
                  "api_log", "api_preview", "api_command"}
@@ -139,7 +139,7 @@ def create_app(service):
             return
         if valid_api_key(cfg):
             return
-        # "Disabled for Local Addresses" — bypass auth for LAN/private clients.
+        # "Disabled for Local Addresses" - bypass auth for LAN/private clients.
         if auth.get("required") == "local_disabled" and request_is_local(auth):
             return
         if method == "basic":
@@ -239,12 +239,12 @@ def create_app(service):
             if exts:
                 cfg["detection"]["blocked_extensions"] = exts
             cfg["detection"]["only_active"] = f.get("only_active") == "on"
-            # Tier 2 — filename lure keywords
+            # Tier 2 - filename lure keywords
             cfg["detection"]["blocked_name_keywords"] = [
                 k.strip().lower() for k in
                 f.get("blocked_name_keywords", "").replace(",", "\n").splitlines()
                 if k.strip()]
-            # Tier 3 — indexer-scoped archive detection
+            # Tier 3 - indexer-scoped archive detection
             ad = cfg["detection"].setdefault("archive_detection", {})
             ad["enabled"] = f.get("archive_enabled") == "on"
             ad["indexers"] = [i.strip() for i in f.getlist("archive_indexers") if i.strip()]
@@ -288,7 +288,7 @@ def create_app(service):
 
         cfg_mod.save(cfg)
         service.reload()
-        # Optional "…and apply/update now" — runs against the just-saved config
+        # Optional "…and apply/update now" - runs against the just-saved config
         # so the action reflects the current form values (not stale ones).
         if section == "bannedips":
             service.apply_banned_ips(cfg)
@@ -450,7 +450,7 @@ def create_app(service):
             service.stop()
         return redirect(url_for("applications"))
 
-    # ---- public HTTP API (v1) — authenticate with the X-Api-Key header ----
+    # ---- public HTTP API (v1) - authenticate with the X-Api-Key header ----
     # (or ?apikey=). Same key shown in Settings > Security. Callers are exempt
     # from CSRF; forms-auth returns 401 JSON rather than redirecting.
     @app.route("/ping")
