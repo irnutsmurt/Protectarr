@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""Throwaway capture harness: what happens when we steer a MULTI-FILE torrent.
+
+Not product code. Nothing in `protectarr/` imports this, and it is expected to
+be deleted once the question is answered.
+
+The question
+------------
+The Sep 11 spike steered a SINGLE-file torrent, so "disable every other file"
+was a no-op and the interesting risk was never exercised. On a season pack,
+steering sets every file except one to priority 0. Does the owning *arr notice,
+and if so does it call the download stalled, failed, or nothing at all?
+
+Gemini hypothesised an *arr reacts badly to its main media file being set to
+priority 0. That is a hypothesis. This script exists to make it an observation.
+
+What it captures, per your list
+-------------------------------
+  before      qB torrent record, every file's priority, seq_dl, f_l_piece_prio,
+              piece-state summary, and the *arr queue record
+  during      the same, sampled on a timer, so *arr health is watched WHILE one
+              file is selected and the rest are at priority 0, rather than only
+              before and after. That sampling is the whole point: the single-file
+              spike only looked either side and therefore proved nothing.
+  after       the same again, plus an explicit diff against `before`
+  anomalies   anything that changed underneath us mid-run (qB state, *arr status,
+              file count) is recorded as an event rather than smoothed over
+
+Everything lands in a timestamped JSON file plus a readable summary.
+
+Safety
+------
+* Restores in a `finally`, including on Ctrl-C and on an exception.
+* Restore is verified by read-back and the script says loudly if it failed.
+* `--dry-run` (the default) captures the baseline and steers nothing.
+* `--abandon` deliberately exits WITHOUT restoring, so the restart/reconcile
+  path can be tested for real. It requires its own flag for obvious reasons.
+* No credential is printed, logged or written to the capture file.
+
+Usage
+-----
+    python scripts/probe_multifile_capture.py --list
+    python scripts/probe_multifile_capture.py --hash <infohash> --steer
+    python scripts/probe_multifile_capture.py --hash <infohash> --steer --abandon
+"""
+
+import os
+import sys
+import json
+import time
+import argparse
+import datetime
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from protectarr import config as cfg_mod                       # noqa: E402
+from protectarr.qbit import QbitClient                         # noqa: E402
+from protectarr.arr import build_clients                       # noqa: E402
+from protectarr.probe import validators                        # noqa: E402
+
+# Fields worth keeping off a qBittorrent torrent record. The whole record is
+# noisy and changes between versions; these are the ones that would show an
+# *arr or qBittorrent reacting to what we did.
+QB_FIELDS = ("hash", "name", "state", "progress", "dlspeed", "upspeed", "eta",
+             "num_seeds", "num_leechs", "num_complete", "num_incomplete",
+             "seq_dl", "f_l_piece_prio", "priority", "category", "tags",
+             "completed", "size", "total_size", "amount_left", "availability",
+             "save_path", "content_path", "last_activity", "time_active")
+
+# The *arr queue fields that carry health. trackedDownloadStatus is the one
+# Gemini's hypothesis predicts will move.
+ARR_FIELDS = ("id", "status", "trackedDownloadStatus", "trackedDownloadState",
+              "errorMessage", "downloadId", "title", "sizeleft", "timeleft",
+              "estimatedCompletionTime", "protocol", "indexer", "downloadClient")
+
+
+def now():
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def pick(d, keys):
+    return {k: d.get(k) for k in keys if k in d}
+
+
+class Capture:
+    """Accumulates samples and anomalies, then writes one JSON file."""
+
+    def __init__(self, path):
+        self.path = path
+        self.doc = {"started": now(), "samples": [], "anomalies": [],
+                    "phases": {}, "restore": None}
+
+    def phase(self, name, data):
+        self.doc["phases"][name] = {"at": now(), **data}
+        self.save()
+
+    def sample(self, data):
+        self.doc["samples"].append({"at": now(), **data})
+        self.save()
+
+    def anomaly(self, what, detail):
+        print(f"  !! ANOMALY: {what}: {detail}")
+        self.doc["anomalies"].append({"at": now(), "what": what, "detail": detail})
+        self.save()
+
+    def save(self):
+        with open(self.path, "w") as fh:
+            json.dump(self.doc, fh, indent=2, default=str)
+
+
+def piece_summary(states, target_first=None):
+    """Piece states compress well: we only care about counts and our target."""
+    counts = {0: 0, 1: 0, 2: 0}
+    for s in states:
+        counts[s] = counts.get(s, 0) + 1
+    out = {"total": len(states), "unavailable": counts.get(0, 0),
+           "downloading": counts.get(1, 0), "downloaded": counts.get(2, 0)}
+    if target_first is not None and 0 <= target_first < len(states):
+        out["target_piece"] = target_first
+        out["target_state"] = states[target_first]
+    return out
+
+
+def arr_record(clients, torrent_hash):
+    """Find this torrent in any *arr queue. Returns (client_name, record|None)."""
+    for c in clients:
+        try:
+            q = c.queue_by_hash()
+        except Exception as e:                                  # noqa: BLE001
+            return c.name, {"_queue_read_failed": str(e)}
+        rec = q.get(torrent_hash.lower())
+        if rec:
+            return c.name, pick(rec, ARR_FIELDS)
+    return None, None
+
+
+def snapshot(qb, clients, thash, target_first=None):
+    """One complete observation of both systems."""
+    snap = {}
+    try:
+        t = qb.torrent(thash)
+        snap["qb"] = pick(t, QB_FIELDS) if t else None
+    except Exception as e:                                      # noqa: BLE001
+        snap["qb"] = {"_error": str(e)}
+    try:
+        snap["files"] = [{"index": i, "name": f.get("name"),
+                          "priority": f.get("priority"),
+                          "progress": f.get("progress"),
+                          "size": f.get("size"),
+                          "piece_range": f.get("piece_range")}
+                         for i, f in enumerate(qb.files(thash))]
+    except Exception as e:                                      # noqa: BLE001
+        snap["files"] = {"_error": str(e)}
+    try:
+        snap["pieces"] = piece_summary(qb.piece_states(thash), target_first)
+    except Exception as e:                                      # noqa: BLE001
+        snap["pieces"] = {"_error": str(e)}
+    name, rec = arr_record(clients, thash)
+    snap["arr_instance"], snap["arr"] = name, rec
+    return snap
+
+
+def describe(snap, label):
+    qb = snap.get("qb") or {}
+    arr = snap.get("arr") or {}
+    prios = [f.get("priority") for f in snap.get("files", [])
+             if isinstance(f, dict)]
+    print(f"  [{label}] qB state={qb.get('state')} progress={qb.get('progress')} "
+          f"dl={(qb.get('dlspeed') or 0)//1024}KiB/s seq={qb.get('seq_dl')} "
+          f"fl={qb.get('f_l_piece_prio')}")
+    print(f"           priorities={prios}")
+    if arr:
+        print(f"           arr={snap.get('arr_instance')} "
+              f"status={arr.get('status')} "
+              f"tracked={arr.get('trackedDownloadStatus')}/"
+              f"{arr.get('trackedDownloadState')} "
+              f"err={arr.get('errorMessage')!r}")
+    else:
+        print(f"           arr=NOT IN ANY QUEUE")
+
+
+def choose_target(files):
+    """The file the probe lane would go for: biggest validatable one."""
+    cands = [(i, f) for i, f in enumerate(files)
+             if validators.ext_of(f.get("name") or "") in validators.VALIDATABLE]
+    if not cands:
+        return None, None
+    idx, f = max(cands, key=lambda x: x[1].get("size") or 0)
+    return idx, f
+
+
+def list_candidates(qb, clients):
+    print("Multi-file torrents currently downloading:\n")
+    found = 0
+    for t in qb.torrents(state_filter="downloading"):
+        h = t.get("hash") or ""
+        try:
+            files = qb.files(h)
+        except Exception as e:                                  # noqa: BLE001
+            print(f"  {h[:8]}  {t.get('name')!r}: file list unreadable ({e})")
+            continue
+        if len(files) < 2:
+            continue
+        found += 1
+        name, rec = arr_record(clients, h)
+        idx, tgt = choose_target(files)
+        print(f"  {h}")
+        print(f"    name      {t.get('name')}")
+        print(f"    state     {t.get('state')}  progress={t.get('progress'):.3f} "
+              f"dl={(t.get('dlspeed') or 0)//1024} KiB/s seeds={t.get('num_seeds')}")
+        print(f"    files     {len(files)}  category={t.get('category') or '-'}")
+        print(f"    arr       {name or 'UNTRACKED'}"
+              + (f"  tracked={rec.get('trackedDownloadStatus')}" if rec else ""))
+        print(f"    target    {tgt.get('name') if tgt else 'NONE VALIDATABLE'}")
+        print()
+    if not found:
+        print("  none. Start a season pack downloading and run this again.")
+    return found
+
+
+def run(args):
+    qb = None
+    cfg = cfg_mod.load()
+    q = cfg["qbittorrent"]
+    qb = QbitClient(q["url"], q.get("username", ""), q.get("password", ""),
+                    api_key=q.get("api_key", ""),
+                    verify_ssl=q.get("verify_ssl", True))
+    qb.login()
+    clients = build_clients(cfg)
+    print(f"qBittorrent: {q['url']}")
+    print(f"*arr apps:   {', '.join(c.name for c in clients) or 'none'}\n")
+
+    if args.list or not args.hash:
+        list_candidates(qb, clients)
+        if not args.hash:
+            return 0
+
+    thash = args.hash.lower()
+    files = qb.files(thash)
+    if len(files) < 2:
+        print(f"ERROR: {thash[:8]} has {len(files)} file(s). This harness exists "
+              f"for the MULTI-file case; a single-file torrent tells us nothing "
+              f"we do not already know.")
+        return 2
+
+    idx, target = choose_target(files)
+    if idx is None:
+        print("ERROR: no validatable media file in this torrent, so the probe "
+              "lane would never steer it and neither will this.")
+        return 2
+    first_piece = (target.get("piece_range") or [None])[0]
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    out = os.path.join(args.outdir, f"multifile-capture-{stamp}.json")
+    os.makedirs(args.outdir, exist_ok=True)
+    cap = Capture(out)
+    cap.doc["target"] = {"index": idx, "name": target.get("name"),
+                         "size": target.get("size"), "first_piece": first_piece}
+    cap.doc["mode"] = ("abandon" if args.abandon else
+                       "steer" if args.steer else "observe-only")
+
+    print(f"Torrent  {thash}")
+    print(f"Files    {len(files)}")
+    print(f"Target   [{idx}] {target.get('name')}  first piece {first_piece}")
+    print(f"Capture  {out}\n")
+
+    before = snapshot(qb, clients, thash, first_piece)
+    cap.phase("before", before)
+    describe(before, "before")
+
+    originals = {i: int(f.get("priority", 1) or 0) for i, f in enumerate(files)}
+    orig_seq = bool((before.get("qb") or {}).get("seq_dl"))
+    orig_fl = bool((before.get("qb") or {}).get("f_l_piece_prio"))
+    cap.doc["originals"] = {"priorities": originals, "seq_dl": orig_seq,
+                            "f_l_piece_prio": orig_fl}
+    cap.save()
+
+    if not args.steer:
+        print("\nObserve-only (no --steer). Baseline captured, nothing changed.")
+        return 0
+
+    if (before.get("arr") or {}).get("_queue_read_failed"):
+        print("\nREFUSING: an *arr queue could not be read, so *arr health "
+              "during the steer would be unobservable, which is the one thing "
+              "this run is for.")
+        return 2
+
+    steered = False
+    try:
+        print("\n--- steering ---")
+        qb.set_sequential(thash, True)
+        qb.set_first_last_prio(thash, True)
+        others = [i for i in originals if i != idx]
+        qb.set_file_priority(thash, others, 0)
+        qb.set_file_priority(thash, [idx], 7)
+        steered = True
+        print(f"  set {len(others)} file(s) to priority 0, target to 7, "
+              f"sequential on, first/last on")
+
+        applied = snapshot(qb, clients, thash, first_piece)
+        cap.phase("steered", applied)
+        describe(applied, "steered")
+
+        deadline = time.time() + args.seconds
+        last_arr = json.dumps((applied.get("arr") or {}), sort_keys=True)
+        last_state = (applied.get("qb") or {}).get("state")
+        last_files = len(applied.get("files") or [])
+        got = False
+        while time.time() < deadline:
+            time.sleep(args.interval)
+            s = snapshot(qb, clients, thash, first_piece)
+            cap.sample(s)
+            describe(s, f"t+{int(time.time() - (deadline - args.seconds))}s")
+
+            if s.get("qb") is None:
+                cap.anomaly("torrent disappeared from qBittorrent", "mid-probe")
+                break
+            cur_state = (s.get("qb") or {}).get("state")
+            if cur_state != last_state:
+                cap.anomaly("qB state changed mid-probe",
+                            f"{last_state} -> {cur_state}")
+                last_state = cur_state
+            cur_files = len(s.get("files") or [])
+            if cur_files != last_files:
+                cap.anomaly("file count changed mid-probe",
+                            f"{last_files} -> {cur_files}")
+                last_files = cur_files
+            cur_arr = json.dumps((s.get("arr") or {}), sort_keys=True)
+            if cur_arr != last_arr:
+                cap.anomaly("*arr queue record changed mid-probe",
+                            {"before": json.loads(last_arr),
+                             "after": json.loads(cur_arr)})
+                last_arr = cur_arr
+            if s.get("arr") is None:
+                cap.anomaly("*arr dropped the torrent from its queue",
+                            "during steering")
+
+            if (s.get("pieces") or {}).get("target_state") == 2:
+                print("  target piece arrived")
+                cap.phase("target_arrived", s)
+                got = True
+                break
+        cap.doc["target_piece_arrived"] = got
+        if not got:
+            print(f"  target piece did not arrive within {args.seconds}s "
+                  f"(not a failure: it is the starved-torrent case)")
+
+        if args.abandon:
+            print("\n--- ABANDONING WITHOUT RESTORING (--abandon) ---")
+            print("The torrent is LEFT STEERED on purpose, so Protectarr's")
+            print("reconcile path can be tested against a real interruption.")
+            print("Restart Protectarr and watch it put this back:")
+            print(f"  priorities {originals}")
+            print(f"  seq_dl={orig_seq} f_l_piece_prio={orig_fl}")
+            cap.doc["restore"] = {"skipped": True, "reason": "--abandon"}
+            cap.save()
+            steered = False          # stop the finally from undoing the point
+            return 0
+
+    except KeyboardInterrupt:
+        print("\ninterrupted, restoring")
+        cap.anomaly("interrupted by operator", "Ctrl-C")
+    except Exception as e:                                      # noqa: BLE001
+        cap.anomaly("harness raised", traceback.format_exc())
+        print(f"\nERROR: {e}")
+    finally:
+        if steered:
+            print("\n--- restoring ---")
+            ok = restore(qb, thash, originals, orig_seq, orig_fl, cap)
+            after = snapshot(qb, clients, thash, first_piece)
+            cap.phase("after", after)
+            describe(after, "after")
+            cap.doc["diff"] = diff(before, after)
+            cap.save()
+            print(f"\nRestore verified: {ok}")
+            if not ok:
+                print("!! THE TORRENT IS STILL MODIFIED. Original settings:")
+                print(f"   priorities {originals}")
+                print(f"   seq_dl={orig_seq} f_l_piece_prio={orig_fl}")
+
+    print(f"\nCapture written to {out}")
+    return 0
+
+
+def restore(qb, thash, originals, seq, fl, cap):
+    """Put it back exactly, then read back and prove it."""
+    by_prio = {}
+    for i, p in originals.items():
+        by_prio.setdefault(p, []).append(i)
+    try:
+        for p, ids in by_prio.items():
+            qb.set_file_priority(thash, ids, p)
+        qb.set_sequential(thash, seq)
+        qb.set_first_last_prio(thash, fl)
+    except Exception as e:                                      # noqa: BLE001
+        cap.doc["restore"] = {"ok": False, "error": str(e)}
+        return False
+    try:
+        now_prios = {i: f.get("priority") for i, f in enumerate(qb.files(thash))}
+        info = qb.torrent(thash) or {}
+    except Exception as e:                                      # noqa: BLE001
+        cap.doc["restore"] = {"ok": False, "error": f"read-back failed: {e}"}
+        return False
+    bad = {i: (p, now_prios.get(i)) for i, p in originals.items()
+           if now_prios.get(i) != p}
+    flags = {}
+    if bool(info.get("seq_dl")) != seq:
+        flags["seq_dl"] = (seq, bool(info.get("seq_dl")))
+    if bool(info.get("f_l_piece_prio")) != fl:
+        flags["f_l_piece_prio"] = (fl, bool(info.get("f_l_piece_prio")))
+    cap.doc["restore"] = {"ok": not (bad or flags), "priority_mismatch": bad,
+                          "flag_mismatch": flags}
+    return not (bad or flags)
+
+
+def diff(before, after):
+    """What is different between the two ends, field by field."""
+    out = {}
+    for section in ("qb", "arr"):
+        b, a = before.get(section) or {}, after.get(section) or {}
+        changed = {k: {"before": b.get(k), "after": a.get(k)}
+                   for k in set(b) | set(a) if b.get(k) != a.get(k)}
+        if changed:
+            out[section] = changed
+    bp = {f["index"]: f["priority"] for f in before.get("files", [])
+          if isinstance(f, dict)}
+    ap = {f["index"]: f["priority"] for f in after.get("files", [])
+          if isinstance(f, dict)}
+    pdiff = {i: {"before": bp.get(i), "after": ap.get(i)}
+             for i in set(bp) | set(ap) if bp.get(i) != ap.get(i)}
+    if pdiff:
+        out["priorities"] = pdiff
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--config", help="path to config.yaml")
+    ap.add_argument("--list", action="store_true",
+                    help="show multi-file candidates and exit")
+    ap.add_argument("--hash", help="infohash of the torrent to capture")
+    ap.add_argument("--steer", action="store_true",
+                    help="actually steer. Without this only the baseline is taken")
+    ap.add_argument("--abandon", action="store_true",
+                    help="exit WITHOUT restoring, to test reconcile on restart")
+    ap.add_argument("--seconds", type=int, default=180,
+                    help="how long to hold the steer (default 180)")
+    ap.add_argument("--interval", type=int, default=5,
+                    help="seconds between samples (default 5)")
+    ap.add_argument("--outdir", default="captures",
+                    help="where to write the capture (default ./captures)")
+    args = ap.parse_args()
+
+    if args.config:
+        cfg_mod.CONFIG_PATH = args.config
+    elif os.environ.get("PROTECTARR_CONFIG"):
+        cfg_mod.CONFIG_PATH = os.environ["PROTECTARR_CONFIG"]
+    elif os.path.exists("config/config.yaml"):
+        cfg_mod.CONFIG_PATH = "config/config.yaml"
+
+    if args.abandon and not args.steer:
+        ap.error("--abandon only means anything together with --steer")
+    return run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
