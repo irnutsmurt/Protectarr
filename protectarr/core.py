@@ -356,8 +356,13 @@ def scan(cfg, state, side_effects=True):
     # remembered. A torrent no queue mentions is not automatically ownerless:
     # it may have been owned yesterday, or its owner may simply be down.
     claims, readable = ownership.collect(arr_clients)
-    resolved = ownership.resolve(claims, readable,
-                                 hashes=[t.get("hash") or "" for t in torrents])
+    resolved = ownership.resolve(
+        claims, readable,
+        # Only torrents still pulling bytes can be orphans. A download that
+        # finished leaves its *arr's queue too, and that is the *arr importing
+        # it, not abandoning it.
+        downloading=[t.get("hash") or "" for t in torrents
+                     if (t.get("progress") or 0) < 1])
     # hash -> (client, queue_record), for the torrents exactly one *arr claims.
     owner = {h: (o.client, o.record) for h, o in resolved.items()
              if o.state == ownership.OWNED and o.client}
