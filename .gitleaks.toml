@@ -1,0 +1,53 @@
+## Secret scanning for Protectarr.
+##
+## This repo is public and its whole job is handling other people's API keys, so
+## a committed credential is not just embarrassing, it is on brand. CI fails the
+## build on any finding.
+##
+## The allowlist below is deliberately narrow: it names the specific synthetic
+## values the test suite uses, not the paths they live in. Allowlisting `tests/`
+## wholesale would switch off scanning in exactly the place a real key is most
+## likely to be pasted while debugging.
+
+title = "Protectarr"
+
+[extend]
+useDefault = true
+
+## Protectarr's own credential format, caught deterministically.
+##
+## The default `generic-api-key` rule does catch these, but only by entropy and
+## only when an assignment keyword sits on the same line. A key pasted bare into
+## a scratch file or a bug report walks straight through it. That heuristic is
+## also upstream's to change, and we do not want the guarantee that our own key
+## cannot be committed to depend on someone else's tuning.
+##
+## `config.py` mints keys with `secrets.token_hex(32)`, so the format is exactly
+## 64 lowercase hex characters. No `keywords` prefilter on purpose: the whole
+## point is to catch the key with no context around it.
+[[rules]]
+id = "protectarr-api-key"
+description = "Protectarr API key (secrets.token_hex(32), 64 lowercase hex)"
+# RE2 has no lookaround, so the boundaries are consumed and the key is taken
+# from the capture group. Excluding a leading ':' keeps `sha256:<digest>` image
+# pins from tripping it.
+regex = '''(?:^|[^0-9a-fA-F:])([0-9a-f]{64})(?:[^0-9a-fA-F]|$)'''
+secretGroup = 1
+
+[allowlist]
+description = "Obviously synthetic credentials used by the test suite."
+# Match against the captured secret rather than the whole line, so these cannot
+# be used to smuggle a real value past the scanner by putting it on the same
+# line as a fake one.
+regexTarget = "secret"
+regexes = [
+  # Key-shaped fixtures: "0123456789abcdef" repeated to 64 hex chars.
+  '''^(?:0123456789abcdef)+$''',
+  # A single character repeated, e.g. "a" * 32 for an *arr key. Spelled out
+  # per character because gitleaks uses RE2, which has no backreferences.
+  '''^(?:a{8,}|s{8,})$''',
+  # Shaped like a qBittorrent bearer key, spells the alphabet.
+  '''^qbt_abcdefgh12345678$''',
+  # The canonical joke password.
+  '''^hunter2hunter2$''',
+]

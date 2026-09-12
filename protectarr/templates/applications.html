@@ -80,13 +80,22 @@
         <input type="url" name="qbit_web_url" value="{{ cfg.qbittorrent.web_url or '' }}" placeholder="https://qbit.example.com">
         <label>API key <span class="hint">(qBittorrent ≥ 5.2.0, <code>qbt_…</code> - used instead of username/password if set)</span></label>
         <div class="secret-field">
-          <input type="password" name="qbit_api_key" id="qbit_api_key" value="{{ cfg.qbittorrent.api_key }}" placeholder="qbt_…" autocomplete="off">
+          <input type="password" name="qbit_api_key" id="qbit_api_key" placeholder="{{ '(unchanged)' if cfg.qbittorrent.api_key else 'qbt_…' }}" autocomplete="off">
           <button type="button" class="btn small reveal" tabindex="-1" onclick="toggleSecret(this)">Show</button>
         </div>
+        {% if cfg.qbittorrent.api_key %}
+        {# Blank means "keep what is stored", so removing an optional credential
+           needs an action of its own rather than an empty box nobody can tell
+           apart from "I did not touch this". #}
+        <label class="check"><input type="checkbox" name="qbit_api_key_clear"> Remove the stored API key (use username/password instead)</label>
+        {% endif %}
         <div class="row">
           <div><label>Username</label><input type="text" name="qbit_username" id="qbit_username" value="{{ cfg.qbittorrent.username }}"></div>
-          <div><label>Password</label><input type="password" name="qbit_password" id="qbit_password" placeholder="(unchanged)"></div>
+          <div><label>Password</label><input type="password" name="qbit_password" id="qbit_password" placeholder="{{ '(unchanged)' if cfg.qbittorrent.password else 'set a password' }}"></div>
         </div>
+        {% if cfg.qbittorrent.password %}
+        <label class="check"><input type="checkbox" name="qbit_password_clear"> Remove the stored password (use the API key instead)</label>
+        {% endif %}
         <label class="check"><input type="checkbox" name="qbit_verify_ssl" {% if cfg.qbittorrent.verify_ssl %}checked{% endif %}> Verify SSL</label>
         <p style="margin-top:14px"><button type="button" class="btn small" onclick="testQbit()">Test</button><span class="msg" id="qbit_msg"></span></p>
       </div>
@@ -141,7 +150,10 @@
 {% block scripts %}
 {% include "_js.html" %}
 <script>
-window.APPS = {{ cfg.arrs | tojson }};
+// Built server-side by _arrs_for_browser(): name, type, URLs and whether a key
+// is stored. The api_key field is not in this object at all, so there is no
+// version of the page, cached or saved, that contains an *arr credential.
+window.APPS = {{ apps_view | tojson }};
 
 function openQbit() { document.getElementById('qbitModal').hidden = false; }
 function closeQbit() { document.getElementById('qbitModal').hidden = true; }
@@ -155,7 +167,9 @@ function openApp(idx) {
   document.getElementById('m_type').value = a.type || document.getElementById('m_type').options[0].value;
   document.getElementById('m_url').value = a.url || '';
   document.getElementById('m_web_url').value = a.web_url || '';
-  document.getElementById('m_key').value = a.api_key || '';
+  const key = document.getElementById('m_key');
+  key.value = '';
+  key.placeholder = a.has_key ? '(unchanged)' : 'required';
   document.getElementById('m_delete').hidden = !editing;
   document.getElementById('m_msg').textContent = '';
   document.getElementById('appModal').hidden = false;
@@ -170,9 +184,13 @@ function deleteApp() {
 }
 function testAppModal() {
   const msg = document.getElementById('m_msg'); msg.textContent='testing…'; msg.style.color='var(--text-dim)';
+  // index lets the server look the stored key up when the field is left blank,
+  // which is the normal case now that editing does not prefill it.
+  const idx = document.getElementById('m_index').value;
   post('{{ url_for("test_arr") }}', {
     name: document.getElementById('m_name').value, type: document.getElementById('m_type').value,
-    url: document.getElementById('m_url').value, api_key: document.getElementById('m_key').value
+    url: document.getElementById('m_url').value, api_key: document.getElementById('m_key').value,
+    index: idx === '' ? null : parseInt(idx, 10)
   }).then(r=>setMsg(msg,r));
 }
 // close modals on overlay click / Esc

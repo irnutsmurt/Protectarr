@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Gitleaks scans history, not just the tip. A key committed and then
+          # "removed" in a later commit is still published.
+          fetch-depth: 0
+
+      - name: Scan for committed secrets
+        # Pinned to a release rather than :latest, so the rules that gate the
+        # build only change when we change them.
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            zricethezav/gitleaks:v8.21.2 \
+            git --config /repo/.gitleaks.toml --redact --verbose --exit-code 1
+
+      - name: Prove the scanner would catch a Protectarr key
+        # A scan that passes tells you nothing on its own: a broken config, a
+        # bad path or a silently-everything-allowlisted rule all look identical
+        # to "clean". So plant a synthetic key in a throwaway tree and require
+        # the scanner to fail on it. The value below is generated here and
+        # never leaves the runner.
+        run: |
+          set -e
+          trap 'rm -rf "$RUNNER_TEMP/leakcheck"' EXIT
+          mkdir -p "$RUNNER_TEMP/leakcheck"
+          cp .gitleaks.toml "$RUNNER_TEMP/leakcheck/"
+          python3 -c "import secrets; print(secrets.token_hex(32))" \
+            > "$RUNNER_TEMP/leakcheck/planted.txt"
+          if docker run --rm -v "$RUNNER_TEMP/leakcheck:/repo" -w /repo \
+               zricethezav/gitleaks:v8.21.2 \
+               detect --no-git --config /repo/.gitleaks.toml --redact --exit-code 1
+          then
+            echo "::error::Gitleaks did not flag a planted Protectarr-format key."
+            echo "Secret scanning is not actually protecting this repo."
+            exit 1
+          fi
+          echo "Planted key was caught, as it should be."

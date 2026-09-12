@@ -24,7 +24,7 @@ from protectarr import logs  # noqa: E402
 # Shaped like a real Protectarr key (64 hex chars) so redaction is tested against
 # something realistic. Never put an actual key here: this repo is public, and the
 # tests would then leak exactly what they exist to prove never leaks.
-REAL_KEY = "0123456789abcdef" * 4
+FAKE_KEY = "0123456789abcdef" * 4
 
 
 class LogTestCase(unittest.TestCase):
@@ -35,7 +35,7 @@ class LogTestCase(unittest.TestCase):
             "logging": {"level": "debug", "console_level": "error",
                         "file_enabled": True, "path": os.path.join(self.dir, "logs"),
                         "retention_days": 3},
-            "web": {"api_key": REAL_KEY, "secret_key": "s" * 40},
+            "web": {"api_key": FAKE_KEY, "secret_key": "s" * 40},
             "qbittorrent": {"password": "hunter2hunter2", "api_key": "qbt_abcdefgh12345678"},
             "arrs": [{"name": "Sonarr", "api_key": "a" * 32}],
         }
@@ -44,9 +44,14 @@ class LogTestCase(unittest.TestCase):
         self.log = logs.get("test")
 
     def tearDown(self):
-        for h in list(logging.getLogger(logs.LOGGER_NAME).handlers):
-            logging.getLogger(logs.LOGGER_NAME).removeHandler(h)
-            h.close()
+        # configure() hands these same handler objects to the third-party
+        # loggers as well, so detaching them only from ours would leave
+        # werkzeug holding a closed file.
+        for name in (logs.LOGGER_NAME,) + logs.THIRD_PARTY_LOGGERS:
+            lg = logging.getLogger(name)
+            for h in list(lg.handlers):
+                lg.removeHandler(h)
+                h.close()
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def file_text(self):
@@ -57,11 +62,11 @@ class LogTestCase(unittest.TestCase):
 
 class TestRedaction(LogTestCase):
     def test_config_api_key_never_reaches_any_sink(self):
-        self.log.info("calling http://host/api/v1/stats?apikey=%s", REAL_KEY)
+        self.log.info("calling http://host/api/v1/stats?apikey=%s", FAKE_KEY)
         text, ring = self.file_text(), "\n".join(logs.ring())
         for where, blob in (("file", text), ("ring", ring)):
             with self.subTest(sink=where):
-                self.assertNotIn(REAL_KEY, blob)
+                self.assertNotIn(FAKE_KEY, blob)
                 self.assertIn(logs.MASK, blob)
 
     def test_qbittorrent_password_is_redacted(self):
@@ -89,10 +94,10 @@ class TestRedaction(LogTestCase):
 
     def test_exception_text_is_redacted_too(self):
         try:
-            raise ValueError(f"connection to http://h/api?apikey={REAL_KEY} failed")
+            raise ValueError(f"connection to http://h/api?apikey={FAKE_KEY} failed")
         except ValueError:
             self.log.exception("request blew up")
-        self.assertNotIn(REAL_KEY, self.file_text())
+        self.assertNotIn(FAKE_KEY, self.file_text())
 
     def test_short_values_are_not_treated_as_secrets(self):
         # A 3-char password would otherwise shred unrelated text.

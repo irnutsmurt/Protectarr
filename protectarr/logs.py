@@ -79,6 +79,9 @@ _file_handler = None
 
 MASK = "***REDACTED***"
 
+# Libraries whose output we take ownership of so it goes through the redactor.
+THIRD_PARTY_LOGGERS = ("urllib3", "requests", "werkzeug")
+
 # Secrets recognisable by shape, whatever config says.
 _PATTERNS = [
     re.compile(r"(?i)\b(apikey|api_key|x-api-key)\s*[=:]\s*([^\s&'\"]+)"),
@@ -289,8 +292,23 @@ def configure(cfg):
     # Third-party chatter is noise at anything above debug, and urllib3 in
     # particular logs full URLs.
     noisy = logging.WARNING if _level(lg.get("level", "info")) > logging.DEBUG else logging.INFO
-    for name in ("urllib3", "requests", "werkzeug"):
-        logging.getLogger(name).setLevel(noisy)
+    handlers = list(root.handlers)
+    for name in THIRD_PARTY_LOGGERS:
+        tp = logging.getLogger(name)
+        tp.setLevel(noisy)
+        # Route their records through OUR handlers and stop them propagating to
+        # the root logger. Otherwise they reach the root's handlers, which the
+        # redactor is not attached to: werkzeug's access line contains the full
+        # request target, so a caller using the documented `?apikey=` form would
+        # have printed their key in clear text at debug level. Taking ownership
+        # of the handler is the only fix that also covers child loggers such as
+        # urllib3.connectionpool, whose records a filter on `urllib3` would
+        # never be consulted for.
+        for h in list(tp.handlers):
+            tp.removeHandler(h)
+        for h in handlers:
+            tp.addHandler(h)
+        tp.propagate = False
     return root
 
 

@@ -40,7 +40,12 @@ def main():
     app = create_app(service)
     web = cfg["web"]
     log.info("WebUI on http://%s:%s", web["host"], web["port"])
-    app.run(host=web["host"], port=int(web["port"]), threaded=True)
+    # debug is pinned off rather than left to default: Flask picks it up from
+    # FLASK_DEBUG in the environment, and the Werkzeug debugger serves an
+    # interactive console with every frame's locals, which here means the *arr
+    # and qBittorrent credentials, to whoever triggered the traceback.
+    app.run(host=web["host"], port=int(web["port"]), threaded=True,
+            debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ PUBLIC_ENDPOINTS = {"login", "static", "ping"}
 API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data",
                  "api_index", "api_status", "api_stats", "api_watchlist",
                  "api_log", "api_preview", "api_command", "api_history",
-                 "api_logfiles", "qbit_taxonomy", "probe_check"}
+                 "api_logfiles", "qbit_taxonomy", "probe_check", "reveal_api_key"}
 BASIC_REALM = 'Basic realm="Protectarr", charset="UTF-8"'
 
 # Settings sub-pages: (key, label, icon, description). qBittorrent + the *arr
@@ -63,6 +63,30 @@ def _mappings_from_form(form):
         elif src or dst:
             partial.append(src or dst)
     return out, partial
+
+
+def _arrs_for_browser(cfg):
+    """The *arr fields the settings UI needs, and nothing else.
+
+    Built by naming what goes out rather than by deleting `api_key` from a copy
+    of the config. An allowlist fails closed: add a credential to an *arr entry
+    later and it simply is not in this dict. A denylist fails open, silently, on
+    exactly the day someone adds the field and forgets this function exists.
+
+    `has_key` carries whether a key is stored, which is all the browser needs to
+    choose between "(unchanged)" and "required" on the input.
+    """
+    out = []
+    for i, a in enumerate(cfg.get("arrs") or []):
+        out.append({
+            "index": i,
+            "name": a.get("name", ""),
+            "type": a.get("type", ""),
+            "url": a.get("url", ""),
+            "web_url": a.get("web_url", ""),
+            "has_key": bool(a.get("api_key")),
+        })
+    return out
 
 
 def _mapping_rows(raw):
@@ -258,7 +282,8 @@ def create_app(service):
 
     @app.route("/")
     def applications():
-        return page("applications.html", active="applications")
+        return page("applications.html", active="applications",
+                    apps_view=_arrs_for_browser(cfg_mod.load()))
 
     @app.route("/dashboard")
     def dashboard():
@@ -443,9 +468,19 @@ def create_app(service):
         f = request.form
         q = cfg["qbittorrent"]
         q["url"] = f.get("qbit_url", "").strip()
-        q["api_key"] = f.get("qbit_api_key", "").strip()
         q["username"] = f.get("qbit_username", "").strip()
-        if f.get("qbit_password", ""):
+        # Blank means "leave it alone", matching the password field beside it,
+        # because the stored value is no longer sent to the browser to be
+        # resubmitted. The API key is optional here (username/password is the
+        # alternative), so blank alone cannot mean "remove it" without being
+        # ambiguous. Clearing is an explicit checkbox instead.
+        if f.get("qbit_api_key_clear") == "on":
+            q["api_key"] = ""
+        elif f.get("qbit_api_key", "").strip():
+            q["api_key"] = f["qbit_api_key"].strip()
+        if f.get("qbit_password_clear") == "on":
+            q["password"] = ""
+        elif f.get("qbit_password", ""):
             q["password"] = f["qbit_password"]
         q["verify_ssl"] = f.get("qbit_verify_ssl") == "on"
         cfg["qbittorrent"]["web_url"] = f.get("qbit_web_url", "").strip()
@@ -464,14 +499,24 @@ def create_app(service):
         if not name or not url or atype not in ARR_TYPES:
             flash("Name, a valid type, and URL are required.")
             return redirect(url_for("applications"))
-        entry = {"name": name, "type": atype, "url": url,
-                 "api_key": f.get("arr_key", "").strip()}
+        arrs = cfg.get("arrs", [])
+        idx = f.get("arr_index", "")
+        editing = idx.isdigit() and int(idx) < len(arrs)
+        # An *arr is useless without a key, so this one is a required credential:
+        # blank while editing means "keep the stored key", and there is no clear
+        # action because clearing it would only break the app. Deleting the
+        # application is the way to get rid of its key.
+        key = f.get("arr_key", "").strip()
+        if not key:
+            if not editing:
+                flash("An API key is required.")
+                return redirect(url_for("applications"))
+            key = arrs[int(idx)].get("api_key", "")
+        entry = {"name": name, "type": atype, "url": url, "api_key": key}
         web_url = f.get("arr_web_url", "").strip()
         if web_url:
             entry["web_url"] = web_url
-        arrs = cfg.get("arrs", [])
-        idx = f.get("arr_index", "")
-        if idx.isdigit() and int(idx) < len(arrs):
+        if editing:
             arrs[int(idx)] = entry
         else:
             arrs.append(entry)
@@ -633,9 +678,18 @@ def create_app(service):
     @app.route("/test/arr", methods=["POST"], endpoint="test_arr")
     def test_arr():
         d = request.json or {}
+        # The edit form no longer holds the stored key, so a Test with the field
+        # left blank has to look it up rather than fail as "no key". Resolved by
+        # index server-side: the browser never learns the value either way.
+        key = (d.get("api_key") or "").strip()
+        if not key:
+            arrs = cfg_mod.load().get("arrs") or []
+            idx = d.get("index")
+            if isinstance(idx, int) and 0 <= idx < len(arrs):
+                key = arrs[idx].get("api_key", "")
         try:
             client = ArrClient(d.get("name", "arr"), d.get("type", ""),
-                               d.get("url", ""), d.get("api_key", ""))
+                               d.get("url", ""), key)
         except ValueError as e:
             return jsonify(ok=False, message=str(e))
         ok, msg = client.test()
@@ -653,6 +707,28 @@ def create_app(service):
         service.update_blocklist(cfg_mod.load(), force=True)
         flash("IP blocklist update triggered.")
         return redirect(url_for("settings_page", section="blocklist"))
+
+    @app.route("/settings/security/apikey", endpoint="reveal_api_key")
+    def reveal_api_key():
+        """Protectarr's own API key, handed over only when asked for.
+
+        The security page used to render the key into its HTML on every visit,
+        so it sat in the DOM, in the browser cache and in any saved page for as
+        long as the tab was open. Fetching it on Reveal or Copy narrows that to
+        the moment the user asked.
+
+        Be accurate about what this buys: the key still reaches the browser, so
+        anything with script access to the page (an extension, an XSS) can call
+        this endpoint just as easily. What it removes is the passive copy lying
+        around when nobody asked for it, not an attacker who is already inside.
+        """
+        key = cfg_mod.load()["web"].get("api_key", "")
+        if not key:
+            return jsonify(ok=False, message="No API key is configured."), 404
+        resp = jsonify(ok=True, key=key)
+        # Not in a shared cache, not on disk, not in the back/forward buffer.
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        return resp
 
     @app.route("/settings/security/apikey/regenerate", methods=["POST"])
     def regenerate_api_key():
