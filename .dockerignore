@@ -11,3 +11,6 @@ venv/
 swarm_sample.json
 *.md
 config.example.yaml
+
+.env
+.env.*

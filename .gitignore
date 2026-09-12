@@ -10,3 +10,8 @@ swarm_sample.json
 logs/
 *.log
 *.log.*.gz
+
+# Local secrets. Never commit: docker-compose reads these, and the repo is public.
+.env
+.env.*
+!.env.example
