@@ -68,8 +68,10 @@
               <div class="hint" style="margin-top:4px">
                 {% if act.result == 'reaped' and act.via == 'category_fallback' %}
                   removed from qBittorrent · category fallback, no *arr owned it
+                {% elif act.result == 'reaped' and act.blocklisted %}
+                  removed · blocklist confirmed{% if act.blocklist_row %} (row {{ act.blocklist_row }}){% endif %}
                 {% elif act.result == 'reaped' %}
-                  removed · blocklist {{ 'confirmed' if act.blocklisted else 'unconfirmed' }}
+                  removed · BLOCKLIST UNVERIFIED · no replacement was searched for{% if act.verification %} · {{ act.verification }}{% endif %}
                 {% elif act.result == 'would_reap' %}
                   would {{ act.decision }}
                 {% elif act.result == 'partial' %}

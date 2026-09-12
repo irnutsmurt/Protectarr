@@ -43,11 +43,22 @@ import json
 import time
 import argparse
 import datetime
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from protectarr import config as cfg_mod                       # noqa: E402
-from protectarr.arr import build_clients, _norm_title          # noqa: E402
+from protectarr.arr import build_clients                       # noqa: E402
+
+# Kept local now that the product has none. This harness measured what
+# separator-insensitive matching does, and the answer was that the comparison
+# was between the wrong two strings all along: take the title from the *arr's
+# own history record and it is byte-identical to the blocklist's.
+_SEPARATORS = re.compile(r"[^a-z0-9]+")
+
+
+def _norm_title(s):
+    return _SEPARATORS.sub(" ", (s or "").lower()).strip()
 
 QUEUE_FIELDS = ("id", "title", "status", "trackedDownloadStatus",
                 "trackedDownloadState", "downloadId", "episodeId", "movieId",

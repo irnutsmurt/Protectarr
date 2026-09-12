@@ -257,11 +257,18 @@ class TestTiming(unittest.TestCase):
         d = tempfile.mkdtemp()
         cfg_mod.CONFIG_PATH = os.path.join(d, "config.yaml")
 
+        from protectarr.arr import ARR_TYPES
+
         class Client:
             name, type = "Sonarr", "sonarr"
+            meta = ARR_TYPES["sonarr"]
             def grab_indexer(self, x): return "IX"
-            def fail(self, i): pass
-            def blocklist_match(self, torrent_hash=None, titles=()):
+            def history_watermark(self): return 10
+            def fail(self, i): return "removed"
+            def verify_remediation(self, h, after_id=None):
+                return {"verified": True, "event": {"id": 11},
+                        "blocklist": {"id": 3}, "why": "both found"}
+            def airdate_status(self, rec, g):
                 raise requests.RequestException("timed out after the delete")
 
         f = detectors.finding("extension", "extension_match", filename="x.exe")

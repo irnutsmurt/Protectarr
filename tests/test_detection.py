@@ -294,101 +294,283 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestBlocklistConfirmation(unittest.TestCase):
-    """The live reap of 2026-09-11 19:10 reported blocklisted=false because the
-    queue title and the blocklist's sourceTitle differ only by separator."""
+class OracleCase(unittest.TestCase):
+    """A fake Servarr that answers /history, /blocklist and /command.
+
+    The shapes are copied from live Sonarr and Radarr instances, including the
+    two that bite: the history `downloadId` filter is case sensitive, and
+    `eventType` comes back as a name although it must be sent as a number.
+    """
+
+    ARR_TYPE = "sonarr"
+    HASH = "FFCFF9E6CD9A5D4CAD048BA041F987676FD8DCA0"
+    TITLE = "Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"
+    WHEN = "2026-09-12T20:37:45Z"
 
     def setUp(self):
         from protectarr.arr import ArrClient
-        self.client = ArrClient("Sonarr", "sonarr", "http://x", "k")
-        self.records = []
-        self.calls = 0
+        self.client = ArrClient("Sonarr", self.ARR_TYPE, "http://x", "test-api-key")
+        self.history = []
+        self.blocklist = []
+        self.calls = []
+        # Set to False to model an *arr whose filter is case insensitive.
+        self.case_sensitive = True
+        # Set to True to model a server that ignores the filter entirely and
+        # hands back everything. Measured behaviour for a parameter Servarr
+        # does not understand: HTTP 200, default result, no complaint.
+        self.ignores_filters = False
+
+        test = self
 
         class FakeResp:
-            def __init__(inner, records):
-                inner._r = records
+            status_code = 200
+
+            def __init__(inner, body):
+                inner._b = body
 
             def raise_for_status(inner):
                 pass
 
             def json(inner):
-                return {"records": inner._r}
+                return inner._b
 
         def fake_get(url, params=None, timeout=None):
-            self.calls += 1
-            return FakeResp(self.records)
+            params = params or {}
+            test.calls.append((url, dict(params)))
+            if url.endswith("/history"):
+                recs = list(test.history)
+                want = params.get("downloadId")
+                if want and not test.ignores_filters:
+                    recs = [r for r in recs
+                            if (r.get("downloadId") == want
+                                if test.case_sensitive
+                                else (r.get("downloadId") or "").lower() == want.lower())]
+                if params.get("eventType") is not None and not test.ignores_filters:
+                    # Servarr rejects the name; only the number filters.
+                    recs = [r for r in recs if r.get("eventType") == "downloadFailed"]
+                recs.sort(key=lambda r: r.get("id", 0), reverse=True)
+                return FakeResp({"records": recs[:params.get("pageSize", 100)],
+                                 "totalRecords": len(recs)})
+            if url.endswith("/blocklist"):
+                recs = sorted(test.blocklist, key=lambda r: r.get("id", 0),
+                              reverse=True)
+                return FakeResp({"records": recs[:params.get("pageSize", 100)],
+                                 "totalRecords": len(recs)})
+            raise AssertionError("unexpected GET " + url)
 
         self.client._s.get = fake_get
 
-    QUEUE = "Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb"
-    RAW = "Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"
+    def event(self, **over):
+        rec = {"id": 17725, "date": self.WHEN, "downloadId": self.HASH,
+               "sourceTitle": self.TITLE, "eventType": "downloadFailed",
+               "episodeId": 16801, "seriesId": 187,
+               "data": {"message": "Manually marked as failed"}}
+        rec.update(over)
+        return rec
 
-    HASH = "ffcff9e6cd9a5d4cad048ba041f987676fd8dca0"
+    def row(self, **over):
+        rec = {"id": 14, "date": self.WHEN, "sourceTitle": self.TITLE,
+               "episodeIds": [16801], "seriesId": 187,
+               "indexer": "LimeTorrents (Prowlarr)"}
+        rec.update(over)
+        return rec
 
-    def match(self, **kw):
-        kw.setdefault("retries", 1)
-        return self.client.blocklist_match(**kw)
 
-    def test_dotted_blocklist_entry_matches_spaced_queue_title(self):
-        self.records = [{"sourceTitle": self.RAW}]
-        self.assertEqual(self.match(titles=self.QUEUE), "normalized")
+class TestHistoryOracle(OracleCase):
+    """Identity comes from the infohash on the history event, nothing else."""
 
-    def test_spaced_blocklist_entry_matches_too(self):
-        self.records = [{"sourceTitle": self.QUEUE}]
-        self.assertEqual(self.match(titles=self.RAW), "normalized")
+    def test_a_matching_event_and_row_verify(self):
+        self.history = [self.event()]
+        self.blocklist = [self.row()]
+        got = self.client.verify_remediation(self.HASH.lower(), retries=1)
+        self.assertTrue(got["verified"])
+        self.assertEqual(got["event"]["id"], 17725)
+        self.assertEqual(got["blocklist"]["id"], 14)
+        self.assertEqual(got["event"]["message"], "Manually marked as failed")
 
-    def test_exact_title_beats_the_normalised_fallback(self):
-        self.records = [{"sourceTitle": self.QUEUE}]
-        self.assertEqual(self.match(titles=self.QUEUE), "title")
+    def test_the_hash_is_uppercased_because_the_filter_is_case_sensitive(self):
+        """qBittorrent says lowercase; Servarr stores and matches uppercase.
 
-    def test_hash_wins_even_when_a_title_also_matches(self):
-        self.records = [{"sourceTitle": self.QUEUE,
-                         "torrentInfoHash": self.HASH.upper()}]
-        self.assertEqual(self.match(torrent_hash=self.HASH,
-                                    titles=self.QUEUE), "hash")
+        Sending the hash as handed to us returns HTTP 200 with zero records,
+        which reads exactly like a remediation that never happened.
+        """
+        self.history = [self.event()]
+        self.blocklist = [self.row()]
+        self.assertTrue(
+            self.client.verify_remediation(self.HASH.lower(), retries=1)["verified"])
+        asked = [p.get("downloadId") for _, p in self.calls if "downloadId" in p]
+        self.assertIn(self.HASH.upper(), asked)
 
-    def test_hash_on_a_later_record_is_not_pre_empted_by_a_weak_match(self):
-        self.records = [{"sourceTitle": self.RAW},
-                        {"sourceTitle": "unrelated", "downloadId": self.HASH}]
-        self.assertEqual(self.match(torrent_hash=self.HASH,
-                                    titles=self.QUEUE), "hash")
+    def test_the_event_type_is_sent_as_a_number(self):
+        """`eventType=downloadFailed` is HTTP 400 on both apps."""
+        self.history = [self.event()]
+        self.blocklist = [self.row()]
+        self.client.verify_remediation(self.HASH, retries=1)
+        types = [p.get("eventType") for _, p in self.calls if "eventType" in p]
+        self.assertTrue(types)
+        for value in types:
+            self.assertEqual(value, 4)
 
-    def test_downloadid_is_accepted_as_the_hash(self):
-        self.records = [{"sourceTitle": "unrelated", "downloadId": self.HASH}]
-        self.assertEqual(self.match(torrent_hash=self.HASH), "hash")
+    def test_an_event_for_another_torrent_is_ignored(self):
+        """A filter Servarr does not apply is returned as 200 and no complaint.
 
-    def test_missing_hash_field_degrades_to_titles(self):
-        self.records = [{"sourceTitle": self.RAW}]
-        self.assertEqual(self.match(torrent_hash=self.HASH,
-                                    titles=self.QUEUE), "normalized")
+        `sortKey=wibble` behaves exactly this way on both apps, so every
+        server-side filter is re-applied here rather than trusted.
+        """
+        self.ignores_filters = True
+        self.history = [self.event(downloadId="A" * 40, id=17726)]
+        self.blocklist = [self.row()]
+        got = self.client.verify_remediation(self.HASH, retries=1)
+        self.assertFalse(got["verified"])
 
-    def test_several_candidate_titles(self):
-        self.records = [{"sourceTitle": self.RAW}]
-        self.assertEqual(
-            self.match(titles=["something else entirely", self.QUEUE]), "normalized")
+    def test_an_event_of_another_type_is_ignored(self):
+        """Same reason: `grabbed` for this hash is not a failed download."""
+        self.ignores_filters = True
+        self.history = [self.event(eventType="grabbed", id=17726)]
+        self.blocklist = [self.row()]
+        self.assertFalse(
+            self.client.verify_remediation(self.HASH, retries=1)["verified"])
 
-    def test_a_different_release_still_does_not_match(self):
-        self.records = [{"sourceTitle":
-                         "Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-OTHER"}]
-        self.assertIsNone(self.match(titles=self.QUEUE))
+    def test_no_event_is_not_verified(self):
+        self.blocklist = [self.row()]
+        got = self.client.verify_remediation(self.HASH, retries=1)
+        self.assertFalse(got["verified"])
+        self.assertIsNone(got["event"])
 
-    def test_a_different_episode_still_does_not_match(self):
-        self.records = [{"sourceTitle":
-                         "Ted.Lasso.S04E06.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb"}]
-        self.assertIsNone(self.match(titles=self.QUEUE))
+    def test_an_event_without_a_blocklist_row_is_reported_separately(self):
+        """History proves the delete was processed, not that it blocklisted.
 
-    def test_a_different_torrent_hash_does_not_match(self):
-        self.records = [{"sourceTitle": "unrelated", "torrentInfoHash": "deadbeef"}]
-        self.assertIsNone(self.match(torrent_hash=self.HASH))
+        `blocklist=true` is its own query parameter, and whether a
+        downloadFailed event can happen without a row is untested. The two
+        failures must not read the same in a bug report.
+        """
+        self.history = [self.event()]
+        got = self.client.verify_remediation(self.HASH, retries=1)
+        self.assertFalse(got["verified"])
+        self.assertIsNotNone(got["event"])
+        self.assertIsNone(got["blocklist"])
+        self.assertIn("no blocklist row", got["why"])
 
-    def test_nothing_to_match_on_short_circuits_without_calling_the_api(self):
-        self.assertIsNone(self.match(titles=["", None], retries=3))
-        self.assertEqual(self.calls, 0)
+    def test_an_older_event_does_not_satisfy_a_newer_intent(self):
+        """The watermark is the whole point of recording one."""
+        self.history = [self.event(id=100)]
+        self.blocklist = [self.row()]
+        self.assertTrue(self.client.verify_remediation(self.HASH, retries=1)["verified"])
+        self.assertFalse(self.client.verify_remediation(
+            self.HASH, after_id=100, retries=1)["verified"])
+        self.assertTrue(self.client.verify_remediation(
+            self.HASH, after_id=99, retries=1)["verified"])
 
-    def test_polls_because_sonarr_writes_the_entry_late(self):
-        self.records = []
-        self.assertIsNone(self.match(titles=self.QUEUE, retries=3, delay=0))
-        self.assertEqual(self.calls, 3)
+    def test_no_hash_verifies_nothing(self):
+        self.history = [self.event()]
+        self.blocklist = [self.row()]
+        got = self.client.verify_remediation("", retries=1)
+        self.assertFalse(got["verified"])
+        self.assertEqual(self.calls, [], "it should not have asked")
+
+    def test_it_polls_because_the_records_land_a_moment_later(self):
+        self.history = [self.event()]
+
+        rows = [self.row()]
+        original = self.client.blocklist_rows
+        state = {"n": 0}
+
+        def late():
+            state["n"] += 1
+            return rows if state["n"] > 1 else []
+
+        self.client.blocklist_rows = late
+        got = self.client.verify_remediation(self.HASH, retries=3, delay=0)
+        self.assertTrue(got["verified"])
+        self.client.blocklist_rows = original
+
+
+class TestBlocklistCorrelation(OracleCase):
+    """Exact fields only. No normalisation, ever."""
+
+    def test_a_duplicate_title_is_resolved_by_date(self):
+        """Six live Sonarr titles appear twice, from re-grabbing a release.
+
+        The decoy is given the higher id so that it is the one considered
+        first. Picking whichever row happens to come back first would pass
+        without the date check and correlate the wrong remediation.
+        """
+        self.history = [self.event()]
+        self.blocklist = [self.row(id=14, date="2026-09-01T10:00:00Z"),
+                          self.row(id=13)]
+        got = self.client.verify_remediation(self.HASH, retries=1)
+        self.assertEqual(got["blocklist"]["id"], 13)
+
+    def test_the_same_media_from_another_remediation_does_not_count(self):
+        """Episode 19135 is on four separate blocklist rows. Media is not id."""
+        self.history = [self.event()]
+        self.blocklist = [self.row(id=9, sourceTitle="Something.Else.720p",
+                                   date="2026-09-01T10:00:00Z")]
+        got = self.client.verify_remediation(self.HASH, retries=1)
+        self.assertFalse(got["verified"])
+
+    def test_a_row_for_a_different_episode_is_rejected(self):
+        self.history = [self.event()]
+        self.blocklist = [self.row(episodeIds=[99999])]
+        self.assertFalse(
+            self.client.verify_remediation(self.HASH, retries=1)["verified"])
+
+    def test_titles_are_compared_byte_for_byte(self):
+        """qBittorrent's spaced name is never one of the two strings compared.
+
+        Both sides are the *arr's own rendering of the release, so they are
+        identical - including Radarr's doubled year. The old matcher compared
+        the download client's name against the *arr's, which is why it needed
+        separator-insensitive matching and why that was the wrong fix.
+        """
+        self.history = [self.event()]
+        self.blocklist = [self.row(
+            sourceTitle="Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb")]
+        self.assertFalse(
+            self.client.verify_remediation(self.HASH, retries=1)["verified"])
+
+    def test_a_missing_media_id_does_not_block_the_match(self):
+        """Corroboration when both sides state one, never a requirement."""
+        self.history = [self.event()]
+        self.blocklist = [self.row(episodeIds=[])]
+        self.assertTrue(
+            self.client.verify_remediation(self.HASH, retries=1)["verified"])
+
+
+class TestRadarrOracle(OracleCase):
+    """The same chain on Radarr, where the doubled year lives."""
+
+    ARR_TYPE = "radarr"
+    HASH = "A28B34794D0F57B24D6385C67F0979DC844DE95A"
+    TITLE = "THE FIRST SLAM DUNK (2022) 2022 [BluRay.2160p.AV1.FLAC.ITA.OPUS]"
+    WHEN = "2026-09-12T20:43:52Z"
+
+    def event(self, **over):
+        rec = {"id": 26, "date": self.WHEN, "downloadId": self.HASH,
+               "sourceTitle": self.TITLE, "eventType": "downloadFailed",
+               "movieId": 18,
+               "data": {"message": "Manually marked as failed"}}
+        rec.update(over)
+        return rec
+
+    def row(self, **over):
+        rec = {"id": 1, "date": self.WHEN, "sourceTitle": self.TITLE,
+               "movieId": 18, "indexer": "Nyaa.si (Prowlarr)"}
+        rec.update(over)
+        return rec
+
+    def test_the_doubled_year_needs_no_normalisation(self):
+        self.history = [self.event()]
+        self.blocklist = [self.row()]
+        got = self.client.verify_remediation(self.HASH.lower(), retries=1)
+        self.assertTrue(got["verified"])
+        self.assertEqual(got["blocklist"]["id"], 1)
+
+    def test_a_different_movie_is_rejected(self):
+        self.history = [self.event()]
+        self.blocklist = [self.row(movieId=99)]
+        self.assertFalse(
+            self.client.verify_remediation(self.HASH, retries=1)["verified"])
 
 
 class TestQueueIncludes(unittest.TestCase):
@@ -551,14 +733,20 @@ class TestFallbackIsLabelled(unittest.TestCase):
             def peers(self, h): return []
             def delete(self, h, delete_files=False): pass
 
+        from protectarr.arr import ARR_TYPES
+
         class Client:
             name, type = "Sonarr", "sonarr"
+            meta = ARR_TYPES["sonarr"]
             def grab_indexer(self, d): return "IX"
-            def fail(self, i): pass
-            def blocklist_match(self, torrent_hash=None, titles=()): return "normalized"
+            def history_watermark(self): return 100
+            def fail(self, i): return "removed"
+            def verify_remediation(self, h, after_id=None):
+                return {"verified": True, "event": {"id": 101},
+                        "blocklist": {"id": 7}, "why": "both found"}
             def airdate_status(self, rec, g): return True, datetime.datetime(
                 2026, 9, 17, tzinfo=datetime.timezone.utc)
-            def search(self, rec): return True
+            def search(self, rec): return 555
 
         f = detectors.finding("extension", "extension_match", filename="x.exe")
         a = {"hash": "abc", "name": "Rel", "bad_file": "x.exe", "reason": "r",

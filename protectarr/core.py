@@ -14,6 +14,7 @@ from . import events
 from . import detectors
 from . import policy
 from . import probe
+from . import intents
 from . import logs
 from .qbit import QbitClient, QbitError
 from .arr import build_clients
@@ -368,6 +369,19 @@ def scan(cfg, state, side_effects=True):
         except Exception:  # noqa: BLE001 - never let cleanup break a scan
             log.exception("Probe ledger reconcile failed")
 
+        # Before anything is detected or acted on, so a torrent whose previous
+        # remediation is still outstanding is settled rather than remediated a
+        # second time.
+        try:
+            summary = intents.reconcile(arr_clients)
+            if summary["removed"] or summary["unverified"]:
+                _log(state, f"Reconciled remediations from an earlier run: "
+                            f"{summary['removed']} confirmed, "
+                            f"{summary['unverified']} unverified",
+                     logging.WARNING if summary["unverified"] else logging.INFO)
+        except Exception:  # noqa: BLE001 - never let cleanup break a scan
+            log.exception("Remediation intent reconcile failed")
+
     for t in torrents:
         thash = t.get("hash", "")
         tstate = t.get("state", "")
@@ -504,9 +518,19 @@ def apply_actions(actions, state, cfg):
     requeue_enabled = safety.get("requeue_after_airdate", True)
     grace = safety.get("airdate_grace_hours", 0)
     warned = state.setdefault("warned", set())
+    # A torrent whose previous remediation has not been accounted for is not
+    # remediated again. Reconciliation is what resolves those, and acting on
+    # one in the meantime would be a second irreversible step taken without
+    # knowing the outcome of the first.
+    outstanding = set() if dry_run else set(intents.blocked())
     for a in actions:
         _r = a.get("reason")
         label = f"{a['name']!r} (bad: {a['bad_file']!r}{' - ' + _r if _r else ''})"
+
+        if a["decision"] != "warn" and (a["hash"] or "").lower() in outstanding:
+            log.debug("Skipping %s: an earlier remediation is still "
+                      "unaccounted for.", label)
+            continue
 
         if a["decision"] == "warn":
             # The profile flagged it without calling for removal. Recorded once
@@ -546,43 +570,98 @@ def apply_actions(actions, state, cfg):
                 log.debug("Failing queue item %s on %s (indexer=%s, title=%r)",
                           record.get("id"), client.name, indexer or "unknown", source_title)
                 peers = _harvest_peers(a, indexer, client.name, state, cfg)  # before removal
-                client.fail(record["id"])  # remove + blocklist, no auto-redownload
-                removed = True
-                # Prefer the infohash; fall back to the titles, either of which
-                # can be the form the blocklist recorded.
-                match = client.blocklist_match(
-                    torrent_hash=a["hash"], titles=[source_title, a["name"]])
-                blocked = match is not None
-                if blocked:
-                    log.debug("Blocklist entry confirmed by %s match", match)
-                else:
-                    log.warning("Could not confirm a blocklist entry for %r; the "
-                                "*arr may still have written one", source_title)
 
-                # Requeue only if it has actually aired/released.
+                # Write-ahead. Everything past this point is irreversible, and
+                # a crash in the middle of it leaves a queue item that is
+                # absent for reasons we would otherwise have no way to
+                # establish. The watermark is read first so the intent records
+                # the *arr's history as it was before we touched it.
+                watermark = client.history_watermark()
+                if not intents.open_intent(a["hash"], client, record,
+                                           indexer=indexer, watermark=watermark):
+                    _log(state, f"Not reaping {label}: the remediation could not "
+                                f"be written down first.", logging.ERROR)
+                    events.record(_event(
+                        a, cfg, owner=_owner_block(a["_owner"]),
+                        action={"result": "failed", "decision": "arr_fail",
+                                "removed": False, "blocklisted": False,
+                                "error": "remediation intent could not be persisted"},
+                        redownload={"decision": "none", "reason": "not_applicable"}))
+                    continue
+
+                outcome = client.fail(record["id"])  # remove + blocklist
+                removed = True
+                evidence = client.verify_remediation(a["hash"],
+                                                     after_id=watermark)
+                blocked = evidence["verified"]
+                if blocked:
+                    intents.update(a["hash"], milestone=intents.REMOVED,
+                                   evidence=evidence, error=None)
+                    log.debug("Remediation verified: history event %s, "
+                              "blocklist row %s",
+                              (evidence["event"] or {}).get("id"),
+                              (evidence["blocklist"] or {}).get("id"))
+                elif not evidence.get("reachable", True):
+                    # We could not ask. The intent stays pending so the next
+                    # reconcile asks again; an *arr that was briefly down is
+                    # not evidence that the remediation failed.
+                    intents.update(a["hash"], evidence=evidence,
+                                   error=evidence["why"])
+                else:
+                    intents.update(a["hash"],
+                                   milestone=intents.FAILED_UNVERIFIED,
+                                   evidence=evidence, error=evidence["why"])
+
+                # Requeue only if the removal is verified AND it has aired.
+                # Unverified is not a reason to try harder: if we cannot show
+                # the release was blocklisted, a search is an invitation to the
+                # *arr to grab the same condemned release again.
                 requeue = "disabled"
                 rd = {"decision": "none", "reason": "requeue_disabled"}
-                if requeue_enabled:
+                if not blocked:
+                    requeue = "held (removal unverified)"
+                    rd = {"decision": "held", "reason": "remediation_unverified",
+                          "detail": evidence["why"]}
+                    log.error(
+                        "REMEDIATION UNVERIFIED for %r on %s: %s. Protectarr "
+                        "will not search for a replacement. The intent is kept "
+                        "in intents.json for diagnosis.",
+                        source_title, client.name, evidence["why"])
+                elif requeue_enabled:
                     aired, when = client.airdate_status(record, grace)
                     whenstr = when.date().isoformat() if when else "unknown"
                     log.debug("Air-date gate: aired=%s date=%s grace=%sh",
                               aired, whenstr, grace)
                     if aired is True:
-                        if client.search(record):
+                        command_id = client.search(record)
+                        if command_id:
                             requeue = "requeued (aired)"
-                            rd = {"decision": "searched", "reason": "aired"}
+                            rd = {"decision": "searched", "reason": "aired",
+                                  "command_id": command_id}
+                            # Not settled yet. A search that has been issued is
+                            # not a search that has finished, and the two are
+                            # only distinguishable by following the command.
+                            intents.update(a["hash"], search={
+                                "command_id": command_id, "issued": time.time(),
+                                "state": None, "result": None, "message": None})
                         else:
                             requeue = "requeue-failed"
                             rd = {"decision": "failed", "reason": "search_failed"}
+                            intents.update(a["hash"], milestone=intents.SETTLED)
                     elif aired is False:
                         requeue = f"held (airs {whenstr})"
                         rd = {"decision": "held", "reason": "not_yet_aired",
                               "airs": whenstr}
+                        intents.update(a["hash"], milestone=intents.SETTLED)
                     else:
                         requeue = "held (airdate unknown)"
                         rd = {"decision": "held", "reason": "airdate_unknown"}
+                        intents.update(a["hash"], milestone=intents.SETTLED)
+                else:
+                    intents.update(a["hash"], milestone=intents.SETTLED)
+
                 _log(state, f"Reaped via {client.name}: {label} | "
-                            f"blocklisted={'yes' if blocked else 'unconfirmed'} | {requeue}")
+                            f"blocklisted={'yes' if blocked else 'UNVERIFIED'} | {requeue}")
                 record_reap(state, client.name, indexer)
                 events.record(_event(
                     a, cfg, indexer=indexer, peers=peers,
@@ -591,9 +670,14 @@ def apply_actions(actions, state, cfg):
                     action={"result": "reaped", "decision": "arr_fail",
                             "via": "arr", "safety_mode": a.get("safety_mode"),
                             "removed": True, "blocklisted": bool(blocked),
-                            # which evidence confirmed it, so a reliance on the
-                            # fuzzy title fallback is visible rather than silent
-                            "blocklist_match": match},
+                            # What the queue DELETE itself reported. "absent"
+                            # means the record was already gone, which proves
+                            # nothing on its own - the oracle below is what
+                            # decides whether the remediation happened.
+                            "queue_delete": outcome,
+                            "verification": evidence["why"],
+                            "history_event": (evidence["event"] or {}).get("id"),
+                            "blocklist_row": (evidence["blocklist"] or {}).get("id")},
                     redownload=rd))
             elif a["decision"] == "qbit_delete":
                 peers = _harvest_peers(a, None, "qBittorrent", state, cfg)  # before removal

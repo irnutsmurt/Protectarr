@@ -6,7 +6,6 @@ lookup differ. This is the reused 'login/connection' logic the WebUI's Test
 button and Protectarr rely on.
 """
 
-import re
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -16,13 +15,10 @@ from . import logs
 
 log = logs.get("arr")
 
-# Release titles differ only by separator between the download client's name for
-# a torrent and the indexer's raw release name, so compare them on words alone.
-_SEPARATORS = re.compile(r"[^a-z0-9]+")
-
-
-def _norm_title(s):
-    return _SEPARATORS.sub(" ", (s or "").lower()).strip()
+# History eventTypes are a numeric enum on the wire. Passing the name - which is
+# what the *response* calls it - returns HTTP 400 on both Sonarr and Radarr.
+EVENT_DOWNLOAD_FAILED = 4
+_FAILED_NAMES = {"4", "downloadfailed"}
 
 # Per app type:
 #   version       - API version segment
@@ -33,32 +29,41 @@ def _norm_title(s):
 #   queue_includes- queue params that nest the media object into each record, so
 #                   History can name what a release was FOR without a second
 #                   lookup. Unknown params are ignored by older *arrs.
+#   media_keys    - the fields naming the media item, singular and plural. A
+#                   history record uses the singular (`episodeId`) and a
+#                   blocklist record the plural (`episodeIds`), so reading both
+#                   lets one function identify either.
 ARR_TYPES = {
     "sonarr":   {"version": "v3", "unknown_param": "includeUnknownSeriesItems",
                  "search": ("EpisodeSearch", "episodeIds", "episodeId"),
                  "airdate": ("episode", "episodeId", ["airDateUtc"]),
                  "library": ("series", "Series"),
-                 "queue_includes": ["includeSeries", "includeEpisode"]},
+                 "queue_includes": ["includeSeries", "includeEpisode"],
+                 "media_keys": ("episodeId", "episodeIds")},
     "radarr":   {"version": "v3", "unknown_param": "includeUnknownMovieItems",
                  "search": ("MoviesSearch", "movieIds", "movieId"),
                  "airdate": ("movie", "movieId", ["digitalRelease", "physicalRelease"]),
                  "library": ("movie", "Movies"),
-                 "queue_includes": ["includeMovie"]},
+                 "queue_includes": ["includeMovie"],
+                 "media_keys": ("movieId", "movieIds")},
     "whisparr": {"version": "v3", "unknown_param": "includeUnknownMovieItems",
                  "search": ("MoviesSearch", "movieIds", "movieId"),
                  "airdate": ("movie", "movieId", ["digitalRelease", "physicalRelease"]),
                  "library": ("movie", "Items"),
-                 "queue_includes": ["includeMovie"]},
+                 "queue_includes": ["includeMovie"],
+                 "media_keys": ("movieId", "movieIds")},
     "lidarr":   {"version": "v1", "unknown_param": "includeUnknownArtistItems",
                  "search": ("AlbumSearch", "albumIds", "albumId"),
                  "airdate": (None, "albumId", []),
                  "library": ("artist", "Artists"),
-                 "queue_includes": ["includeArtist", "includeAlbum"]},
+                 "queue_includes": ["includeArtist", "includeAlbum"],
+                 "media_keys": ("albumId", "albumIds")},
     "readarr":  {"version": "v1", "unknown_param": "includeUnknownAuthorItems",
                  "search": ("BookSearch", "bookIds", "bookId"),
                  "airdate": (None, "bookId", []),
                  "library": ("author", "Authors"),
-                 "queue_includes": ["includeAuthor", "includeBook"]},
+                 "queue_includes": ["includeAuthor", "includeBook"],
+                 "media_keys": ("bookId", "bookIds")},
 }
 
 
@@ -152,7 +157,14 @@ class ArrClient:
     def fail(self, queue_id):  # noqa: D401
         """Remove from client + blocklist, and DON'T let the arr auto-redownload
         (skipRedownload). We decide whether to requeue ourselves, based on the
-        air/release date - see `airdate_status` and the caller."""
+        air/release date - see `airdate_status` and the caller.
+
+        Returns "removed" or "absent". A 404 is not an error and is not a
+        success either: it says the queue record is not there, which is equally
+        true of a delete that already worked, a delete someone else did, and a
+        delete that never happened. Only the oracle can tell those apart, so
+        this reports what it saw and leaves the conclusion to the caller.
+        """
         r = self._s.delete(
             self._url(f"queue/{queue_id}"),
             params={"removeFromClient": "true", "blocklist": "true",
@@ -160,15 +172,24 @@ class ArrClient:
             timeout=self.timeout,
         )
         log.debug("%s DELETE queue/%s -> %s", self.name, queue_id, r.status_code)
+        if r.status_code == 404:
+            return "absent"
         r.raise_for_status()
+        return "removed"
 
     def search(self, record):
-        """Trigger a search for the item behind a queue record. Returns True if
-        a command was issued."""
+        """Trigger a search for the item behind a queue record.
+
+        Returns the *arr's command id, or None if there was nothing to search
+        for. The id is what makes the search followable after a restart; "we
+        asked for a search" is not a fact that survives a process, and without
+        the id there is no way to tell an unfinished search from one that
+        finished having found nothing.
+        """
         cmd, ids_field, rec_field = self.meta["search"]
         target = record.get(rec_field)
         if not target:
-            return False
+            return None
         r = self._s.post(
             self._url("command"),
             json={"name": cmd, ids_field: [target]},
@@ -177,7 +198,37 @@ class ArrClient:
         log.debug("%s command %s %s=%s -> %s", self.name, cmd, ids_field,
                   target, r.status_code)
         r.raise_for_status()
-        return True
+        try:
+            return r.json().get("id")
+        except ValueError:
+            return None
+
+    def command_status(self, command_id):
+        """(state, result, message) for a command we issued earlier.
+
+        `state` reaching a terminal value says the *arr finished running the
+        search. It says nothing at all about whether a replacement was found:
+        a search that downloaded nothing reports `completed` / `successful`
+        with the message "0 reports downloaded", which is why the message is
+        returned rather than thrown away.
+
+        A state of None means we could not look: unreachable, or a reply we
+        could not read. "unknown" is different and terminal - the *arr has no
+        such command, which after a restart usually means it aged out of the
+        command list. Waiting for that one to finish would wait forever.
+        """
+        try:
+            r = self._s.get(self._url(f"command/{command_id}"),
+                            timeout=self.timeout)
+            if r.status_code == 404:
+                return "unknown", None, None
+            r.raise_for_status()
+            body = r.json()
+        except (requests.RequestException, ValueError) as e:
+            log.debug("%s command %s unreadable: %s", self.name, command_id, e)
+            return None, None, None
+        return (body.get("status"), body.get("result"),
+                body.get("message") or (body.get("body") or {}).get("completionMessage"))
 
     def airdate_status(self, record, grace_hours=0):
         """Has the item behind this queue record aired / been released yet?
@@ -207,69 +258,246 @@ class ArrClient:
         aired = datetime.now(timezone.utc) >= earliest + timedelta(hours=grace_hours)
         return aired, earliest
 
-    # Keys an *arr might expose the torrent's identity under on a blocklist
-    # record. Not every version returns any of them, so this is opportunistic.
-    _HASH_KEYS = ("torrentInfoHash", "downloadId")
+    def _media_ids(self, record):
+        """Every media id a history or blocklist record names, as a set.
 
-    def blocklist_match(self, torrent_hash=None, titles=(), retries=6, delay=1.5):
-        """Confirm a release reached the blocklist. Returns how it matched, or
-        None if it never appeared.
-
-        Strongest evidence first:
-
-          "hash"       the torrent infohash / downloadId, when the blocklist
-                       exposes it. Exact and unambiguous.
-          "title"      exact sourceTitle.
-          "normalized" sourceTitle compared on words alone. Needed because the
-                       queue record's title is the download client's name for
-                       the torrent and is space-separated, while the blocklist
-                       stores the raw release name and is dot-separated:
-
-                         Ted Lasso S04E07 1080p ATVP WEB-DL DDP5 1 H 264-NTb
-                         Ted.Lasso.S04E07.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb
-
-                       Comparing those exactly can never match, which is why
-                       every reap used to report "unconfirmed". It is last
-                       because collapsing separators could in principle make two
-                       near-identical releases look the same; group and quality
-                       normally keep them apart.
-
-        Each tier is checked across every record before falling back, so a weak
-        match never pre-empts a strong one. Sonarr writes the entry a moment
-        after the queue delete returns, hence the polling.
+        History uses the singular key and the blocklist the plural, which is
+        why both are read. Sonarr's blocklist carries `episodeIds: [16801]`
+        against the history event's `episodeId: 16801`; Radarr uses `movieId`
+        on both sides.
         """
-        if isinstance(titles, str):
-            titles = [titles]
-        want_hash = (torrent_hash or "").lower()
-        want_exact = {t.lower() for t in titles if t}
-        want_norm = {_norm_title(t) for t in titles if t and _norm_title(t)}
-        if not (want_hash or want_exact):
-            return None
+        out = set()
+        for key in self.meta.get("media_keys", ()):
+            value = record.get(key)
+            if isinstance(value, (list, tuple)):
+                out.update(v for v in value if v is not None)
+            elif value is not None:
+                out.add(value)
+        return out
 
-        for attempt in range(retries):
-            log.debug("%s blocklist check, attempt %d/%d", self.name,
-                      attempt + 1, retries)
+    def history_watermark(self):
+        """The newest history id on this instance, or None if unreadable.
+
+        Read *before* the destructive call and stored with the intent, so
+        afterwards we can require the downloadFailed event to be newer than
+        anything that existed before we acted. History ids are an
+        autoincrement: verified on both apps that ordering by id descending is
+        exactly ordering by date descending, across 200 Sonarr and 29 Radarr
+        records.
+
+        That makes this a clock-free "since". A timestamp window is not one -
+        our clock and the *arr's are two different clocks, and a window wide
+        enough to survive the skew is also wide enough to admit an unrelated
+        event.
+        """
+        try:
+            r = self._s.get(self._url("history"),
+                            params={"pageSize": 1}, timeout=self.timeout)
+            r.raise_for_status()
+        except requests.RequestException as e:
+            log.debug("%s history watermark unavailable: %s", self.name, e)
+            return None
+        records = r.json().get("records", [])
+        return records[0].get("id") if records else None
+
+    def failed_events(self, download_id, after_id=None, pages=4):
+        """downloadFailed history events for one infohash, newest first.
+
+        This is the exact identity we spent a long time assuming did not exist.
+        The blocklist carries no hash, but every history record does - non-null
+        on all 50 Sonarr and 1 Radarr downloadFailed records measured - so one
+        query names the events belonging to one torrent and nothing else.
+
+        The server-side `downloadId` filter is CASE SENSITIVE, and a case that
+        does not match returns HTTP 200 with zero records rather than an error.
+        Servarr stores the 40-character SHA-1 uppercased; qBittorrent reports
+        it lowercased, and `queue_by_hash` lowercases it again. Querying with
+        the hash as handed to us therefore finds nothing, silently, for a
+        remediation that worked perfectly - so the uppercase form is asked for
+        first and the original spelling is only tried if that comes back empty.
+
+        Raises on a read failure rather than returning an empty list. "The *arr
+        has no such event" and "we could not ask the *arr" must not reach the
+        caller looking identical: only the first is evidence, and treating the
+        second as evidence is how an outage becomes a permanent verdict.
+        """
+        did = (download_id or "").lower()
+        if not did:
+            return []
+        spellings = [download_id.upper()]
+        if download_id not in spellings:
+            spellings.append(download_id)
+
+        out = []
+        for spelling in spellings:
+            for page in range(1, pages + 1):
+                r = self._s.get(
+                    self._url("history"),
+                    params={"downloadId": spelling, "page": page,
+                            "pageSize": 100,
+                            "eventType": EVENT_DOWNLOAD_FAILED},
+                    timeout=self.timeout)
+                r.raise_for_status()
+                body = r.json()
+                records = body.get("records") or []
+                for rec in records:
+                    # Filtered again here because neither filter can be trusted
+                    # to have been applied: `sortKey=wibble` returns HTTP 200
+                    # with normal ordering on both apps, so a parameter the
+                    # server does not understand is ignored, not refused.
+                    if (rec.get("downloadId") or "").lower() != did:
+                        continue
+                    if str(rec.get("eventType", "")).lower() not in _FAILED_NAMES:
+                        continue
+                    if after_id is not None and (rec.get("id") or 0) <= after_id:
+                        continue
+                    out.append(rec)
+                if len(records) < 100 or page * 100 >= (body.get("totalRecords") or 0):
+                    break
+            if out:
+                break
+        out.sort(key=lambda rec: rec.get("id") or 0, reverse=True)
+        return out
+
+    def blocklist_rows(self, pages=4):
+        """Every blocklist record this instance holds, newest first.
+
+        Paged rather than trusting the first page to hold the newest, because
+        `sortKey` is silently ignored: a key the server does not understand
+        returns HTTP 200 with default ordering rather than an error, so no
+        ordering we ask for can be assumed to have been applied. Raises on a
+        read failure, for the reason `failed_events` does.
+        """
+        out = []
+        for page in range(1, pages + 1):
             r = self._s.get(self._url("blocklist"),
-                            params={"pageSize": 50, "sortKey": "date",
-                                    "sortDirection": "descending"},
+                            params={"page": page, "pageSize": 100},
                             timeout=self.timeout)
             r.raise_for_status()
-            records = r.json().get("records", [])
+            body = r.json()
+            records = body.get("records") or []
+            out.extend(records)
+            if len(records) < 100 or page * 100 >= (body.get("totalRecords") or 0):
+                break
+        out.sort(key=lambda rec: rec.get("id") or 0, reverse=True)
+        return out
 
-            if want_hash:
-                for b in records:
-                    for key in self._HASH_KEYS:
-                        if (b.get(key) or "").lower() == want_hash:
-                            return "hash"
-            for b in records:
-                if (b.get("sourceTitle") or "").lower() in want_exact:
-                    return "title"
-            for b in records:
-                if want_norm and _norm_title(b.get("sourceTitle")) in want_norm:
-                    return "normalized"
-            if attempt < retries - 1:
-                time.sleep(delay)
+    def blocklist_row_for(self, event, rows):
+        """The blocklist record a given history event produced, or None.
+
+        Three exact comparisons, no normalisation of any kind:
+
+          sourceTitle  compared against the *history event's* title, not
+                       against qBittorrent's name for the torrent. Both strings
+                       are the *arr's own rendering of the release, so they are
+                       byte-identical - including Radarr's doubled year, which
+                       appears the same way in both. 50/50 on Sonarr and 1/1 on
+                       Radarr, zero misses.
+          date         the tie-breaker. Six Sonarr titles appear on two
+                       blocklist rows each, from re-grabbing the same release;
+                       every one of them resolves to exactly one row on date,
+                       which matched the history event's to the second on all
+                       51 records.
+          media id     corroboration, and only when both sides state one. On
+                       its own it is not identity - episode 19135 is on four
+                       separate blocklist rows.
+        """
+        title = event.get("sourceTitle") or ""
+        date = event.get("date")
+        want = self._media_ids(event)
+        if not title or not date:
+            return None
+        for row in rows:
+            if (row.get("sourceTitle") or "") != title:
+                continue
+            if row.get("date") != date:
+                continue
+            have = self._media_ids(row)
+            if want and have and not (want & have):
+                continue
+            return row
         return None
+
+    def verify_remediation(self, download_id, after_id=None, retries=6,
+                           delay=1.5):
+        """Did our removal actually land? Returns a dict, never raises.
+
+        Two separate proofs, both required:
+
+          history    a downloadFailed event carrying this exact infohash. Proof
+                     that the *arr processed the failed-download action for
+                     this torrent, and the only place either app exposes the
+                     hash at all.
+          blocklist  the row that event produced.
+
+        Both, because `blocklist=true` is a distinct query parameter from the
+        removal. The two records are written with the same timestamp and are
+        evidently one transaction, but we have not tested whether a
+        downloadFailed event can occur without a blocklist row, so the oracle
+        checks both endpoints rather than inferring either from the other.
+
+        The keys are `verified` (the only thing a caller should branch on),
+        `reachable`, `event`, `blocklist` and `why`. A partial result is
+        reported rather than flattened to a failure: "the *arr failed the
+        download but wrote no blocklist row" and "the *arr never saw the
+        delete" are different problems and should not read the same in a bug
+        report.
+
+        `reachable` is False when we could not ask at all. That is not a
+        verdict about the release and a caller must not turn it into one - an
+        *arr that was down for ten seconds is not evidence that a remediation
+        failed.
+        """
+        result = {"verified": False, "reachable": True, "event": None,
+                  "blocklist": None,
+                  "why": "no downloadFailed event for this infohash"}
+        if not download_id:
+            return dict(result, why="no infohash to look the remediation up by")
+
+        for attempt in range(retries):
+            try:
+                events = self.failed_events(download_id, after_id=after_id)
+            except requests.RequestException as e:
+                result["reachable"] = False
+                result["why"] = f"could not read {self.name}'s history ({e})"
+                events = []
+            if events:
+                event = events[0]
+                result["event"] = {
+                    "id": event.get("id"),
+                    "date": event.get("date"),
+                    "source_title": event.get("sourceTitle"),
+                    # Two values observed: "Manually marked as failed" for our
+                    # own delete and "Failed download detected" for the *arr
+                    # acting on its own. Corroborating detail for a bug report,
+                    # never identity - it cannot tell us apart from a human
+                    # clicking blocklist in the UI.
+                    "message": (event.get("data") or {}).get("message"),
+                }
+                try:
+                    rows = self.blocklist_rows()
+                except requests.RequestException as e:
+                    result["reachable"] = False
+                    result["why"] = f"could not read {self.name}'s blocklist ({e})"
+                    rows = []
+                row = self.blocklist_row_for(event, rows)
+                if row:
+                    result["blocklist"] = {"id": row.get("id"),
+                                           "date": row.get("date"),
+                                           "indexer": row.get("indexer")}
+                    result["verified"] = True
+                    result["reachable"] = True
+                    result["why"] = "history event and blocklist row both found"
+                    return result
+                if result["reachable"]:
+                    result["why"] = ("the *arr failed the download but no "
+                                     "blocklist row matches that event")
+            if attempt < retries - 1:
+                # Both records land a moment after the delete returns.
+                time.sleep(delay)
+        log.debug("%s could not verify remediation for %s: %s",
+                  self.name, (download_id or "")[:8], result["why"])
+        return result
 
     def grab_indexer(self, download_id):
         """Best-effort: which indexer grabbed this download. Queue records don't
