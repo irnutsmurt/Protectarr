@@ -286,6 +286,19 @@ class TestFreePass(ProbeCase):
         qb = FakeQb(self.files, [2] * 10, self.torrent)
         self.assertEqual(self.probe(qb, cfg(steer=False)).findings, ())
 
+    def test_an_unreadable_file_never_causes_steering(self):
+        """Steering fetches a missing piece. When the piece is already
+        downloaded and still cannot be read, the problem is the path mapping,
+        and steering would switch off the user's files to learn the same
+        nothing. The first version of this shipped doing exactly that, and a
+        wrong mapping made it happen on every eligible torrent."""
+        qb = FakeQb(self.files, [2] * 10, self.torrent)     # all downloaded
+        res = self.probe(qb, cfg(poll_seconds=0))           # steering allowed
+        self.assertEqual(res.findings, ())
+        self.assertFalse(res.steered)
+        self.assertEqual(qb.calls, [],
+                         "nothing to fetch, so nothing should have been touched")
+
     def test_torrent_with_no_media_files_is_skipped_entirely(self):
         self.files = [{"name": "readme.txt", "priority": 1, "piece_range": [0, 1]}]
         qb = FakeQb(self.files, [2] * 10, self.torrent)

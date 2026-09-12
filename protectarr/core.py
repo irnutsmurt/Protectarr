@@ -252,14 +252,16 @@ def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name
     p = probe.settings(cfg)
     deadline = time.time() + p["scan_budget_seconds"]
     steers_left = p["max_torrents_per_scan"]
-    rows = []
+    rows, checked = [], 0
     log.debug("Probe lane: %d candidate(s), %d steering slot(s), %ds budget",
               len(candidates), steers_left, p["scan_budget_seconds"])
     for t, files, arr_hit in candidates:
         if time.time() >= deadline:
-            log.debug("Probe lane: scan budget spent, %d candidate(s) not "
-                      "reached this pass", len(candidates) - len(rows))
+            log.debug("Probe lane: scan budget spent, %d of %d candidate(s) "
+                      "not reached this pass", len(candidates) - checked,
+                      len(candidates))
             break
+        checked += 1
         try:
             res = probe.inspect(qb, t, files, cfg, state, deadline,
                                 allow_steer=steers_left > 0)

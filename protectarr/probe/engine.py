@@ -203,6 +203,7 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
 
     # ---- pass 1: whatever is already on disk ----
     findings, unresolved = [], []
+    unreadable = 0
     for idx, f in tgts:
         fname = f.get("name") or ""
         if memo["resolved"].get(fname):
@@ -221,9 +222,23 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
         if resolved:
             memo["resolved"][fname] = True
         else:
-            unresolved.append((idx, f, first))
+            # The opening piece is already downloaded, so steering has nothing
+            # left to fetch. Being unable to read it is a path or flush problem,
+            # and steering would switch off the user's files to learn exactly
+            # the same nothing. Retrying for free on a later pass costs nothing.
+            unreadable += 1
         if find:
             findings.append(find)
+
+    if unreadable and not findings:
+        # The overwhelmingly likely cause, and the one thing that makes the
+        # whole lane silently useless, so it is said out loud rather than left
+        # at debug level.
+        log.warning("Probe: %d file(s) in %r have their opening piece "
+                    "downloaded but could not be read. Steering cannot help "
+                    "with that. Check the probe path mapping (%s) - Settings "
+                    "> Content Probe can test it against live downloads.",
+                    unreadable, name, paths.describe_mappings(mappings))
 
     if findings or not unresolved:
         if findings:

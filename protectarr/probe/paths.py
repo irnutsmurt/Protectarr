@@ -12,7 +12,6 @@ is answered here and nowhere else, so that a validator is never handed padding
 and never gets the chance to call it a lie.
 """
 
-import os
 import collections
 import posixpath
 
@@ -102,10 +101,3 @@ def read_head(path, nbytes):
 def describe_mappings(mappings):
     """One line for the log, so a misconfigured mapping is visible."""
     return ", ".join(f"{s} -> {d}" for s, d in mappings) or "none configured"
-
-
-def looks_mapped(path):
-    """Whether a path resolves to something we can see at all. Used to tell a
-    missing mapping apart from a file that simply has not been created yet."""
-    parent = os.path.dirname(path or "")
-    return bool(parent) and os.path.isdir(parent)
