@@ -123,6 +123,15 @@ DEFAULTS = {
         # Hours to wait past the air/release time before considering it "out"
         # (web releases often land a bit after the broadcast slot).
         "airdate_grace_hours": 0,
+        # How long a torrent must be CONTINUOUSLY and VERIFIABLY absent from
+        # its owner's queue before Protectarr treats it as abandoned. Only
+        # passes where that queue was actually read count, so an *arr that is
+        # down does not age its own downloads into orphans.
+        "orphan_dwell_minutes": 10,
+        # How often to forget torrents qBittorrent no longer has. Needs the
+        # full inventory, which measured 389 ms against a 1208-torrent library,
+        # so it is cheap hourly and pointless more often.
+        "ownership_prune_minutes": 60,
     },
     "poll_interval": 20,
     "dry_run": True,

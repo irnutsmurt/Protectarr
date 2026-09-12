@@ -612,14 +612,15 @@ class TestServerSideFilter(unittest.TestCase):
     that filter=downloading includes stoppedDL and stalledDL, so it does not
     narrow what Protectarr would have looked at."""
 
-    def _scan_with(self, only_active):
+    def _calls(self, only_active):
+        """Every state_filter the scan asked for, in order."""
         from protectarr import core
-        seen = {}
+        seen = []
 
         class FakeQb:
             def login(self): pass
             def torrents(self, category=None, state_filter=None):
-                seen["state_filter"] = state_filter
+                seen.append(state_filter)
                 return []
             def files(self, h): return []
 
@@ -631,13 +632,27 @@ class TestServerSideFilter(unittest.TestCase):
                        "safety": {}, "arrs": []}, {})
         finally:
             core.QbitClient = real
-        return seen.get("state_filter")
+        return seen
+
+    def _scan_with(self, only_active):
+        return self._calls(only_active)[0]
 
     def test_filter_is_pushed_server_side_when_only_active(self):
         self.assertEqual(self._scan_with(True), "downloading")
 
     def test_no_filter_when_only_active_is_off(self):
         self.assertIsNone(self._scan_with(False))
+
+    def test_the_ownership_prune_is_the_only_unfiltered_call(self):
+        """Pruning needs every hash qBittorrent has, including finished ones.
+
+        Handing it the filtered list would forget the ownership of every
+        torrent that finished downloading, which is most of them, and a
+        forgotten owner is how a previously *arr-owned torrent becomes an
+        ordinary category match.
+        """
+        calls = self._calls(True)
+        self.assertEqual(calls, ["downloading", None])
 
     def test_client_still_passes_the_param_through(self):
         from protectarr.qbit import QbitClient

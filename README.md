@@ -65,6 +65,22 @@ with `removeFromClient=true` and `blocklist=true`. That does three things:
 The blocklist entry is what stops the fake from coming straight back, and because
 the *arr performs the removal its queue never ends up stuck.
 
+**The removal is written down before it happens, and confirmed afterwards.**
+Protectarr records what it is about to do in `intents.json` first; if that
+cannot be written, the removal does not happen. Afterwards it looks for two
+things: the `downloadFailed` history event carrying that exact infohash, and
+the blocklist row that event produced. Only when both are found does it consider
+searching for a replacement.
+
+If it cannot confirm both, it says so loudly and **does not search**. A queue
+item that is simply gone proves nothing on its own - that is equally what a
+removal that worked, a removal someone else did, and a removal that never
+happened all look like. Searching for a replacement without confirming the
+blocklist is how the *arr would be invited to grab the same fake again. The
+unconfirmed record is kept in `intents.json` for diagnosis rather than being
+retried blindly, and if Protectarr is killed mid-removal it finishes checking on
+the next start.
+
 Every one of those decisions is recorded on the **History** page: the release,
 the app that owned it, what triggered the catch, whether the blocklist entry was
 confirmed, and whether a replacement was searched for or deliberately held. Dry-run
@@ -229,6 +245,20 @@ about requeueing. An orphan whose category/tag is allowlisted is deleted from
 qBittorrent directly. Put the categories your *arrs already use (`tv`, `movies`,
 …) in the allowlist and orphans stop surviving; the tradeoff is that a torrent
 you hand-added into one of those categories is also in scope.
+
+**An orphan has to be proven, not assumed.** Protectarr remembers which *arr
+owned each torrent, in `ownership.json`, and a torrent only becomes an orphan
+when that *arr's queue was successfully read and did not contain it. A queue
+Protectarr could not reach is not evidence of anything, so an *arr that is down
+or restarting never turns its own downloads into orphans - and the absence has
+to last `orphan_dwell_minutes` (10 by default) of *continuous verified* absence
+before anything acts on it. If the torrent reappears, it is owned again at once
+and the next absence starts from zero.
+
+Two *arrs claiming the same torrent is reported as a conflict and nothing is
+done to it. Choosing one would mean deleting a queue item from an application
+that is downloading it perfectly legitimately, and choosing by config order is
+a coin toss wearing a decision's clothes.
 
 ### Security profiles
 

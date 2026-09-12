@@ -99,6 +99,15 @@ safety:
   # Wait this many hours past the air/release time before requeuing (web
   # releases often appear a little after the broadcast slot).
   airdate_grace_hours: 0
+  # A torrent that leaves its arr's queue is remembered as that arr's orphan
+  # rather than becoming an ordinary untracked torrent. This is how long it
+  # must be continuously absent before Protectarr will act on it. Only passes
+  # where that arr's queue was actually READ count, so an arr that is down
+  # never ages its own downloads into orphans.
+  orphan_dwell_minutes: 10
+  # How often to forget torrents qBittorrent no longer has. Needs the full
+  # torrent list, measured at 389 ms against a 1208-torrent library.
+  ownership_prune_minutes: 60
 
 poll_interval: 20         # seconds between scans
 dry_run: true             # true = log only; set false to actually reap

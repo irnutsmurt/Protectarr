@@ -15,6 +15,7 @@ from . import detectors
 from . import policy
 from . import probe
 from . import intents
+from . import ownership
 from . import logs
 from .qbit import QbitClient, QbitError
 from .arr import build_clients
@@ -139,7 +140,7 @@ def allowlisted(torrent, safety):
     return False
 
 
-def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True):
+def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True, own=None):
     """Decide what to do with a torrent that contains a blocked file.
 
     Returns one of: 'arr_fail' (hand back to the owning arr), 'qbit_delete'
@@ -149,6 +150,19 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True):
     from a queue we never managed to fetch is not evidence that nothing owns
     the torrent, and treating it as such would delete real downloads the moment
     Sonarr restarts. Uncertainty fails safe: no direct deletion.
+
+    `own` is what `ownership` worked out about this specific torrent, and it
+    can veto an action the mode would otherwise allow:
+
+        conflicted  two *arrs claim it, or a claim moved while the previous
+                    owner was unreachable. Nothing is done either way. Picking
+                    one means deleting a queue item from an application that
+                    may be downloading it perfectly legitimately.
+        orphaned    verifiably no longer in its owner's queue - but only
+                    actionable once it has been continuously absent for
+                    `orphan_dwell_minutes`. An *arr that moves an item between
+                    queues, or is mid-restart, produces a brief absence that is
+                    not abandonment.
 
     Each mode has a different blind spot, which is why `either` exists:
 
@@ -163,6 +177,13 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True):
     """
     mode = safety.get("mode", "arr_tracked")
     is_allowed = allowlisted(torrent, safety)
+
+    if own is not None and own.state == ownership.CONFLICTED:
+        return None
+    if own is not None and own.state == ownership.ORPHANED:
+        if not ownership.actionable_orphan(
+                own, safety.get("orphan_dwell_minutes", 10)):
+            return None
 
     if mode == "arr_tracked":
         return "arr_fail" if arr_hit else None
@@ -187,7 +208,8 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True):
     return None
 
 
-def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb):
+def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb,
+            own=None):
     """Findings about one torrent -> an action row, or None to leave it alone.
 
     Shared by both detection lanes, so a probe finding is judged by exactly the
@@ -225,7 +247,8 @@ def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb)
         "_qb": qb,
     }
 
-    decision = evaluate(t, row["bad_file"], arr_hit, safety, ownership_known)
+    decision = evaluate(t, row["bad_file"], arr_hit, safety, ownership_known,
+                        own=own)
     if verdict == "warn":
         # Worth recording, not worth destroying over. The safety mode still
         # decides whether this torrent was ever ours to touch.
@@ -244,6 +267,7 @@ def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb)
 
 
 def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name,
+                resolved=None,
                 side_effects=True):
     """Second lane: the torrents the fast lane had nothing to say about.
 
@@ -284,7 +308,8 @@ def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name
                  ", ".join(f"{f['reason']}({f.get('evidence', {}).get('filename', '?')})"
                            for f in res.findings))
         row = _assess(t, list(res.findings), arr_hit, arr_by_name, cfg, safety,
-                      ownership_known, qb)
+                      ownership_known, qb,
+                      own=(resolved or {}).get((t.get("hash") or "").lower()))
         if row:
             rows.append(row)
     return rows
@@ -327,21 +352,22 @@ def scan(cfg, state, side_effects=True):
     arr_clients = build_clients(cfg)
     # name -> raw config entry, so policy can read a per-*arr `profile`.
     arr_by_name = {a.get("name"): a for a in cfg.get("arrs", []) if a.get("name")}
-    # hash -> (client, queue_record)
-    owner = {}
+    # Ownership is worked out once, from every queue we managed to read, and
+    # remembered. A torrent no queue mentions is not automatically ownerless:
+    # it may have been owned yesterday, or its owner may simply be down.
+    claims, readable = ownership.collect(arr_clients)
+    resolved = ownership.resolve(claims, readable,
+                                 hashes=[t.get("hash") or "" for t in torrents])
+    # hash -> (client, queue_record), for the torrents exactly one *arr claims.
+    owner = {h: (o.client, o.record) for h, o in resolved.items()
+             if o.state == ownership.OWNED and o.client}
     # If any queue read fails we cannot tell an orphan from a torrent whose
     # owner we simply could not reach, so direct deletion is suppressed below.
-    ownership_known = True
-    for client in arr_clients:
-        try:
-            queue = client.queue_by_hash()
-            log.debug("%s queue: %d item(s)", client.name, len(queue))
-            for h, rec in queue.items():
-                owner.setdefault(h, (client, rec))
-        except requests.RequestException as e:
-            ownership_known = False
-            _log(state, f"Could not read {client.name} queue: {e}", logging.ERROR)
+    ownership_known = len(readable) == len(arr_clients)
     if not ownership_known:
+        missing = sorted(c.name for c in arr_clients if c.name not in readable)
+        _log(state, f"Could not read the queue of: {', '.join(missing)}",
+             logging.ERROR)
         log.warning("At least one application queue could not be read, so "
                     "ownership is unknown this pass. Torrents will not be "
                     "deleted directly from qBittorrent.")
@@ -382,6 +408,30 @@ def scan(cfg, state, side_effects=True):
         except Exception:  # noqa: BLE001 - never let cleanup break a scan
             log.exception("Remediation intent reconcile failed")
 
+        # Ownership pruning needs the FULL inventory, not the scan's filtered
+        # list: a torrent that finished downloading is missing from the latter
+        # and very much present in qBittorrent, and forgetting it would turn a
+        # previously *arr-owned torrent back into an ordinary category match.
+        #
+        # Run synchronously, and deliberately not on its own thread. Measured
+        # against a live 1208-torrent library: 2.37 MiB, median 389 ms. Against
+        # an hourly interval and a 20-second scan that is not a detection
+        # delay, and another thread would mean re-introducing concurrency into
+        # a scan path whose races were only just fixed.
+        if time.time() >= state.get("ownership_pruned_at", 0):
+            try:
+                started_prune = time.time()
+                inventory = qb.torrents()
+                ownership.prune(t.get("hash") or "" for t in inventory)
+                log.debug("Ownership prune: %d torrent(s) in qBittorrent, "
+                          "%.0f ms", len(inventory),
+                          (time.time() - started_prune) * 1000)
+            except Exception:  # noqa: BLE001 - never let cleanup break a scan
+                log.exception("Ownership prune failed")
+            finally:
+                state["ownership_pruned_at"] = time.time() + max(
+                    60, safety.get("ownership_prune_minutes", 60)) * 60
+
     for t in torrents:
         thash = t.get("hash", "")
         tstate = t.get("state", "")
@@ -403,9 +453,10 @@ def scan(cfg, state, side_effects=True):
             continue
         inspected += 1
         arr_hit = owner.get(thash.lower())
-        log.debug("Inspecting %s: state=%s files=%d category=%s arr=%s",
+        own = resolved.get(thash.lower())
+        log.debug("Inspecting %s: state=%s files=%d category=%s ownership=%s",
                   t.get("name"), tstate, len(files), t.get("category") or "-",
-                  arr_hit[0].name if arr_hit else "untracked")
+                  f"{own.state} ({own.why})" if own else "unknown")
 
         # Detectors observe. They get a lazy indexer lookup so the archive rule
         # only pays for the HTTP call when it actually has a candidate.
@@ -427,7 +478,7 @@ def scan(cfg, state, side_effects=True):
             # and steering a torrent Protectarr may never touch would be a
             # change made for no possible outcome.
             if probe_on and evaluate(t, "", arr_hit, safety,
-                                     ownership_known) is not None:
+                                     ownership_known, own=own) is not None:
                 probe_candidates.append((t, files, arr_hit))
             continue
 
@@ -437,7 +488,7 @@ def scan(cfg, state, side_effects=True):
                            for f in findings))
 
         row = _assess(t, findings, arr_hit, arr_by_name, cfg, safety,
-                      ownership_known, qb)
+                      ownership_known, qb, own=own)
         if row:
             actions.append(row)
 
@@ -453,6 +504,7 @@ def scan(cfg, state, side_effects=True):
         else:
             actions.extend(_probe_pass(qb, probe_candidates, cfg, state, safety,
                                        ownership_known, arr_by_name,
+                                       resolved=resolved,
                                        side_effects=side_effects))
 
     log.debug("Scan finished in %.2fs: %d inspected, %d skipped, %d action(s)",
