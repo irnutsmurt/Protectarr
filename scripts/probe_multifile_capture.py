@@ -166,10 +166,22 @@ def describe(snap, label):
     arr = snap.get("arr") or {}
     prios = [f.get("priority") for f in snap.get("files", [])
              if isinstance(f, dict)]
-    print(f"  [{label}] qB state={qb.get('state')} progress={qb.get('progress')} "
+    # A 460-file season pack would print two kilobytes of "1, 1, 1" per sample
+    # and bury the thing we are actually watching. The full list is in the
+    # capture file; the console gets the histogram.
+    hist = {}
+    for p in prios:
+        hist[p] = hist.get(p, 0) + 1
+    summary = ", ".join(f"prio {p}: {n} file(s)" for p, n in sorted(hist.items()))
+    print(f"  [{label}] qB state={qb.get('state')} progress={qb.get('progress'):.6f} "
           f"dl={(qb.get('dlspeed') or 0)//1024}KiB/s seq={qb.get('seq_dl')} "
           f"fl={qb.get('f_l_piece_prio')}")
-    print(f"           priorities={prios}")
+    print(f"           {summary}")
+    pieces = snap.get("pieces") or {}
+    if "target_state" in pieces:
+        print(f"           target piece {pieces['target_piece']} "
+              f"state={pieces['target_state']} "
+              f"({pieces.get('downloaded')}/{pieces.get('total')} pieces done)")
     if arr:
         print(f"           arr={snap.get('arr_instance')} "
               f"status={arr.get('status')} "
