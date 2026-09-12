@@ -349,12 +349,36 @@ def run(args):
               f"we do not already know.")
         return 2
 
-    idx, target = choose_target(files)
+    if args.file_index is not None:
+        if not 0 <= args.file_index < len(files):
+            print(f"ERROR: --file-index {args.file_index} out of range "
+                  f"(0..{len(files) - 1}).")
+            return 2
+        idx, target = args.file_index, files[args.file_index]
+    else:
+        idx, target = choose_target(files)
     if idx is None:
         print("ERROR: no validatable media file in this torrent, so the probe "
               "lane would never steer it and neither will this.")
         return 2
     first_piece = (target.get("piece_range") or [None])[0]
+
+    # Steering for a piece we already hold measures nothing: it "arrives" at
+    # t+0 under every mode, so all three would tie. The product code already
+    # refuses this (see "Never steer for a piece that is already downloaded");
+    # the harness has to refuse it too or it will happily report a dead heat.
+    if args.steer:
+        try:
+            state = qb.piece_states(thash)[first_piece]
+        except Exception as e:                                  # noqa: BLE001
+            print(f"ERROR: cannot read piece states: {e}")
+            return 2
+        if state == 2:
+            print(f"REFUSING: target piece {first_piece} is already downloaded "
+                  f"(state 2). Time-to-piece would be 0 under every mode and "
+                  f"the comparison would be worthless. Pick another file with "
+                  f"--file-index.")
+            return 2
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     out = os.path.join(args.outdir, f"multifile-capture-{stamp}.json")
@@ -525,12 +549,35 @@ def verdict(cap, idx, seconds):
             t_arrive = (datetime.datetime.fromisoformat(t1)
                         - datetime.datetime.fromisoformat(t0)).total_seconds()
 
-    # 2/3. wanted size and the accounting that follows it
-    acct = {k: {"before": b_qb.get(k), "steered": s_qb.get(k), "last": l_qb.get(k)}
+    # 2/3. wanted size and the accounting that follows it.
+    #
+    # NOT read from the "steered" phase. That snapshot is taken in the same
+    # second as the filePrio calls, and qBittorrent has not recomputed size,
+    # completed, amount_left or progress by then: it still reports the old
+    # numbers. Reading it made mode keepone report "100% of the wanted set
+    # retained" while the very next sample showed 149.70 GiB -> 1.33 GiB.
+    #
+    # So take the extreme across every sample. The question is whether the
+    # accounting moved AT ALL during the probe, not what it happened to say
+    # while qBittorrent was still catching up.
+    series = [s for s in [steered] + samples if (s.get("qb") or {}).get("size")]
+    sizes = [s["qb"]["size"] for s in series]
+    progs = [s["qb"]["progress"] for s in series
+             if s["qb"].get("progress") is not None]
+    acct = {k: {"before": b_qb.get(k),
+                "steered_immediately": s_qb.get(k),
+                "min_observed": min((s["qb"].get(k) for s in series
+                                     if s["qb"].get(k) is not None), default=None),
+                "max_observed": max((s["qb"].get(k) for s in series
+                                     if s["qb"].get(k) is not None), default=None),
+                "last": l_qb.get(k)}
             for k in ("size", "completed", "amount_left", "progress")}
     collapse = None
-    if b_qb.get("size") and s_qb.get("size"):
-        collapse = s_qb["size"] / b_qb["size"]
+    if b_qb.get("size") and sizes:
+        collapse = min(sizes) / b_qb["size"]
+    # The number that actually matters: how close did the torrent get to
+    # looking finished while we were steering it?
+    peak_progress = max(progs) if progs else None
 
     # 4. did the *arr stay healthy for every single sample?
     seen = set()
@@ -561,6 +608,8 @@ def verdict(cap, idx, seconds):
          "seconds_to_target_piece": t_arrive,
          "accounting": acct,
          "wanted_size_ratio_after_steer": collapse,
+         "peak_progress_during_probe": peak_progress,
+         "progress_before": b_qb.get("progress"),
          "arr_states_observed": sorted(seen),
          "arr_stayed_healthy": seen == {"downloading/ok/downloading/None"},
          "bytes_to_target": to_target,
@@ -575,11 +624,16 @@ def verdict(cap, idx, seconds):
           f"{'arrived in %.1fs' % t_arrive if t_arrive is not None else 'DID NOT ARRIVE'}"
           f"  (budget {seconds}s)")
     print(f"  wanted size         {GiB(b_qb.get('size')):.2f} GiB -> "
-          f"{GiB(s_qb.get('size')):.2f} GiB"
+          f"{GiB(min(sizes)) if sizes else 0:.2f} GiB min observed"
           + (f"  ({collapse * 100:.1f}% retained)" if collapse else ""))
     print(f"  amount_left         {GiB(b_qb.get('amount_left')):.2f} GiB -> "
-          f"{GiB(s_qb.get('amount_left')):.2f} GiB")
-    print(f"  progress            {b_qb.get('progress')} -> {s_qb.get('progress')}")
+          f"{GiB(acct['amount_left']['min_observed']):.2f} GiB min observed")
+    print(f"  progress            {b_qb.get('progress'):.4f} before, "
+          f"PEAK {peak_progress:.4f} during"
+          if peak_progress is not None else "  progress            n/a")
+    if peak_progress is not None and peak_progress > (b_qb.get("progress") or 0):
+        print(f"                      ^^ the torrent looked MORE complete while "
+              f"steered than it actually was")
     print(f"  *arr healthy        {v['arr_stayed_healthy']}  {v['arr_states_observed']}")
     print(f"  bandwidth to target {GiB(to_target) * 1024:.1f} MiB"
           + (f"  ({share * 100:.1f}% of all bytes)" if share is not None
@@ -675,6 +729,12 @@ def main():
     ap.add_argument("--hash", help="infohash of the torrent to capture")
     ap.add_argument("--steer", action="store_true",
                     help="actually steer. Without this only the baseline is taken")
+    ap.add_argument("--file-index", type=int, metavar="N",
+                    help="probe this file instead of the biggest validatable "
+                         "one. Needed to compare modes fairly: the default "
+                         "target may already be downloaded, or close enough to "
+                         "the sequential frontier that it would arrive without "
+                         "any steering at all")
     ap.add_argument("--mode", choices=sorted(STEER_MODES), default="zero",
                     help="which steering strategy to measure: "
                          + "; ".join(f"{k} = {v}" for k, v in
