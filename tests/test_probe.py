@@ -232,6 +232,9 @@ class ProbeCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         cfg_mod.CONFIG_PATH = os.path.join(self.dir, "config.yaml")
+        # A ledger declared broken stays broken for the life of the process,
+        # which is right in production and poison across tests.
+        ledger._broken = None
         self.content = os.path.join(self.dir, "Show.S01")
         os.makedirs(self.content, exist_ok=True)
         self.torrent = {"hash": "abc123", "name": "Show.S01",
@@ -441,10 +444,71 @@ class TestLedger(ProbeCase):
         self.assertTrue(ledger.restore(Gone(self.files, [], self.torrent), "gone"))
         self.assertEqual(ledger.entries(), {})
 
-    def test_a_corrupt_ledger_does_not_break_startup(self):
+    def test_a_corrupt_ledger_is_quarantined_not_emptied(self):
+        """The file is the only record of what the user's settings were. If it
+        is unreadable we have lost that, and the honest response is to say so
+        loudly and stop steering - not to start a fresh empty ledger, which
+        looks exactly like "nothing was ever steered"."""
+        path = os.path.join(self.dir, "probe.json")
+        with open(path, "w") as fh:
+            fh.write('{"version": 1, "open": {"abc123": {"priorities"')
+        self.assertEqual(ledger.entries(), {})
+        self.assertIsNotNone(ledger.broken())
+        self.assertFalse(os.path.exists(path), "the corrupt file was left in place")
+        kept = [f for f in os.listdir(self.dir) if f.startswith("probe.json.corrupt-")]
+        self.assertEqual(len(kept), 1, "the evidence was not preserved")
+        with open(os.path.join(self.dir, kept[0])) as fh:
+            self.assertIn("abc123", fh.read(), "the quarantined copy was mangled")
+
+    def test_a_broken_ledger_refuses_to_open_new_probes(self):
         with open(os.path.join(self.dir, "probe.json"), "w") as fh:
             fh.write("{not json")
-        self.assertEqual(ledger.entries(), {})
+        ledger.entries()                      # trips the detection
+        self.assertFalse(ledger.open_probe("new", "X", {0: 1}, False, False))
+
+    def test_a_second_probe_on_one_torrent_is_refused(self):
+        """Overwriting would record the first probe's steered priorities as the
+        originals, so the restore would faithfully switch the user's files off."""
+        self.assertTrue(
+            ledger.open_probe("abc123", "Show.S01", {0: 1, 1: 1}, False, False))
+        self.assertFalse(
+            ledger.open_probe("abc123", "Show.S01", {0: 0, 1: 7}, True, True))
+        self.assertEqual(ledger.entries()["abc123"]["priorities"],
+                         {"0": 1, "1": 1}, "the true originals were overwritten")
+
+    def test_restore_verifies_the_torrent_level_flags_too(self):
+        """set_sequential and set_first_last_prio were previously issued and
+        never read back, so a closed entry could leave sequential download on."""
+        ledger.open_probe("abc123", "Show.S01", {0: 1, 1: 1}, False, False)
+
+        class Deaf(FakeQb):
+            def set_sequential(self, h, on):
+                self.calls.append(("seq", bool(on)))     # claims success, lies
+
+        qb = Deaf(self.files, [0] * 10, self.torrent)
+        qb.info["seq_dl"] = True
+        self.assertFalse(ledger.restore(qb, "abc123"))
+        self.assertIn("abc123", ledger.entries(), "closed on an unverified flag")
+
+    def test_a_failed_restore_is_retried_later_not_every_pass(self):
+        ledger.open_probe("abc123", "Show.S01", {0: 4, 1: 1}, False, False)
+        qb = FakeQb(self.files, [0] * 10, self.torrent)
+        qb.raise_on_priority = True
+        self.assertFalse(ledger.restore(qb, "abc123"))
+        # Backed off, so an immediate reconcile leaves it alone entirely.
+        qb.calls.clear()
+        self.assertEqual(ledger.reconcile(qb), 0)
+        self.assertEqual(qb.calls, [], "hammered qBittorrent while backed off")
+        # ... but it is still open, and comes back round once the backoff lapses.
+        self.assertIn("abc123", ledger.entries())
+        ledger._set_next_retry("abc123", 0)
+        qb.raise_on_priority = False
+        self.assertEqual(ledger.reconcile(qb), 1)
+
+    def test_the_temp_file_is_not_left_behind_when_a_write_fails(self):
+        ledger.open_probe("abc123", "Show.S01", {0: 1}, False, False)
+        stray = [f for f in os.listdir(self.dir) if f.endswith(".tmp")]
+        self.assertEqual(stray, [])
 
     def test_priorities_survive_the_json_round_trip_as_integers(self):
         """JSON object keys are strings. Restoring index "0" as the string "0"
@@ -691,6 +755,145 @@ class TestScanIntegration(unittest.TestCase):
         self.assertEqual(ledger.entries(), {},
                          "turning the probe off must not strand a torrent")
         self.assertEqual(files["t1"][0]["priority"], 3)
+
+
+class TestPreviewIsObservational(unittest.TestCase):
+    """Preview is reached from the WebUI and reads as a read-only question.
+
+    It used to run the probe lane for real whenever `dry_run` was off, so on a
+    production install the preview button steered live torrents. Steering does
+    restore itself, so nothing broke, but a GET that toggles the user's
+    sequential-download setting is not a preview.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        cfg_mod.CONFIG_PATH = os.path.join(self.dir, "config.yaml")
+        ledger._broken = None
+        self.content = os.path.join(self.dir, "dl")
+        os.makedirs(self.content, exist_ok=True)
+        c = cfg(enabled=True, steer=True, min_speed_kib=0, min_seeds=0,
+                poll_seconds=1, torrent_timeout_seconds=5, stall_checks=1)
+        c["dry_run"] = False            # production: reaping is armed
+        c["qbittorrent"] = {"url": "http://x"}
+        c["arrs"] = []
+        c["detection"].update(blocked_extensions=[".exe"],
+                              blocked_name_keywords=[], only_active=True,
+                              archive_detection={"enabled": False, "indexers": [],
+                                                 "archive_extensions": []})
+        c["safety"] = {"mode": "allowlist", "allowed_categories": ["tv"],
+                       "allowed_tags": []}
+        cfg_mod.save(c)
+        self.torrent = {"hash": "t1", "name": "Season.Pack", "state": "downloading",
+                        "category": "tv", "tags": "", "size": 10 ** 10,
+                        "progress": 0.02, "dlspeed": 5 * 1024 * 1024,
+                        "num_seeds": 30, "seq_dl": False, "f_l_piece_prio": False,
+                        "content_path": os.path.join(self.content, "Season.Pack")}
+        self.files = {"t1": [
+            {"name": "E01.mkv", "priority": 1, "size": 10 ** 9, "piece_range": [0, 4]},
+            {"name": "E02.mkv", "priority": 1, "size": 10 ** 9, "piece_range": [5, 9]}]}
+
+    def service(self, qb):
+        real_qb, real_build = core.QbitClient, core.build_clients
+        core.QbitClient = lambda *a, **k: qb
+        core.build_clients = lambda c: []
+        self.addCleanup(lambda: setattr(core, "QbitClient", real_qb))
+        self.addCleanup(lambda: setattr(core, "build_clients", real_build))
+        return core.ProtectarrService()
+
+    def test_preview_changes_nothing_in_qbittorrent(self):
+        qb = ScanQb([self.torrent], self.files, [0] * 10)   # nothing downloaded
+        svc = self.service(qb)
+        svc.preview()
+        self.assertEqual(qb.calls, [],
+                         "preview mutated the torrent: %r" % (qb.calls,))
+
+    def test_preview_opens_no_ledger_entry(self):
+        qb = ScanQb([self.torrent], self.files, [0] * 10)
+        self.service(qb).preview()
+        self.assertEqual(ledger.entries(), {})
+
+    def test_preview_still_reports_what_the_free_pass_can_see(self):
+        """Observational must not mean blind. Bytes already on disk cost
+        nothing to read, so a preview still has to surface those findings."""
+        os.makedirs(self.torrent["content_path"], exist_ok=True)
+        write(self.torrent["content_path"], "E01.mkv", PE)
+        qb = ScanQb([self.torrent], self.files, [2] * 10)   # all downloaded
+        rows = self.service(qb).preview()
+        self.assertEqual([r["hash"] for r in rows], ["t1"])
+        self.assertEqual(qb.calls, [], "the free pass is not free")
+
+    def test_a_real_scan_still_steers(self):
+        """The guard is on preview, not on the feature."""
+        qb = ScanQb([self.torrent], self.files, [0] * 10)
+        real_qb, real_build = core.QbitClient, core.build_clients
+        core.QbitClient = lambda *a, **k: qb
+        core.build_clients = lambda c: []
+        try:
+            core.scan(cfg_mod.load(), {})
+        finally:
+            core.QbitClient, core.build_clients = real_qb, real_build
+        self.assertTrue(qb.calls, "side effects were disabled everywhere")
+
+    def test_preview_refuses_rather_than_running_a_second_scan(self):
+        qb = ScanQb([self.torrent], self.files, [0] * 10)
+        svc = self.service(qb)
+        svc._scan_lock.acquire()            # stand in for the worker mid-pass
+        try:
+            with self.assertRaises(RuntimeError):
+                svc.preview()
+        finally:
+            svc._scan_lock.release()
+
+    def test_scan_now_reports_busy_rather_than_overlapping(self):
+        qb = ScanQb([self.torrent], self.files, [0] * 10)
+        svc = self.service(qb)
+        svc._scan_lock.acquire()
+        try:
+            self.assertTrue(svc.scan_now().get("busy"))
+        finally:
+            svc._scan_lock.release()
+
+
+class TestTrailingDotAndSpace(unittest.TestCase):
+    """Windows drops trailing dots and spaces from a path, so `setup.exe ` runs
+    as `setup.exe` while splitting as extension `.exe `."""
+
+    DET = {"blocked_extensions": [".exe"], "blocked_name_keywords": []}
+    CTX = {"arr_type": "sonarr", "arr_tracked": True, "resolve_indexer": lambda: None}
+
+    def fires(self, name):
+        from protectarr.detectors import extension
+        return extension.detect([{"name": name}], self.DET, self.CTX)
+
+    def test_trailing_space_no_longer_evades(self):
+        self.assertTrue(self.fires("setup.exe "))
+
+    def test_trailing_dot_no_longer_evades(self):
+        self.assertTrue(self.fires("setup.exe."))
+
+    def test_a_run_of_dots_and_spaces_no_longer_evades(self):
+        self.assertTrue(self.fires("setup.exe...  "))
+
+    def test_a_leading_space_is_left_alone(self):
+        """rstrip, not strip: ` .hidden` is a different file from `hidden`."""
+        from protectarr.detectors._util import detection_name
+        self.assertEqual(detection_name(" .hidden"), " .hidden")
+
+    def test_the_finding_reports_the_raw_name_not_the_stripped_one(self):
+        """Canonicalisation is for matching. What gets logged, recorded and
+        shown to the user has to be the name qBittorrent actually reported."""
+        found = self.fires("setup.exe. ")
+        self.assertEqual(found[0]["evidence"]["filename"], "setup.exe. ")
+
+    def test_ordinary_media_is_unaffected(self):
+        self.assertFalse(self.fires("Show.S01E01.1080p.mkv"))
+
+    def test_zero_width_is_still_not_handled(self):
+        """Deliberate. We have not confirmed libtorrent surfaces such a name,
+        and a homoglyph deserves its own finding rather than being silently
+        treated as though it were `.exe`."""
+        self.assertFalse(self.fires("setup.e​xe"))
 
 
 if __name__ == "__main__":

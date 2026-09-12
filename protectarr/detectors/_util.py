@@ -31,13 +31,33 @@ _RAR_PART = re.compile(r"^\.r\d{2}$")   # .r00 .r01 ...
 _NUM_PART = re.compile(r"^\.\d{3}$")    # .001 .002 ...  (split archives)
 
 
+def detection_name(name):
+    """The filename to derive an extension from, not the name to report.
+
+    Windows silently drops trailing dots and spaces from a path, so `setup.exe `
+    and `setup.exe.` both execute as `setup.exe` while reading as extensions
+    `.exe ` and `.` to anything doing a literal split. Stripping them from the
+    right closes that without touching anything else.
+
+    Right side only: `strip(" .")` would also eat leading characters, and a file
+    genuinely named ` .hidden` is not the same file as `hidden`.
+
+    Deliberately NOT done here: homoglyph folding, zero-width removal, fullwidth
+    punctuation mapping. Those are real evasions on paper, but we have not yet
+    confirmed libtorrent even surfaces such names, and a character that only
+    *looks* like `.exe` deserves a finding of its own rather than being quietly
+    treated as though it were one.
+    """
+    if not isinstance(name, str):
+        return ""
+    return name.rstrip(" .")
+
+
 def ext(name):
     """Lowercased extension. Tolerates anything that is not a usable string,
     because one malformed entry in a file list must never cost the findings
     from every other file in the torrent."""
-    if not isinstance(name, str):
-        return ""
-    return posixpath.splitext(name)[1].lower()
+    return posixpath.splitext(detection_name(name))[1].lower()
 
 
 def is_archive(e, archive_exts):

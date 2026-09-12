@@ -242,16 +242,22 @@ def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb)
     return row
 
 
-def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name):
+def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name,
+                side_effects=True):
     """Second lane: the torrents the fast lane had nothing to say about.
 
     Reading headers that are already on disk is free, so every candidate gets
     that. Steering costs bandwidth and mutates settings, so it is rationed by
     `max_torrents_per_scan` and a wall-clock budget for the whole pass.
+
+    `side_effects=False` keeps the free pass and refuses the steered one. That
+    is what the WebUI preview asks for, and it is asked for explicitly rather
+    than inferred from `dry_run`: preview has to be observational whatever the
+    configured mode happens to be.
     """
     p = probe.settings(cfg)
     deadline = time.time() + p["scan_budget_seconds"]
-    steers_left = p["max_torrents_per_scan"]
+    steers_left = p["max_torrents_per_scan"] if side_effects else 0
     rows, checked = [], 0
     log.debug("Probe lane: %d candidate(s), %d steering slot(s), %ds budget",
               len(candidates), steers_left, p["scan_budget_seconds"])
@@ -283,9 +289,22 @@ def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name
     return rows
 
 
-def scan(cfg, state):
+def scan(cfg, state, side_effects=True):
     """One pass over qBittorrent's torrents. Returns list of action dicts
-    (used both for live reaping and the WebUI dry-run preview)."""
+    (used both for live reaping and the WebUI dry-run preview).
+
+    `side_effects=False` makes the pass observational: no steering, no ledger
+    writes, nothing in qBittorrent changed. The probe lane's free pass still
+    runs, because reading bytes already on disk changes nothing and a preview
+    that could not see probe findings would be lying by omission.
+
+    This is a parameter rather than a reading of `cfg["dry_run"]` because the
+    two answer different questions. `dry_run` is the user's standing policy on
+    whether Protectarr may reap; `side_effects` is this caller's statement about
+    whether it is allowed to touch anything at all. Preview needs the second,
+    and inferring it from the first is how the preview button ended up steering
+    live torrents whenever dry_run was off.
+    """
     started = time.time()
     qc = cfg["qbittorrent"]
     log.debug("Scan starting: qbittorrent=%s dry_run=%s safety_mode=%s",
@@ -334,12 +353,18 @@ def scan(cfg, state):
 
     # Unconditional, and deliberately not gated on the probe being enabled: a
     # process that died mid-probe left a torrent with most of its files switched
-    # off, and turning the feature off afterwards must not strand it. Restore is
-    # idempotent, so doing this once per process is enough.
-    if not state.get("probe_reconciled"):
+    # off, and turning the feature off afterwards must not strand it. Runs every
+    # pass rather than once, because a restore that fails has to be retried by a
+    # running Protectarr; ledger.reconcile() backs off per entry and returns
+    # immediately when there is nothing due.
+    # Skipped entirely on an observational pass. Restoring is repair rather than
+    # damage, but it is still a write to qBittorrent, and "preview changes
+    # nothing" is worth more than making a repair a few seconds earlier.
+    if side_effects:
+        first_reconcile = not state.get("probe_reconciled")
         state["probe_reconciled"] = True
         try:
-            probe.reconcile(qb)
+            probe.reconcile(qb, announce=first_reconcile)
         except Exception:  # noqa: BLE001 - never let cleanup break a scan
             log.exception("Probe ledger reconcile failed")
 
@@ -413,7 +438,8 @@ def scan(cfg, state):
                       sum(1 for a in actions if a.get("decision") != "warn"))
         else:
             actions.extend(_probe_pass(qb, probe_candidates, cfg, state, safety,
-                                       ownership_known, arr_by_name))
+                                       ownership_known, arr_by_name,
+                                       side_effects=side_effects))
 
     log.debug("Scan finished in %.2fs: %d inspected, %d skipped, %d action(s)",
               time.time() - started, inspected, skipped, len(actions))
@@ -622,6 +648,12 @@ class ProtectarrService:
         self._thread = None
         self._reload = threading.Event()
         self._bl_last = 0.0  # monotonic-ish epoch of last blocklist refresh
+        # One scan at a time, whichever thread asks. The WebUI runs in this
+        # process, so a preview or a "scan now" from a request thread used to be
+        # able to run a whole second pass alongside the worker: two probes on
+        # one torrent, and the second one recording the first one's steered
+        # priorities as the originals.
+        self._scan_lock = threading.Lock()
 
     def reload(self):
         self._reload.set()
@@ -651,9 +683,22 @@ class ProtectarrService:
             _log(self.state, f"IP blocklist update failed: {e}")
 
     def preview(self):
-        """Dry-run scan for the WebUI - returns serializable action rows."""
-        cfg = cfg_mod.load()
-        actions = scan(cfg, self.state)
+        """Observational scan for the WebUI - returns serializable action rows.
+
+        Changes nothing: not qBittorrent, not the probe ledger, not the event
+        history. It reports what Protectarr would decide from what it can see.
+
+        Does not wait for a running scan. A probe pass can hold the worker for
+        its full budget, and a preview request that hangs for two minutes is
+        worse than one that says the scanner is busy.
+        """
+        if not self._scan_lock.acquire(blocking=False):
+            raise RuntimeError("A scan is already running. Try again in a moment.")
+        try:
+            cfg = cfg_mod.load()
+            actions = scan(cfg, self.state, side_effects=False)
+        finally:
+            self._scan_lock.release()
         return [{k: v for k, v in a.items() if not k.startswith("_")} for a in actions]
 
     def apply_banned_ips(self, cfg=None):
@@ -682,8 +727,9 @@ class ProtectarrService:
         while not self._stop.is_set():
             cfg = cfg_mod.load()
             try:
-                actions = scan(cfg, self.state)
-                apply_actions(actions, self.state, cfg)
+                with self._scan_lock:
+                    actions = scan(cfg, self.state)
+                    apply_actions(actions, self.state, cfg)
                 self.state["last_scan"] = logs.now()
                 self.state["last_error"] = None
             except (QbitError, requests.RequestException) as e:
@@ -722,8 +768,13 @@ class ProtectarrService:
         if self._thread and self._thread.is_alive():
             self._reload.set()  # breaks the sleep; next loop iteration scans now
             return {"queued": True, "running": True}
-        cfg = cfg_mod.load()
-        actions = scan(cfg, self.state)
-        apply_actions(actions, self.state, cfg)
+        if not self._scan_lock.acquire(blocking=False):
+            return {"queued": False, "running": True, "busy": True}
+        try:
+            cfg = cfg_mod.load()
+            actions = scan(cfg, self.state)
+            apply_actions(actions, self.state, cfg)
+        finally:
+            self._scan_lock.release()
         self.state["last_scan"] = logs.now()
         return {"queued": False, "running": False, "actions": len(actions)}
