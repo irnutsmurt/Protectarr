@@ -231,6 +231,9 @@ def run(args):
     print(f"qBittorrent: {q['url']}")
     print(f"*arr apps:   {', '.join(c.name for c in clients) or 'none'}\n")
 
+    if args.restore_from:
+        return restore_from_capture(qb, args.restore_from)
+
     if args.list or not args.hash:
         list_candidates(qb, clients)
         if not args.hash:
@@ -414,6 +417,33 @@ def restore(qb, thash, originals, seq, fl, cap):
     return not (bad or flags)
 
 
+def restore_from_capture(qb, path):
+    """Undo a run that died before its `finally` could.
+
+    The harness does not use Protectarr's probe ledger, so nothing else knows
+    how to put this back. On a 460-file season pack "just fix it in the UI" is
+    not a real answer, so the originals are written to the capture file BEFORE
+    the first mutation and this reads them back.
+    """
+    with open(path) as fh:
+        doc = json.load(fh)
+    orig = doc.get("originals")
+    thash = ((doc.get("phases", {}).get("before", {}) or {}).get("qb") or {}).get("hash")
+    if not orig or not thash:
+        print(f"ERROR: {path} has no recorded originals to restore from.")
+        return 2
+    priorities = {int(i): int(p) for i, p in orig["priorities"].items()}
+    print(f"Restoring {thash[:16]} from {path}")
+    print(f"  {len(priorities)} file priorities, seq_dl={orig['seq_dl']}, "
+          f"f_l_piece_prio={orig['f_l_piece_prio']}")
+    cap = Capture(path + ".restore")
+    ok = restore(qb, thash, priorities, orig["seq_dl"], orig["f_l_piece_prio"], cap)
+    print(f"Restore verified: {ok}")
+    if not ok:
+        print(json.dumps(cap.doc.get("restore"), indent=2))
+    return 0 if ok else 1
+
+
 def diff(before, after):
     """What is different between the two ends, field by field."""
     out = {}
@@ -451,6 +481,8 @@ def main():
                     help="seconds between samples (default 5)")
     ap.add_argument("--outdir", default="captures",
                     help="where to write the capture (default ./captures)")
+    ap.add_argument("--restore-from", metavar="CAPTURE.json",
+                    help="undo a run that was killed before it could restore")
     args = ap.parse_args()
 
     if args.config:
