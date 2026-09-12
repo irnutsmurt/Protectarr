@@ -192,6 +192,96 @@ def describe(snap, label):
         print(f"           arr=NOT IN ANY QUEUE")
 
 
+# The three candidate steering strategies, as agreed with the PM. They differ
+# only in what happens to the files we are NOT probing, which turns out to be
+# the whole question: qBittorrent recomputes size/completed/amount_left/progress
+# against the WANTED set, and the owning *arr follows that size.
+#
+#   zero      every other file to 0. Fastest to the target piece, and the one
+#             we measured: it collapsed a 160.74 GB torrent to 1.81 GB of
+#             "wanted" and armed a state where finishing one file would read as
+#             finishing the season.
+#   keepone   as zero, but one other INCOMPLETE file stays wanted at priority 1.
+#             The torrent can then never reach 100% from the probe alone, which
+#             is a structural invariant rather than a timing argument.
+#   preserve  every originally-wanted file stays wanted, demoted to 1; the
+#             target goes to 7. Nothing leaves the wanted set, so the accounting
+#             never moves. Cleanest on paper. Untested until now, because it
+#             also means the target competes with every other file for
+#             bandwidth, which may defeat the point of steering.
+STEER_MODES = {
+    "zero": "all other files to priority 0 (current behaviour)",
+    "keepone": "all others to 0, except one incomplete file held at 1",
+    "preserve": "every originally-wanted file demoted to 1, none dropped",
+}
+
+
+def histogram(values):
+    h = {}
+    for v in values:
+        h[v] = h.get(v, 0) + 1
+    return h
+
+
+def fmt_histogram(values):
+    return ", ".join(f"prio {p}: {n} file(s)"
+                     for p, n in sorted(histogram(values).items()))
+
+
+def group_by_priority(plan):
+    """{index: priority} -> {priority: [indices]}, so each priority is one call."""
+    out = {}
+    for i, p in plan.items():
+        out.setdefault(p, []).append(i)
+    return out
+
+
+def steer_plan(mode, originals, idx, files):
+    """The priority every file should hold during the probe.
+
+    `originals` is {index: priority} as found. A file at 0 was already unwanted
+    by the user, and no mode promotes it: we are measuring steering, not
+    silently enlarging someone's download.
+    """
+    plan = {i: 0 for i in originals}
+    plan[idx] = 7
+
+    if mode == "zero":
+        return plan
+
+    if mode == "preserve":
+        for i, p in originals.items():
+            if i != idx and p:
+                plan[i] = 1
+        return plan
+
+    if mode == "keepone":
+        # Any other file that is both originally wanted and not yet complete.
+        # Complete files cannot hold the torrent below 100%, so they are no use
+        # as the invariant even though they are cheap to keep.
+        for i, p in originals.items():
+            if i == idx or not p:
+                continue
+            prog = (files[i].get("progress") if i < len(files) else 1.0) or 0.0
+            if prog < 1.0:
+                plan[i] = 1
+                break
+        else:
+            raise SystemExit(
+                "mode 'keepone' needs a second incomplete wanted file and this "
+                "torrent has none. That is exactly the case where keepone "
+                "degenerates into zero, so the comparison would be meaningless.")
+        return plan
+
+    raise SystemExit(f"unknown mode {mode!r}")
+
+
+def wanted_bytes(files, plan):
+    """What qBittorrent will call `size` once `plan` is applied."""
+    return sum((f.get("size") or 0) for i, f in enumerate(files)
+               if plan.get(i, 0) != 0)
+
+
 def choose_target(files):
     """The file the probe lane would go for: biggest validatable one."""
     cands = [(i, f) for i, f in enumerate(files)
@@ -306,12 +396,20 @@ def run(args):
         print("\n--- steering ---")
         qb.set_sequential(thash, True)
         qb.set_first_last_prio(thash, True)
-        others = [i for i in originals if i != idx]
-        qb.set_file_priority(thash, others, 0)
-        qb.set_file_priority(thash, [idx], 7)
+        plan = steer_plan(args.mode, originals, idx, files)
+        kept, was = wanted_bytes(files, plan), wanted_bytes(files, originals)
+        cap.doc["steer_plan"] = {"mode": args.mode,
+                                 "histogram": histogram(plan.values()),
+                                 "rationale": STEER_MODES[args.mode],
+                                 "wanted_bytes_before": was,
+                                 "wanted_bytes_predicted": kept}
+        print(f"  wanted set {GiB(was):.2f} GiB -> {GiB(kept):.2f} GiB predicted"
+              + (f" ({kept / was * 100:.1f}% retained)" if was else ""))
+        for prio, ids in group_by_priority(plan).items():
+            qb.set_file_priority(thash, ids, prio)
         steered = True
-        print(f"  set {len(others)} file(s) to priority 0, target to 7, "
-              f"sequential on, first/last on")
+        print(f"  mode {args.mode}: {STEER_MODES[args.mode]}")
+        print(f"  {fmt_histogram(plan.values())}, sequential on, first/last on")
 
         applied = snapshot(qb, clients, thash, first_piece)
         cap.phase("steered", applied)
@@ -360,6 +458,7 @@ def run(args):
         if not got:
             print(f"  target piece did not arrive within {args.seconds}s "
                   f"(not a failure: it is the starved-torrent case)")
+        verdict(cap, idx, args.seconds)
 
         if args.abandon:
             print("\n--- ABANDONING WITHOUT RESTORING (--abandon) ---")
@@ -396,6 +495,97 @@ def run(args):
 
     print(f"\nCapture written to {out}")
     return 0
+
+
+def GiB(n):
+    return (n or 0) / (1024.0 ** 3)
+
+
+def verdict(cap, idx, seconds):
+    """The six numbers the B-vs-C decision turns on, computed from the capture.
+
+    Printed and stored, so two runs can be compared without re-reading raw JSON.
+    A mode wins on getting the target piece inside the budget while NOT
+    collapsing the wanted set; those pull against each other, which is the
+    entire reason this has to be measured rather than argued.
+    """
+    phases, samples = cap.doc.get("phases", {}), cap.doc.get("samples", [])
+    before = phases.get("before") or {}
+    steered = phases.get("steered") or {}
+    last = (phases.get("target_arrived") or (samples[-1] if samples else {}))
+
+    b_qb, s_qb, l_qb = (before.get("qb") or {}), (steered.get("qb") or {}), (last.get("qb") or {})
+
+    # 1. time to the target's opening piece
+    t_arrive = None
+    if cap.doc.get("target_piece_arrived"):
+        t0 = steered.get("at")
+        t1 = (phases.get("target_arrived") or {}).get("at")
+        if t0 and t1:
+            t_arrive = (datetime.datetime.fromisoformat(t1)
+                        - datetime.datetime.fromisoformat(t0)).total_seconds()
+
+    # 2/3. wanted size and the accounting that follows it
+    acct = {k: {"before": b_qb.get(k), "steered": s_qb.get(k), "last": l_qb.get(k)}
+            for k in ("size", "completed", "amount_left", "progress")}
+    collapse = None
+    if b_qb.get("size") and s_qb.get("size"):
+        collapse = s_qb["size"] / b_qb["size"]
+
+    # 4. did the *arr stay healthy for every single sample?
+    seen = set()
+    for s in [steered] + samples:
+        a = s.get("arr")
+        if a is None:
+            seen.add("ABSENT-FROM-QUEUE")
+        elif isinstance(a, dict):
+            seen.add(f"{a.get('status')}/{a.get('trackedDownloadStatus')}/"
+                     f"{a.get('trackedDownloadState')}/{a.get('errorMessage')!r}")
+
+    # 5. where the bandwidth actually went
+    def bytes_done(snap):
+        out = {}
+        for f in snap.get("files") or []:
+            if isinstance(f, dict):
+                out[f["index"]] = (f.get("size") or 0) * (f.get("progress") or 0)
+        return out
+    b0, b1 = bytes_done(steered), bytes_done(last)
+    to_target = b1.get(idx, 0) - b0.get(idx, 0)
+    to_others = sum(v - b0.get(i, 0) for i, v in b1.items() if i != idx)
+    total = to_target + to_others
+    share = (to_target / total) if total > 0 else None
+
+    v = {"mode": cap.doc.get("steer_plan", {}).get("mode"),
+         "seconds_budget": seconds,
+         "target_piece_arrived": cap.doc.get("target_piece_arrived"),
+         "seconds_to_target_piece": t_arrive,
+         "accounting": acct,
+         "wanted_size_ratio_after_steer": collapse,
+         "arr_states_observed": sorted(seen),
+         "arr_stayed_healthy": seen == {"downloading/ok/downloading/None"},
+         "bytes_to_target": to_target,
+         "bytes_to_other_files": to_others,
+         "target_bandwidth_share": share}
+    cap.doc["verdict"] = v
+    cap.save()
+
+    print("\n--- verdict ---")
+    print(f"  mode                {v['mode']}")
+    print(f"  target piece        "
+          f"{'arrived in %.1fs' % t_arrive if t_arrive is not None else 'DID NOT ARRIVE'}"
+          f"  (budget {seconds}s)")
+    print(f"  wanted size         {GiB(b_qb.get('size')):.2f} GiB -> "
+          f"{GiB(s_qb.get('size')):.2f} GiB"
+          + (f"  ({collapse * 100:.1f}% retained)" if collapse else ""))
+    print(f"  amount_left         {GiB(b_qb.get('amount_left')):.2f} GiB -> "
+          f"{GiB(s_qb.get('amount_left')):.2f} GiB")
+    print(f"  progress            {b_qb.get('progress')} -> {s_qb.get('progress')}")
+    print(f"  *arr healthy        {v['arr_stayed_healthy']}  {v['arr_states_observed']}")
+    print(f"  bandwidth to target {GiB(to_target) * 1024:.1f} MiB"
+          + (f"  ({share * 100:.1f}% of all bytes)" if share is not None
+             else "  (no bytes moved)"))
+    print(f"  bandwidth elsewhere {GiB(to_others) * 1024:.1f} MiB")
+    return v
 
 
 def restore(qb, thash, originals, seq, fl, cap):
@@ -485,6 +675,10 @@ def main():
     ap.add_argument("--hash", help="infohash of the torrent to capture")
     ap.add_argument("--steer", action="store_true",
                     help="actually steer. Without this only the baseline is taken")
+    ap.add_argument("--mode", choices=sorted(STEER_MODES), default="zero",
+                    help="which steering strategy to measure: "
+                         + "; ".join(f"{k} = {v}" for k, v in
+                                     sorted(STEER_MODES.items())))
     ap.add_argument("--abandon", action="store_true",
                     help="exit WITHOUT restoring, to test reconcile on restart")
     ap.add_argument("--seconds", type=int, default=180,
