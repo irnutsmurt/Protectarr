@@ -81,6 +81,12 @@ DEFAULTS = {
             "recheck_minutes": 15,
             "poll_seconds": 3,
             "stall_checks": 5,
+            # Give up on a steer qBittorrent is ignoring. A torrent can be
+            # downloading at full speed and still never request the piece we
+            # asked for; measured, that stayed true for five minutes. There is
+            # no reason to hold the boost for the whole budget once the piece
+            # has plainly not been scheduled.
+            "no_progress_seconds": 30,
         },
         # Only inspect torrents still acquiring data (the point is to catch a
         # fake before it finishes). Skips finished seeds - huge speedup on big

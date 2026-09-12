@@ -12,10 +12,10 @@ Two passes, in cost order:
 1. **Free pass.** Pieces already on disk cost nothing and mutate nothing. A
    torrent in flight has progress, and pieces straddle file boundaries, so
    headers frequently come free. Most verdicts should land here.
-2. **Steered pass.** For anything still unresolved: disable every other file,
-   set the target to maximal priority, turn on sequential download, and wait for
-   its opening piece. Everything changed is recorded in the ledger first and
-   restored in a `finally`.
+2. **Steered pass.** For anything still unresolved: raise the target to maximal
+   priority, lower the other *wanted* files to normal, turn on sequential
+   download, and wait for the target's opening piece. Everything changed is
+   recorded in the ledger first and restored in a `finally`.
 
 Three rules this module will not bend:
 
@@ -33,6 +33,14 @@ flight. On a starved torrent the next pick can be twenty minutes away, so the
 budget would be burned for nothing. Fakes are heavily seeded by design - the
 attacker wants downloads - so the torrents that matter are exactly the ones
 where the piece arrives quickly.
+
+*The wanted set is never reduced.* An earlier design switched every other file
+off. Measured on a live 460-file, 149.70 GiB torrent, that makes qBittorrent
+recompute `size`, `completed`, `amount_left` and `progress` against the files
+that are left, and the owning *arr believes the recomputed figure: one run read
+90.95% complete with 2 of 460 files wanted, fifteen seconds in. Lowering the
+other wanted files to priority 1 instead of 0 steers just as well, in under
+twenty seconds on the same torrent, and the accounting never moves at all.
 """
 
 import time
@@ -57,6 +65,13 @@ ACTIVE_STATES = {"downloading", "forcedDL", "stalledDL"}
 Result = collections.namedtuple("Result", "findings steered")
 NOTHING = Result((), False)
 
+# Why a wait ended without the piece. Named because `_steer` branches on them:
+# these three say something about the torrent rather than about one file, so
+# the next file on the same torrent would wait out the budget for nothing.
+STALLED = "download stalled"
+GONE = "torrent disappeared"
+NEVER_SCHEDULED = "qBittorrent never requested the piece"
+
 DEFAULTS = {
     "enabled": False,
     "path_mappings": [],
@@ -70,11 +85,13 @@ DEFAULTS = {
     "recheck_minutes": 15,
     "poll_seconds": 3,
     "stall_checks": 5,
+    "no_progress_seconds": 30,
 }
 
 _INT_KEYS = ("max_torrents_per_scan", "torrent_timeout_seconds",
              "scan_budget_seconds", "min_seeds", "header_bytes",
-             "recheck_minutes", "poll_seconds", "stall_checks")
+             "recheck_minutes", "poll_seconds", "stall_checks",
+             "no_progress_seconds")
 
 
 def settings(cfg):
@@ -97,6 +114,8 @@ def settings(cfg):
     p["torrent_timeout_seconds"] = max(5, p["torrent_timeout_seconds"])
     p["scan_budget_seconds"] = max(5, p["scan_budget_seconds"])
     p["max_torrents_per_scan"] = max(0, p["max_torrents_per_scan"])
+    p["no_progress_seconds"] = max(p["poll_seconds"] * 2,
+                                   p["no_progress_seconds"])
     return p
 
 
@@ -152,6 +171,64 @@ def steerable(torrent, p):
         return False, (f"downloading at {speed:.0f} KiB/s, below the "
                        f"{p['min_speed_kib']:.0f} KiB/s needed to steer it")
     return True, "ok"
+
+
+def affordable(piece_size, dlspeed, budget_seconds):
+    """Can one piece conceivably arrive inside the budget? (bool, why).
+
+    This is an optimistic lower bound and nothing more: it assumes the whole
+    pipe is spent on the piece we asked for. It never is. Measured target share
+    of the torrent's bandwidth under this steering mode was 18.6% at ~48 MB/s
+    and 0% under a ~330 KiB/s throttle, so the true time is unbounded from
+    above and no coefficient would honestly cover both.
+
+    So failing this check predicts failure and is worth acting on; passing it
+    predicts nothing, which is what the runtime abort in `_wait_for_piece` is
+    for.
+    """
+    if not piece_size or not dlspeed:
+        return True, "no estimate available"
+    seconds = piece_size / float(dlspeed)
+    if seconds > budget_seconds:
+        return False, (f"one {piece_size / (1024.0 ** 2):.0f} MiB piece needs "
+                       f"at least {seconds:.0f}s at "
+                       f"{dlspeed / 1024.0:.0f} KiB/s, and the probe budget is "
+                       f"{budget_seconds:.0f}s")
+    return True, f"at best {seconds:.0f}s of a {budget_seconds:.0f}s budget"
+
+
+def steer_plan(originals, idx):
+    """The priority every file should hold while `idx` is being probed.
+
+    Three rules, in the order they matter:
+
+    * a file the user set to 0 stays at 0. It is not ours to switch on, and
+      qBittorrent would never write it to disk for us to read anyway.
+    * every other originally-wanted file stays wanted, at priority 1. This is
+      the whole point: the wanted set keeps its size, so qBittorrent has no
+      reason to recompute the torrent's accounting and the owning *arr sees
+      nothing change.
+    * the target goes to 7, which is the only thing that actually steers.
+
+    Returns the full intended state, including the files that do not move, so
+    that callers and tests can read it as an assertion about every file rather
+    than as a diff.
+    """
+    return {i: (7 if i == idx else (1 if prio else 0))
+            for i, prio in originals.items()}
+
+
+def _changes(plan, current):
+    """{priority: [file index]} for the files `plan` actually moves.
+
+    Grouped so each distinct priority costs one API call rather than one per
+    file - on a 460-file torrent the difference is two calls against 460.
+    """
+    out = {}
+    for i, prio in sorted(plan.items()):
+        if prio != current.get(i):
+            out.setdefault(prio, []).append(i)
+    return out
 
 
 def _judge(torrent, file_entry, single, mappings, nbytes, source):
@@ -272,6 +349,25 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
     budget_end = now + p["torrent_timeout_seconds"]
     if deadline is not None:
         budget_end = min(budget_end, deadline)
+
+    # Preflight. Cheap, and it catches the case the live test found: a slow
+    # torrent where steering is not merely slow but inert. The piece size is
+    # not on the torrent record, so it costs one extra call - once per steer,
+    # not once per poll.
+    try:
+        piece_size = (qb.properties(thash) or {}).get("piece_size")
+    except requests.RequestException as e:
+        log.debug("Probe: could not read properties for %s: %s", name, e)
+        piece_size = None
+    ok, why = affordable(piece_size, torrent.get("dlspeed"), budget_end - now)
+    if not ok:
+        # Cooldown, unlike the `steerable` rejection above: this one is a
+        # statement about the piece size, which will not change.
+        memo["next_steer"] = now + p["recheck_minutes"] * 60
+        log.info("Probe: not steering %s, it cannot pay off (%s)", name, why)
+        return NOTHING
+    log.debug("Probe: %s clears the preflight (%s)", name, why)
+
     memo["next_steer"] = now + p["recheck_minutes"] * 60
     return Result(tuple(_steer(qb, torrent, files, unresolved, p, mappings,
                                single, memo, budget_end)), True)
@@ -282,6 +378,19 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
     name = torrent.get("name") or thash[:8]
     originals = {i: int(f.get("priority", 1) or 0) for i, f in enumerate(files)}
 
+    # Biggest first: the disguised payload is the feature-sized file, so if the
+    # budget runs out it should have been spent on the file that matters. Files
+    # the user set to 0 are dropped rather than sorted: raising one to 7 would
+    # be switching on a download they turned off.
+    order = sorted((u for u in unresolved if originals.get(u[0])),
+                   key=lambda u: u[1].get("size", 0) or 0, reverse=True)
+    if len(order) < len(unresolved):
+        log.debug("Probe: %d unresolved file(s) in %r are set to 'do not "
+                  "download'; leaving them that way", len(unresolved) - len(order),
+                  name)
+    if not order:
+        return []
+
     if not ledger.open_probe(thash, name, originals, torrent.get("seq_dl"),
                              torrent.get("f_l_piece_prio")):
         log.error("Probe: refusing to steer %r because the ledger could not be "
@@ -289,9 +398,7 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
                   "verdict.", name)
         return []
 
-    # Biggest first: the disguised payload is the feature-sized file, so if the
-    # budget runs out it should have been spent on the file that matters.
-    order = sorted(unresolved, key=lambda u: u[1].get("size", 0) or 0, reverse=True)
+    current = dict(originals)
     findings = []
     try:
         qb.set_sequential(thash, True)
@@ -304,15 +411,14 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
             if time.time() >= deadline:
                 break
             fname = f.get("name") or ""
-            # One file at a time. With several enabled, sequential download
-            # walks the first file to its end rather than jumping to the next
-            # file's opening piece, so the second target would never arrive.
-            # The target is incomplete by construction (its first piece is
-            # missing), so the torrent cannot look finished to the owning *arr
-            # while everything else is switched off.
-            others = [i for i in originals if i != idx]
-            qb.set_file_priority(thash, others, 0)
-            qb.set_file_priority(thash, [idx], 7)
+            # One target at a time. Several files at 7 would just recreate the
+            # competition we are trying to win. Everything else that was wanted
+            # stays wanted at 1, so the torrent's size and progress are exactly
+            # what they were a moment ago.
+            plan = steer_plan(originals, idx)
+            for prio, ids in sorted(_changes(plan, current).items()):
+                qb.set_file_priority(thash, ids, prio)
+            current = plan
             log.info("Probe: steering %r at %r, waiting for piece %d "
                      "(%.0fs budget)", name, fname, first, deadline - time.time())
 
@@ -320,7 +426,7 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
             if not got:
                 log.info("Probe: no verdict for %r on %r (%s). No verdict never "
                          "means block.", name, fname, why)
-                if why in ("download stalled", "torrent disappeared"):
+                if why in (STALLED, GONE, NEVER_SCHEDULED):
                     break       # the rest of this torrent will fare no better
                 continue
 
@@ -344,10 +450,30 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
 def _wait_for_piece(qb, torrent_hash, piece, deadline, p):
     """Wait for one piece to verify. Returns (got, why).
 
-    Gives up early on a torrent that has gone dead rather than burning the
-    remaining budget watching a number that is not moving.
+    Gives up early on a torrent that has gone dead, and on a torrent that is
+    alive but is never going to pick our piece.
+
+    The observable for the second case is the target piece's own state in the
+    array `torrents/pieceStates` already returns on every poll: 0 unavailable,
+    1 requested, 2 verified. Nothing closer to "progress toward this specific
+    piece" is on offer, and it costs no extra call.
+
+    It was chosen over the target file's `progress`, which is the obvious
+    candidate and is wrong. In the throttled comparison run the target file's
+    progress advanced from 0.0368 to 0.0611 while its opening piece sat at
+    state 0 for the full five minutes: bytes were arriving for the file, none
+    of them for the piece we needed. File progress would have said "keep
+    waiting" for the entire budget.
+
+    Across the runs captured so far the piece state separates the two outcomes
+    cleanly. Every run that succeeded left state 0 within seconds; all four
+    that failed sat at 0 for their whole window without one transient 1. A
+    non-zero reading latches, so a piece that is requested, dropped and
+    re-requested is not mistaken for one that was never wanted.
     """
     stalled = 0
+    scheduled = False
+    give_up_at = time.time() + p["no_progress_seconds"]
     while True:
         try:
             states = qb.piece_states(torrent_hash)
@@ -355,17 +481,21 @@ def _wait_for_piece(qb, torrent_hash, piece, deadline, p):
             return False, f"could not read piece states ({e})"
         if 0 <= piece < len(states) and states[piece] == 2:
             return True, "piece downloaded"
+        if 0 <= piece < len(states) and states[piece]:
+            scheduled = True
+        elif not scheduled and time.time() >= give_up_at:
+            return False, NEVER_SCHEDULED
 
         try:
             current = qb.torrent(torrent_hash)
         except requests.RequestException as e:
             return False, f"could not read the torrent ({e})"
         if current is None:
-            return False, "torrent disappeared"
+            return False, GONE
         if (current.get("dlspeed") or 0) / 1024.0 < p["min_speed_kib"]:
             stalled += 1
             if stalled >= p["stall_checks"]:
-                return False, "download stalled"
+                return False, STALLED
         else:
             stalled = 0
 

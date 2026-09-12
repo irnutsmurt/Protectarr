@@ -188,6 +188,12 @@ class FakeQb:
         self.arrive_after = dict(arrive_after or {})
         self.polls = 0
         self.raise_on_priority = False
+        # Small enough that the preflight never rejects the fixture; the tests
+        # that care about the preflight set it themselves.
+        self.props = {"piece_size": 1024}
+
+    def properties(self, h):
+        return dict(self.props)
 
     def piece_states(self, h):
         self.polls += 1
@@ -360,7 +366,10 @@ class TestSteering(ProbeCase):
 
         def explode(h, ids, priority):
             calls.append(priority)
-            if len(calls) == 2:             # fail mid-transaction
+            # Fail on the target boost, which is the mutation that steers. The
+            # ledger is open by now and the flags are already toggled, so the
+            # only thing that can put the torrent back is the `finally`.
+            if priority == 7:
                 raise requests.RequestException("qBittorrent went away")
             return original(h, ids, priority)
 
@@ -401,6 +410,201 @@ class TestSteering(ProbeCase):
         res = self.probe(qb, self._conf(), allow_steer=False)
         self.assertEqual(qb.calls, [])
         self.assertFalse(res.steered)
+
+
+class TestWantedSetIsPreserved(ProbeCase):
+    """Steering must not change what qBittorrent thinks the torrent is.
+
+    Measured on a live 460-file torrent: switching the other files off makes
+    qBittorrent recompute `size` and `progress` against the survivors, and the
+    owning *arr believes it. One run read 90.95% complete, 15 seconds in. So
+    every file that was wanted stays wanted, and only the *order* changes.
+    """
+
+    def _many(self, priorities):
+        """A torrent of len(priorities) files, one piece each."""
+        self.files = [{"name": f"ep{i}.mkv", "priority": p, "size": 900 - i,
+                       "piece_range": [i, i]}
+                      for i, p in enumerate(priorities)]
+        return self.files
+
+    def _conf(self, **kw):
+        over = dict(poll_seconds=0, torrent_timeout_seconds=5)
+        over.update(kw)
+        return cfg(**over)
+
+    def test_every_wanted_file_is_still_wanted_while_steering(self):
+        self._many([1, 1, 1, 1])
+        write(self.content, "ep0.mkv", PE)
+        qb = FakeQb(self.files, [0] * 4, self.torrent, arrive_after={0: 1})
+
+        seen = []
+        original = qb.set_file_priority
+
+        def watch(h, ids, priority):
+            original(h, ids, priority)
+            seen.append([f["priority"] for f in qb.files_list])
+
+        qb.set_file_priority = watch
+        self.probe(qb, self._conf())
+
+        self.assertTrue(seen, "it never steered")
+        for snapshot in seen:
+            self.assertNotIn(0, snapshot,
+                             "a wanted file was dropped from the wanted set")
+
+    def test_the_target_is_the_only_file_raised(self):
+        self._many([1, 1, 1, 1])
+        write(self.content, "ep0.mkv", PE)
+        qb = FakeQb(self.files, [0] * 4, self.torrent, arrive_after={0: 1})
+        self.probe(qb, self._conf())
+        boosts = [c for c in qb.calls if c[0] == "prio" and c[2] == 7]
+        self.assertEqual(len(boosts), 1)
+        self.assertEqual(boosts[0][1], [0], "the biggest file is ep0")
+
+    def test_a_file_the_user_switched_off_is_left_off(self):
+        """Priority 0 is the user's decision, and not ours to reverse."""
+        self._many([0, 1])
+        write(self.content, "ep0.mkv", PE)     # the fake is in the skipped file
+        write(self.content, "ep1.mkv", PE)
+        qb = FakeQb(self.files, [0] * 2, self.torrent, arrive_after={1: 1})
+        self.probe(qb, self._conf())
+
+        self.assertEqual(qb.files_list[0]["priority"], 0)
+        for _, ids, prio in [c for c in qb.calls if c[0] == "prio"]:
+            self.assertFalse(0 in ids and prio,
+                             f"the skipped file was switched on ({prio})")
+
+    def test_nothing_is_steered_when_every_candidate_is_switched_off(self):
+        self._many([0, 0])
+        write(self.content, "ep0.mkv", PE)
+        qb = FakeQb(self.files, [0] * 2, self.torrent, arrive_after={0: 1})
+        res = self.probe(qb, self._conf())
+        self.assertEqual(qb.calls, [], "there was nothing worth steering for")
+        self.assertEqual(res.findings, ())
+        self.assertEqual(ledger.entries(), {}, "and no ledger entry was opened")
+
+    def test_a_previous_target_is_put_back_to_normal_not_left_at_seven(self):
+        """Two targets in one probe: the first must not stay boosted."""
+        self._many([1, 1])
+        write(self.content, "ep0.mkv", MKV)    # resolves, no finding
+        write(self.content, "ep1.mkv", PE)
+        # Piece 0 arrives so ep0 is judged; piece 1 arrives later so the probe
+        # moves on to ep1.
+        qb = FakeQb(self.files, [0] * 2, self.torrent,
+                    arrive_after={0: 1, 1: 3})
+        res = self.probe(qb, self._conf())
+
+        self.assertEqual(len(res.findings), 1)
+        boosted = [c for c in qb.calls if c[0] == "prio" and c[2] == 7]
+        self.assertEqual([c[1] for c in boosted], [[0], [1]])
+        demoted = [c for c in qb.calls if c[0] == "prio" and c[2] == 1
+                   and c[1] == [0]]
+        self.assertTrue(demoted, "ep0 was left at priority 7 while ep1 probed")
+
+    def test_the_accounting_qbittorrent_reports_mid_steer_is_not_consulted(self):
+        """qBittorrent lags on recompute, so those fields are poison here.
+
+        `size`, `completed`, `amount_left` and `progress` still read pre-steer
+        values in the same second as a priority change, and briefly again after
+        the restore. Anything that branched on them during a steer would be
+        reading a number the client has not caught up with yet, so nothing
+        does. Poisoning them to look like a finished torrent must change
+        nothing.
+        """
+        self._many([1, 1])
+        write(self.content, "ep0.mkv", PE)
+        qb = FakeQb(self.files, [0] * 2, self.torrent, arrive_after={0: 2})
+
+        def lying(h):
+            return dict(qb.info, progress=1.0, size=0, completed=0,
+                        amount_left=0)
+
+        qb.torrent = lying
+        res = self.probe(qb, self._conf())
+        self.assertEqual(len(res.findings), 1)
+        self.assertEqual(res.findings[0]["evidence"]["source"], "steered")
+
+
+class TestProbeGivesUpEarly(ProbeCase):
+    """Sitting steered for the full budget while nothing happens is a cost."""
+
+    def _conf(self, **kw):
+        over = dict(poll_seconds=0, torrent_timeout_seconds=60,
+                    no_progress_seconds=0)
+        over.update(kw)
+        return cfg(**over)
+
+    def test_a_piece_qbittorrent_never_requests_aborts_and_restores(self):
+        write(self.content, "ep1.mkv", PE)
+        # arrive_after is empty, so every piece stays at state 0 forever.
+        qb = FakeQb(self.files, [0] * 10, self.torrent)
+        started = time.time()
+        res = self.probe(qb, self._conf())
+
+        self.assertEqual(res.findings, ())
+        self.assertLess(time.time() - started, 5,
+                        "it waited out the whole 60s budget")
+        self.assertEqual([f["priority"] for f in qb.files_list], [1, 1])
+        self.assertEqual(ledger.entries(), {})
+
+    def test_a_requested_piece_is_given_the_full_budget(self):
+        """State 1 means libtorrent has our piece in flight. That is progress."""
+        write(self.content, "ep1.mkv", PE)
+        states = [0] * 10
+        states[0] = 1                       # requested, not yet verified
+        qb = FakeQb(self.files, states, self.torrent, arrive_after={0: 4})
+        res = self.probe(qb, self._conf())
+        self.assertEqual(len(res.findings), 1)
+
+    def test_a_piece_that_is_requested_then_dropped_still_counts(self):
+        """Non-zero latches: re-requesting is not 'never scheduled'."""
+        write(self.content, "ep1.mkv", PE)
+        qb = FakeQb(self.files, [0] * 10, self.torrent, arrive_after={0: 6})
+
+        original = qb.piece_states
+
+        def flicker(h):
+            # Poll 1 is the free pass. Polls 2-3 see the piece requested, 4-6
+            # see it dropped again, and arrive_after verifies it at poll 7.
+            states = original(h)
+            if qb.polls in (2, 3):
+                states[0] = 1
+            elif qb.polls in (4, 5, 6):
+                states[0] = 0
+            return states
+
+        qb.piece_states = flicker
+        res = self.probe(qb, self._conf())
+        self.assertEqual(len(res.findings), 1)
+
+
+class TestPreflight(unittest.TestCase):
+    """An optimistic lower bound. Failing it is meaningful; passing it is not."""
+
+    def test_a_piece_that_cannot_arrive_in_time_is_refused(self):
+        ok, why = engine.affordable(16 * 1024 ** 2, 330 * 1024, 20)
+        self.assertFalse(ok)
+        self.assertIn("50s", why)
+
+    def test_a_piece_that_could_arrive_is_allowed(self):
+        ok, _ = engine.affordable(16 * 1024 ** 2, 48 * 1024 ** 2, 120)
+        self.assertTrue(ok)
+
+    def test_a_missing_piece_size_does_not_block_the_probe(self):
+        """No estimate is not the same as a bad estimate."""
+        self.assertTrue(engine.affordable(None, 1024, 10)[0])
+        self.assertTrue(engine.affordable(1024, 0, 10)[0])
+
+    def test_the_bound_is_optimistic_and_says_so(self):
+        """330 KiB/s took >300s in the live run. The check still passes it.
+
+        Recorded deliberately: the preflight assumes the whole pipe goes to our
+        piece, the measured share was 18.6% at speed and 0% throttled, and no
+        fixed coefficient covers both. The runtime abort is what catches this
+        case, not the preflight.
+        """
+        self.assertTrue(engine.affordable(16 * 1024 ** 2, 330 * 1024, 120)[0])
 
 
 class TestLedger(ProbeCase):

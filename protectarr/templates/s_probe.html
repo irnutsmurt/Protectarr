@@ -64,9 +64,10 @@
     <div class="body">
       <p class="hint" style="margin-bottom:12px">
         Reading a piece the torrent already happens to have is free, and always allowed. Fetching one
-        on purpose means briefly switching off the torrent's other files and turning on sequential
-        download - always restored afterwards, and restored on the next start if Protectarr is killed
-        mid-probe. These limits bound what that is allowed to cost.
+        on purpose means briefly raising one file's priority above the torrent's other files and
+        turning on sequential download - always restored afterwards, and restored on the next start
+        if Protectarr is killed mid-probe. Nothing is switched off, so the torrent's size and
+        progress never change. These limits bound what that is allowed to cost.
       </p>
       <label class="check"><input type="checkbox" name="probe_steer" {% if pr.steer %}checked{% endif %}>
         Allowed to fetch a piece on purpose <span class="hint">(uncheck to only ever read what is already downloaded)</span></label>

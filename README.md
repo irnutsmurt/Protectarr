@@ -443,11 +443,16 @@ a missed fake; the opposite costs somebody's real release.
   see it at different paths. The settings page has a *Test against current
   downloads* button that tells you whether it can actually see them, so this is
   not something you have to find out by waiting for nothing to happen.
-- Fetching a piece on purpose means briefly setting the torrent's other files to
-  "do not download" and turning on sequential download. Every change is written
-  to `probe.json` **before** it is made and restored afterwards - including on
-  the next start if Protectarr is killed mid-probe, and including when the probe
-  lane has since been turned off.
+- Fetching a piece on purpose means briefly raising one file's priority and
+  lowering the torrent's other files to normal, plus turning on sequential
+  download. Nothing leaves the wanted set, so qBittorrent never recalculates the
+  torrent's size or progress and the owning *arr sees no change. Every change is
+  written to `probe.json` **before** it is made and restored afterwards -
+  including on the next start if Protectarr is killed mid-probe, and including
+  when the probe lane has since been turned off.
+- A file you have set to "do not download" is never probed. Switching it on to
+  read it would be reversing a decision you made, and qBittorrent would not be
+  writing it to disk for Protectarr to read anyway.
 - Steering only influences which piece qBittorrent picks **next**; it cannot
   recall one already in flight. On a torrent crawling from a single seed the
   piece may be twenty minutes away, so Protectarr does not spend the budget on

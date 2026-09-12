@@ -75,6 +75,10 @@ detection:
     # Steering only influences the NEXT piece qBittorrent picks, so a torrent
     # this slow will not produce the piece before the budget runs out.
     min_speed_kib: 20
+    # A fast torrent can still ignore the file we asked for. Once the piece has
+    # plainly not been scheduled, holding the boost for the rest of the budget
+    # buys nothing, so the probe gives up and puts the settings back.
+    no_progress_seconds: 30
     recheck_minutes: 15           # don't re-probe the same torrent sooner
 
 safety:
