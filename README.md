@@ -255,6 +255,14 @@ to last `orphan_dwell_minutes` (10 by default) of *continuous verified* absence
 before anything acts on it. If the torrent reappears, it is owned again at once
 and the next absence starts from zero.
 
+Only a torrent qBittorrent says is still **trying** to download can become an
+orphan. A download that succeeded also leaves its *arr's queue, because the
+*arr imported it and moved on, and that is the outcome the whole stack exists
+to produce. A torrent you paused yourself is likewise never an orphan: you
+stopped it on purpose, and its *arr no longer listing it is not a reason to
+delete it. A *stalled* download stays eligible even at 0 B/s, because that is
+exactly what an abandoned fake looks like.
+
 Two *arrs claiming the same torrent is reported as a conflict and nothing is
 done to it. Choosing one would mean deleting a queue item from an application
 that is downloading it perfectly legitimately, and choosing by config order is

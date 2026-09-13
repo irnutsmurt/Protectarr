@@ -48,9 +48,9 @@ class OwnershipCase(unittest.TestCase):
         cfg_mod.CONFIG_PATH = os.path.join(self.dir, "config.yaml")
         ownership._store.reset()
 
-    def pass_(self, clients, downloading=(A,), now=None):
+    def pass_(self, clients, acquiring=(A,), now=None):
         claims, readable = ownership.collect(clients)
-        return ownership.resolve(claims, readable, downloading=downloading,
+        return ownership.resolve(claims, readable, acquiring=acquiring,
                                  now=now)
 
 
@@ -80,7 +80,7 @@ class TestBasicStates(OwnershipCase):
         self.assertEqual(one[A].owner, two[A].owner)
 
     def test_ownership_of_another_torrent_is_unaffected(self):
-        got = self.pass_([FakeArr("Sonarr", [A])], downloading=(A, B))
+        got = self.pass_([FakeArr("Sonarr", [A])], acquiring=(A, B))
         self.assertEqual(got[A].state, ownership.OWNED)
         self.assertEqual(got[B].state, ownership.UNTRACKED)
 
@@ -138,7 +138,7 @@ class TestOrphanDwell(OwnershipCase):
         """
         t = time.time()
         self.pass_([FakeArr("Sonarr", [A])], now=t)
-        done = self.pass_([FakeArr("Sonarr")], downloading=(), now=t + 3600)
+        done = self.pass_([FakeArr("Sonarr")], acquiring=(), now=t + 3600)
         self.assertNotEqual(done[A].state, ownership.ORPHANED)
         self.assertFalse(ownership.actionable_orphan(done[A], 10))
         self.assertIn("imported", done[A].why)
@@ -148,7 +148,7 @@ class TestOrphanDwell(OwnershipCase):
         t = time.time()
         self.pass_([FakeArr("Sonarr", [A])], now=t)
         self.pass_([FakeArr("Sonarr")], now=t)          # orphan clock starts
-        self.pass_([FakeArr("Sonarr")], downloading=(), now=t + 3600)
+        self.pass_([FakeArr("Sonarr")], acquiring=(), now=t + 3600)
         back = self.pass_([FakeArr("Sonarr")], now=t + 3601)
         self.assertEqual(back[A].state, ownership.ORPHANED)
 
@@ -260,26 +260,52 @@ class TestScanFeedsOwnershipCorrectly(OwnershipCase):
         finally:
             core.QbitClient, core.build_clients = real_qb, real_build
 
+    def _state_becomes_orphan(self, state, progress=0.4):
+        self.pass_([FakeArr("Sonarr", [A])])
+        self._scan([{"hash": A, "state": state, "progress": progress,
+                     "name": "t"}], [FakeArr("Sonarr")])
+        return ownership.records()[A].get("state") == ownership.ORPHANED
+
     def test_a_completed_torrent_is_not_offered_as_an_orphan_candidate(self):
-        """The scan must filter on progress, not just hand over every hash.
+        """A download that succeeded also leaves its *arr's queue.
 
-        `only_active: false` puts finished torrents in the scan list, so the
-        filtering cannot be left to the state filter.
+        `only_active: false` puts finished torrents in the scan list, so this
+        cannot be left to qBittorrent's state filter.
         """
-        self.pass_([FakeArr("Sonarr", [A])])
-        self._scan([{"hash": A, "state": "uploading", "progress": 1.0,
-                     "name": "done"}],
-                   [FakeArr("Sonarr")])
-        self.assertNotEqual(ownership.records()[A].get("state"),
-                            ownership.ORPHANED)
+        for state in ("uploading", "stalledUP", "queuedUP", "checkingUP",
+                      "pausedUP", "forcedUP"):
+            self.setUp()
+            self.assertFalse(self._state_becomes_orphan(state, progress=1.0),
+                             f"a finished torrent in {state} became an orphan")
 
-    def test_an_incomplete_torrent_still_becomes_an_orphan(self):
-        self.pass_([FakeArr("Sonarr", [A])])
-        self._scan([{"hash": A, "state": "downloading", "progress": 0.4,
-                     "name": "going"}],
-                   [FakeArr("Sonarr")])
-        self.assertEqual(ownership.records()[A].get("state"),
-                         ownership.ORPHANED)
+    def test_a_stalled_download_is_still_an_orphan_candidate(self):
+        """Eligibility is not keyed on speed, and this is why.
+
+        A torrent with no seeds sits at 0 B/s indefinitely. That is exactly
+        what an abandoned fake looks like, so excluding it would exclude the
+        case orphan handling exists for.
+        """
+        self.assertTrue(self._state_becomes_orphan("stalledDL"))
+
+    def test_a_torrent_the_user_paused_is_not_an_orphan_candidate(self):
+        """They stopped it on purpose. Queue absence is not a reason to act."""
+        for state in ("pausedDL", "stoppedDL"):
+            self.setUp()
+            self.assertFalse(self._state_becomes_orphan(state),
+                             f"a user-paused torrent in {state} became an orphan")
+
+    def test_the_ordinary_downloading_states_are_candidates(self):
+        for state in ("downloading", "forcedDL", "queuedDL", "metaDL",
+                      "allocating"):
+            self.setUp()
+            self.assertTrue(self._state_becomes_orphan(state),
+                            f"{state} was not treated as still acquiring")
+
+    def test_the_orphanable_set_is_derived_from_the_downloading_set(self):
+        """So the two cannot drift apart as qBittorrent adds states."""
+        self.assertTrue(core.ORPHANABLE_STATES < core.DOWNLOADING_STATES)
+        self.assertEqual(core.DOWNLOADING_STATES - core.ORPHANABLE_STATES,
+                         {"pausedDL", "stoppedDL"})
 
 
 class TestEvaluateHonoursOwnership(OwnershipCase):

@@ -88,26 +88,31 @@ def collect(clients):
     return claims, readable
 
 
-def resolve(claims, readable, downloading=(), now=None):
+def resolve(claims, readable, acquiring=(), now=None):
     """Work out each torrent's ownership. Returns {hash: Ownership}.
 
     Pure apart from reading and writing the durable store: given the same
     claims, the same readable set and the same stored history, it returns the
     same answer.
 
-    `downloading` is the infohashes qBittorrent currently reports as still
-    acquiring data, and it is what the orphan clock is allowed to run on. This
-    matters more than it looks: a download that *succeeds* also leaves its
+    `acquiring` is the infohashes qBittorrent currently reports as still
+    trying to get data, and it is what the orphan clock is allowed to run on.
+    This matters more than it looks: a download that *succeeds* also leaves its
     *arr's queue. The *arr imported it and moved on, which is the happy path,
     and calling that an orphan would mean every completed download in the
-    library eventually looked abandoned. A torrent we are not currently
-    watching download is in the same position as one whose owner's queue we
-    could not read - there is no present observation, so nothing is concluded.
+    library eventually looked abandoned.
+
+    The caller decides membership from qBittorrent's own state model, not from
+    speed or progress. A stalled torrent sits at 0 B/s and is exactly what an
+    abandoned fake looks like, so it has to stay eligible; a torrent the user
+    paused has to not be. Anything outside the set is in the same position as a
+    torrent whose owner's queue we could not read: no present observation, so
+    nothing is concluded.
     """
     now = time.time() if now is None else now
     stored = _store.records()
     out = {}
-    live = {h.lower() for h in downloading}
+    live = {h.lower() for h in acquiring}
     subjects = set(claims) | live | set(stored)
 
     for thash in subjects:
@@ -155,7 +160,7 @@ def _claimed(thash, claimant, prior, readable, now):
                      f"transferred from {prior.get('owner')}")
 
 
-def _unclaimed(thash, prior, readable, is_downloading, now):
+def _unclaimed(thash, prior, readable, is_acquiring, now):
     if not prior:
         return Ownership(UNTRACKED, None, None, None, None,
                          "no *arr has been seen claiming it")
@@ -170,19 +175,19 @@ def _unclaimed(thash, prior, readable, is_downloading, now):
                          f"{owner}'s queue could not be read, so its previous "
                          f"state stands")
 
-    if not is_downloading:
-        # It left the queue, and it is not downloading. Overwhelmingly that is
-        # a download that finished and was imported, which is the outcome the
-        # whole stack exists to produce. Abandonment is something that happens
-        # to a torrent still pulling bytes.
+    if not is_acquiring:
+        # It left the queue, and it is not trying to acquire anything.
+        # Overwhelmingly that is a download that finished and was imported,
+        # which is the outcome the whole stack exists to produce. Abandonment
+        # happens to a torrent that is still trying.
         return Ownership(prior.get("state", OWNED), owner, None, None, None,
-                         f"{owner} no longer claims it and it is not "
-                         f"downloading, so it has most likely been imported")
+                         f"{owner} no longer claims it and it is not trying to "
+                         f"download, so it has most likely been imported")
 
     absent_since = prior.get("absent_since") or now
     return Ownership(ORPHANED, owner, None, None, max(0.0, now - absent_since),
                      f"{owner}'s queue was read and no longer claims it while "
-                     f"it is still downloading")
+                     f"it is still trying to download")
 
 
 def _persist(resolved, stored, now):

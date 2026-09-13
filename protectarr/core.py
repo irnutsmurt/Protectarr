@@ -26,6 +26,19 @@ DOWNLOADING_STATES = {
     "metaDL", "forcedMetaDL", "allocating", "pausedDL", "stoppedDL",
 }
 
+# Of those, the ones where absence from the owning *arr's queue actually means
+# abandonment. Derived from the set above rather than listed separately, so the
+# two cannot drift apart as qBittorrent adds states.
+#
+# `stalledDL` stays in deliberately: a torrent with no seeds sits at 0 B/s and
+# is precisely the case orphan handling exists for, so eligibility cannot be
+# keyed on download speed. `pausedDL` and `stoppedDL` come out: the user stopped
+# those on purpose, and "its *arr no longer lists it" is not a reason to delete
+# something they chose to keep. Everything else - seeding, uploading, checking a
+# finished torrent - is not in this set at all, because a download that
+# succeeded leaves its *arr's queue too.
+ORPHANABLE_STATES = DOWNLOADING_STATES - {"pausedDL", "stoppedDL"}
+
 
 log = logs.get("core")
 
@@ -358,11 +371,13 @@ def scan(cfg, state, side_effects=True):
     claims, readable = ownership.collect(arr_clients)
     resolved = ownership.resolve(
         claims, readable,
-        # Only torrents still pulling bytes can be orphans. A download that
-        # finished leaves its *arr's queue too, and that is the *arr importing
-        # it, not abandoning it.
-        downloading=[t.get("hash") or "" for t in torrents
-                     if (t.get("progress") or 0) < 1])
+        # Only torrents still trying to acquire data can be orphans. A download
+        # that finished leaves its *arr's queue too, and that is the *arr
+        # importing it, not abandoning it. Keyed on qBittorrent's own state
+        # rather than on speed or progress, so a stalled torrent at 0 B/s -
+        # exactly what an abandoned fake looks like - stays eligible.
+        acquiring=[t.get("hash") or "" for t in torrents
+                   if (t.get("state") or "") in ORPHANABLE_STATES])
     # hash -> (client, queue_record), for the torrents exactly one *arr claims.
     owner = {h: (o.client, o.record) for h, o in resolved.items()
              if o.state == ownership.OWNED and o.client}
