@@ -36,18 +36,58 @@ fakes are coming from.
   <img src="screenshots/dashboard.png" alt="Protectarr dashboard" width="820">
 </p>
 
+History is the detail behind every reap: which release it was, which app owned
+it, whether the blocklist entry actually stuck, and **why** a replacement was or
+wasn't searched for. `held - not out yet` is Protectarr working correctly, not
+failing: nothing legitimate can exist before the air date, so searching again
+would only find another fake.
+
+<p align="center">
+  <img src="screenshots/history.png" alt="Protectarr history page showing reaped releases, confirmed blocklist entries and held replacements" width="820">
+</p>
+
 Applications: qBittorrent and each *arr, with a Test button per connection.
 
 <p align="center">
   <img src="screenshots/applications.png" alt="Protectarr applications page" width="820">
 </p>
 
-Monitored Extensions: the extensions that flag a download, plus the lure-filename
-and archive rules.
+<details>
+<summary><b>More screenshots</b> - reaping rules, detection settings, the IP watchlist, and System</summary>
+
+<br>
+
+Reaping Rules: which torrents Protectarr may touch. The mode picker is the
+important control here, and `either` is the one that catches orphans - releases
+an application gave up on that keep downloading in qBittorrent anyway.
+
+<p align="center">
+  <img src="screenshots/reapingrules.png" alt="Protectarr reaping rules, showing the safety mode picker and category allowlist" width="820">
+</p>
+
+Monitored Extensions: the extensions that flag a download, plus the
+lure-filename and archive rules.
 
 <p align="center">
   <img src="screenshots/extensions.png" alt="Protectarr monitored extensions settings" width="820">
 </p>
+
+IP Watchlist: every peer seen sharing a confirmed fake, recorded from the swarm
+**before** the torrent is removed. Passive observation only - nothing here is
+blocked automatically. What to look for is an IP, or a subnet, appearing across
+many *distinct* fakes while seeding.
+
+<p align="center">
+  <img src="screenshots/iplist.png" alt="Protectarr IP watchlist of peers seen seeding confirmed fakes" width="820">
+</p>
+
+System: version, worker state, and a live view of the activity log.
+
+<p align="center">
+  <img src="screenshots/system.png" alt="Protectarr system page showing version, worker status and recent activity log" width="820">
+</p>
+
+</details>
 
 ## What happens when a fake is caught
 
