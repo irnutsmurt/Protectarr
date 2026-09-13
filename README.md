@@ -538,6 +538,36 @@ curl -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
      -d '{"name":"scan"}' http://host:8090/api/v1/command
 ```
 
+## Releases and versions
+
+**Every release that changes shipped behaviour gets a version bump and a Git
+tag.** `latest` stays for convenience, but it is never again the only
+meaningful release identifier.
+
+That rule exists because Protectarr reported `v0.1.0` for its entire public
+life while `latest` gained a content probe, a durable ownership model and a
+rewritten remediation path. Nothing was broken by it, which is exactly the
+problem: a bug report naming `v0.1.0` or `latest` narrowed the build down to
+several months of master, and there was no way to ask a reporter which code
+they were actually running.
+
+Available image tags:
+
+```
+ghcr.io/irnutsmurt/protectarr:0.2.0    # exact release, never moves
+ghcr.io/irnutsmurt/protectarr:0.2      # newest patch of that minor line
+ghcr.io/irnutsmurt/protectarr:latest   # newest master build
+ghcr.io/irnutsmurt/protectarr:master   # same thing, named explicitly
+```
+
+Pin to `0.2.0` or `0.2` if you want to know what you are running. Use `latest`
+if you would rather track master and do not mind it moving under you.
+
+The version Protectarr reports comes from one place, `protectarr/__init__.py`.
+The sidebar, the System page, `/ping`, `/api/v1` and `/api/v1/system/status`
+all read it from there, and `tests/test_version.py` fails if any of them stops
+doing so or if the number gets written down a second time.
+
 ## Requires
 
 - qBittorrent Web UI enabled (Options → Web UI).
