@@ -151,7 +151,22 @@ def run(args):
 
     # ---- 0. what already exists -------------------------------------------
     before = snapshot(client, thash, media_ids)
-    step("BEFORE", **before)
+    adversarial = bool(before["blocklist_rows_for_this_media"]
+                       or before["failed_event_ids"])
+    step("BEFORE", adversarial_precondition_met=adversarial, **before)
+
+    # The point of the adversarial run is that "it did not pick an older
+    # record" has something to be wrong about. If the media has no prior
+    # records, that check passes vacuously - which is exactly how the first
+    # run came out weaker than intended. Better to refuse than to report a
+    # vacuous pass as a real one.
+    if args.require_prior_records and not adversarial:
+        print("\nREFUSING: this media has no prior blocklist row and no prior "
+              "downloadFailed event, so the 'did not pick an older record' "
+              "check would pass without being tested. Point this at a release "
+              "whose movie/episode has been blocklisted before, or drop "
+              "--require-prior-records to run it anyway.")
+        return 2
 
     # ---- 1. the real production path --------------------------------------
     qc = cfg["qbittorrent"]
@@ -237,12 +252,26 @@ def run(args):
             ((intent or {}).get("search") or {}).get("state") in intents.TERMINAL,
         **checks,
     }
+    # Reported alongside the checks rather than folded into them: this is a
+    # statement about how much the run proved, not about whether it passed.
+    if before["blocklist_rows_for_this_media"]:
+        verdict["an older blocklist row for this media was present and rejected"] = (
+            bool(row.get("id"))
+            and row["id"] not in before["blocklist_rows_for_this_media"])
+    if before["failed_event_ids"]:
+        verdict["an older downloadFailed event for this hash was present and rejected"] = (
+            bool(ev.get("id")) and ev["id"] not in before["failed_event_ids"])
+
     step("VERDICT", final_milestone=final, checks=verdict,
+         adversarial_precondition_met=adversarial,
          passed=all(verdict.values()))
 
     print("\n" + "=" * 72)
     for name, ok in verdict.items():
         print(f"  {'PASS' if ok else 'FAIL'}  {name}")
+    if not adversarial:
+        print("  NOTE  this media had no prior records, so the "
+              "'not an older record' checks passed vacuously")
     print("=" * 72)
     print(f"\nFull report: {args.out}")
     return 0 if all(verdict.values()) else 1
@@ -255,6 +284,10 @@ def main():
     ap.add_argument("--arr", help="instance name from config.yaml")
     ap.add_argument("--queue-id", type=int, help="queue record id to reap")
     ap.add_argument("--confirm-destructive", action="store_true")
+    ap.add_argument("--require-prior-records", action="store_true",
+                    help="refuse unless the target media already has a "
+                         "blocklist row or downloadFailed event, so the "
+                         "'not an older record' checks are actually tested")
     ap.add_argument("--search-polls", type=int, default=20)
     ap.add_argument("--poll-seconds", type=float, default=3.0)
     ap.add_argument("--out", default="captures/radarr-e2e-validation.json")
