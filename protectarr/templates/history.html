@@ -38,7 +38,10 @@
           {% set o = e.owner or {} %}
           {% set act = e.action or {} %}
           <tr>
-            <td class="hint" style="white-space:nowrap">{{ e.timestamp }}</td>
+            {# Date and time wrap onto separate lines rather than holding a 165px
+               floor open for a string nobody needs on one line. This was the
+               binding constraint once the Action cell was fixed. #}
+            <td class="hint">{{ e.timestamp }}</td>
             <td>
               <div><code>{{ t.name }}</code></div>
               <div class="hint">
@@ -60,7 +63,14 @@
               </div>
               {% endif %}
             </td>
-            <td style="white-space:nowrap">
+            {# No `white-space:nowrap` here, deliberately. It was harmless when
+               this cell held one pill and a short line, and became the widest
+               thing on the page once the remediation status arrived: the
+               unverified wording is about 105 characters and, unwrapped, set a
+               636px MINIMUM on this column. The table cannot shrink below a
+               column's minimum, so every other column was squeezed around it
+               and the Details button ended up outside the scroll container. #}
+            <td>
               {% if act.result == 'reaped' %}<span class="pill live">reaped</span>
               {% elif act.result == 'would_reap' %}<span class="pill dry">dry run</span>
               {% elif act.result == 'partial' %}<span class="pill dry">partial</span>
@@ -68,7 +78,7 @@
               {% elif act %}<span class="pill off">failed</span>{% endif %}
               {% if r.status %}
               <span class="pill {{ r.status.cls }}">{{ r.status.label }}</span>
-              <div class="hint" style="margin-top:4px; white-space:normal; max-width:320px">{{ r.status.why }}</div>
+              <div class="hint" style="margin-top:4px">{{ r.status.why }}</div>
               {% endif %}
               <div class="hint" style="margin-top:4px">
                 {% if act.result == 'reaped' and act.via == 'category_fallback' %}
@@ -91,7 +101,7 @@
             <td class="hint">{{ r.requeue }}</td>
             <td style="text-align:right">{{ e.peers_harvested or '-' }}</td>
             <td style="text-align:right">
-              <button type="button" class="tool-btn" onclick="showDetails({{ loop.index0 }})">Details</button>
+              <button type="button" class="btn small" onclick="showDetails({{ loop.index0 }})">Details</button>
             </td>
           </tr>
           {% endfor %}

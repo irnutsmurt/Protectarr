@@ -496,6 +496,99 @@ class TestHistoryPageRenders(WebCase):
         self.assertEqual(self.client.get("/history").status_code, 200)
 
 
+class TestHistoryTableLayout(WebCase):
+    """The v0.3.0 layout regression, asserted structurally rather than in pixels.
+
+    What broke: the Action cell inherited `white-space: nowrap` from when it
+    held one pill and a short line. v0.3.0 put the remediation status in there,
+    whose unverified wording runs to about 105 characters. Unwrapped, that set
+    a 636px MINIMUM on the column - measured in chromium - and a table cannot
+    shrink below a column's minimum. Everything else was squeezed around it
+    (Release fell to 116px and wrapped to 441px tall) and the table overflowed
+    its scroll container by 101px, putting the Details button off the edge.
+
+    A pixel assertion would be brittle across font stacks and would fail on a
+    CI runner for reasons that have nothing to do with this bug. The invariant
+    worth keeping is structural: no cell holding variable-length prose may
+    refuse to wrap.
+    """
+
+    LONG = ("Les Murs vagabonds / Drifting Home / Ame wo Tsugeru Hyouryuu "
+            "Danchi (2022) [Blu-Ray JPN 1080p-HEVC Multi VF / VOSTFR / Eng]")
+
+    def body(self):
+        client = FakeArr()
+        self.reap(client)
+        intents.reconcile([client])
+        html = self.client.get("/history").get_data(as_text=True)
+        return html, html.split('<table class="applist">')[1].split("</table>")[0]
+
+    def test_no_history_cell_refuses_to_wrap(self):
+        """The actual regression. Any nowrap cell can pin the table open."""
+        _, table = self.body()
+        offenders = [c[:90] for c in re.findall(r"<td[^>]*>", table)
+                     if "nowrap" in c]
+        self.assertEqual(offenders, [], "a History cell sets white-space:nowrap, "
+                                        "which can hold the table wider than "
+                                        "its container")
+
+    def test_the_details_button_is_not_the_toolbar_button(self):
+        """`.tool-btn` is the toolbar's icon-over-label flex style.
+
+        In a table cell it is both oversized and the wrong vocabulary;
+        `.btn.small` already exists for a control inside a table.
+        """
+        _, table = self.body()
+        button = re.search(r"<button[^>]*showDetails[^>]*>", table).group(0)
+        self.assertNotIn("tool-btn", button)
+        self.assertIn("btn small", button)
+
+    def test_the_table_keeps_a_scroll_container_for_narrow_screens(self):
+        """The fallback below tablet width, where no layout fits.
+
+        Deliberately on the table's own wrapper, so the page itself never
+        scrolls horizontally.
+        """
+        html, _ = self.body()
+        before = html.split('<table class="applist">')[0]
+        self.assertIn("overflow-x:auto", before.rsplit("<div", 1)[-1])
+
+    def test_every_column_survived_the_fix(self):
+        """A layout fix that quietly drops a column is not a fix."""
+        html, table = self.body()
+        head = table.split("<thead>")[1].split("</thead>")[0]
+        heads = re.findall(r"<th[^>]*>(.*?)</th>", head, re.S)
+        self.assertEqual([h.strip() for h in heads],
+                         ["When", "Release", "Why", "Action", "Replacement",
+                          "Peers", ""])
+        cells = re.findall(r"<td", table.split("<tbody>")[1])
+        self.assertEqual(len(cells) % 7, 0, "a row lost or gained a cell")
+
+    def test_a_very_long_release_name_does_not_add_a_nowrap_cell(self):
+        """The content that made the bug visible, run through the page."""
+        events.record({
+            "event_type": "detection", "dry_run": False,
+            "timestamp": "2026-09-12 23:17:45 -0700",
+            "torrent": {"hash": "f" * 40, "name": self.LONG, "size": 1011654820,
+                        "category": "tv", "indexer": "LimeTorrents (Prowlarr)"},
+            "owner": {"type": "sonarr", "instance": "Sonarr", "media": "X",
+                      "release_title": self.LONG},
+            "findings": [{"detector": "extension", "reason": "extension_match",
+                          "evidence": {"filename": "x.exe", "extension": ".exe"}}],
+            "policy": {"profile": "media", "severity": "critical",
+                       "decision": "block", "decisive_finding": 0},
+            "action": {"result": "reaped", "decision": "arr_fail", "via": "arr",
+                       "removed": True, "blocklisted": False,
+                       "verification": "no downloadFailed event for this infohash"},
+            "redownload": {"decision": "held", "reason": "not_yet_aired"},
+        })
+        html = self.client.get("/history").get_data(as_text=True)
+        table = html.split('<table class="applist">')[1].split("</table>")[0]
+        self.assertIn(self.LONG, table)
+        self.assertEqual([c for c in re.findall(r"<td[^>]*>", table)
+                          if "nowrap" in c], [])
+
+
 class TestNoCredentialRegression(WebCase):
     def test_no_page_leaks_a_credential(self):
         """The sweep, extended to the pages this pass touched.
