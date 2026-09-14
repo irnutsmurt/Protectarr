@@ -112,7 +112,10 @@ _MILESTONES = {
 }
 
 
-def _history_rows(evs):
+HISTORY_LIMIT = 250
+
+
+def _history_rows(evs, limit=None):
     """Fold a remediation's lifecycle events into one row each.
 
     A single reap now writes several events over its life: the reap itself,
@@ -123,11 +126,24 @@ def _history_rows(evs):
 
     So events sharing a `remediation_id` collapse into one row whose status
     comes from the newest and whose detail comes from the detection event.
-    `evs` must be newest first, which is what `events.read` returns. The join
-    is equality on an id minted when the intent was opened; nothing here
+    `evs` must be newest first, which is what `events.iter_events` yields. The
+    join is equality on an id minted when the intent was opened; nothing here
     matches on hash, title or time.
+
+    `limit` bounds *rows*, not events, and is what lets this consume a lazy
+    stream. The page used to read a fixed 400 events and fold whatever came
+    back, which had two faults: three events per remediation meant 400 events
+    were only ~134 rows, so lifecycle logging quietly cut the page's depth to a
+    third of what 0.2.x showed; and a remediation straddling the cutoff was
+    built from its lifecycle event alone, producing a row asserting "Settled"
+    with no finding and no action behind it. Bounding rows instead fixes both,
+    because the stream can always be pulled one event further.
+
+    Once `limit` rows exist no older group is admitted - those are already off
+    the page and cannot affect it. Reading continues only while an admitted row
+    is still missing the detection event that carries its evidence.
     """
-    rows, by_id = [], {}
+    rows, by_id, pending = [], {}, set()
     for e in evs:
         rid = e.get("remediation_id")
         if rid and rid in by_id:
@@ -139,13 +155,32 @@ def _history_rows(evs):
             if e.get("event_type") != "remediation":
                 row["ev"] = e
                 _base(row, e)
+                pending.discard(rid)
+                if limit is not None and len(rows) >= limit and not pending:
+                    break
+            continue
+        if limit is not None and len(rows) >= limit:
+            if not pending:
+                break
             continue
         row = {"ev": e, "latest": e, "timeline": [e]}
         _base(row, e)
         if rid:
             by_id[rid] = row
+            # Opened by a lifecycle event, so its evidence is older than this
+            # point in the stream and has not been read yet.
+            if e.get("event_type") == "remediation":
+                pending.add(rid)
         rows.append(row)
+        if limit is not None and len(rows) >= limit and not pending:
+            break
+    # Anything still pending ran out of retained history. Say so on the row
+    # rather than rendering a milestone next to blanks, which reads as evidence
+    # that Protectarr acted without detecting anything.
+    for rid in pending:
+        by_id[rid]["base_missing"] = True
     for row in rows:
+        row.setdefault("base_missing", False)
         row["status"] = _history_status(row)
     return rows
 
@@ -173,7 +208,12 @@ def _detail(row):
         "size": row.get("size"),
         "category": t.get("category"),
         "hash": t.get("hash"),
-        "why": row.get("why"),
+        # The dialog says it too. Someone who opens a row precisely because it
+        # looks wrong should find the explanation there, not just in the cell
+        # that sent them looking.
+        "why": ("Detection event no longer retained" if row.get("base_missing")
+                else row.get("why")),
+        "base_missing": bool(row.get("base_missing")),
         "also": row.get("also") or [],
         "severity": row.get("severity"),
         "profile": row.get("profile"),
@@ -470,8 +510,14 @@ def create_app(service):
         if show not in ("live", "dry", "all"):
             show = "live"
         dry = {"live": False, "dry": True, "all": None}[show]
-        rows = _history_rows(events.read(limit=400, dry_run=dry))[:250]
+        # Streamed, not read-then-truncated: page depth is a row count now, so
+        # it no longer shrinks when a release accumulates lifecycle events.
+        rows = _history_rows(events.iter_events(dry_run=dry),
+                             limit=HISTORY_LIMIT)
         return page("history.html", active="history", rows=rows, show=show,
+                    folded_from=sum(len(r["timeline"]) for r in rows),
+                    scope={"live": "live only", "dry": "dry run only",
+                           "all": None}[show],
                     detail_rows=[_detail(r) for r in rows])
 
     @app.route("/settings")

@@ -24,6 +24,7 @@ import os
 import json
 import uuid
 import threading
+import itertools
 
 from . import config as cfg_mod
 
@@ -96,19 +97,55 @@ def record(event):
 
 # ---- reading ----
 
-def read(limit=200, dry_run=None, event_type=None):
-    """Events newest first. `dry_run=False` gives real actions only."""
-    out = []
+def _reversed_lines(path, chunk=65536):
+    """Lines of one file, last first, without holding the file in memory.
+
+    History is append-only, so newest-first means reading backwards. The
+    obvious `reversed(fh.readlines())` costs the whole file, and rotation caps
+    a file at 5 MB: 15 MB across the set, which measured at 62 MiB of heap once
+    parsed. The page needs a few hundred records, so it should pay for a few
+    hundred.
+
+    Walks the file in fixed chunks from the end. A chunk boundary almost never
+    lands on a newline, so the leading fragment of each chunk is carried over
+    and joined to the end of the chunk before it - which, going backwards, is
+    the one read next.
+    """
+    try:
+        fh = open(path, "rb")
+    except OSError:
+        return
+    with fh:
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        tail = b""
+        while pos > 0:
+            step = min(chunk, pos)
+            pos -= step
+            fh.seek(pos)
+            parts = (fh.read(step) + tail).split(b"\n")
+            tail = parts.pop(0)          # partial until the next chunk supplies its head
+            for line in reversed(parts):
+                if line.strip():
+                    yield line
+        if tail.strip():
+            yield tail
+
+
+def iter_events(dry_run=None, event_type=None):
+    """Every retained event, strictly newest first, one at a time.
+
+    Ordering holds across the rotation boundary because `_files()` is newest
+    file first and each file is walked backwards: the last line of
+    `events.jsonl.1` is older than the first line of `events.jsonl` only
+    because `_rotate()` never interleaves them.
+
+    Lazy on purpose. The caller decides when it has enough, which is what lets
+    the History page stop after it has folded the rows it needs instead of
+    parsing the whole retained store to throw most of it away.
+    """
     for p in _files():
-        try:
-            with open(p) as fh:
-                lines = fh.readlines()
-        except OSError:
-            continue
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
+        for line in _reversed_lines(p):
             try:
                 ev = json.loads(line)
             except ValueError:
@@ -117,10 +154,13 @@ def read(limit=200, dry_run=None, event_type=None):
                 continue
             if event_type and ev.get("event_type") != event_type:
                 continue
-            out.append(ev)
-            if len(out) >= limit:
-                return out
-    return out
+            yield ev
+
+
+def read(limit=200, dry_run=None, event_type=None):
+    """Events newest first. `dry_run=False` gives real actions only."""
+    return list(itertools.islice(
+        iter_events(dry_run=dry_run, event_type=event_type), limit))
 
 
 def normalize(ev):

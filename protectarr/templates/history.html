@@ -52,8 +52,15 @@
               </div>
             </td>
             <td>
+              {# The detection event rotated out from under a remediation that
+                 is still on the page. Naming that is the point: the row's own
+                 evidence is gone, and a bare "-" here next to a confident
+                 status pill reads as though nothing was ever detected. #}
+              {% if r.base_missing %}<span class="hint">Detection event no longer retained</span>
+              {% else %}
               {{ r.why }}
               {% if r.severity %}<span class="hint">({{ r.severity }}{% if r.profile %}, {{ r.profile }} profile{% endif %})</span>{% endif %}
+              {% endif %}
               {% if r.also %}
               <div class="hint" style="margin-top:4px">
                 Also detected:
@@ -109,7 +116,12 @@
       </table>
     </div>
     <p class="hint" style="margin-top:12px">
-      Showing {{ rows | length }} event(s){% if show != 'all' %}, {{ show }} only{% endif %}.
+      {# "entries", not "events": since v0.3.0 one row folds a remediation's
+         whole lifecycle, so the row count and the event count are different
+         numbers. The "from N events" clause appears only when they differ. #}
+      Showing {{ rows | length }} history {{ 'entry' if rows | length == 1 else 'entries' }}{%
+        if folded_from and folded_from != rows | length %} from {{ folded_from }} events{% endif %}{%
+        if scope %}, {{ scope }}{% endif %}.
       History is kept in <code>events.jsonl</code> next to your config and rotates at 5 MB.
     </p>
     {% else %}
