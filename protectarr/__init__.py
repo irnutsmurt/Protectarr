@@ -7,4 +7,4 @@
 # behaviour. `latest` is a convenience, not an identifier: v0.1.0 shipped for
 # months across substantial changes, so a bug report naming it said nothing
 # about which build the reporter was actually running.
-__version__ = "0.3.2"
+__version__ = "0.4.0"
