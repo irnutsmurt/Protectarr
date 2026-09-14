@@ -78,10 +78,20 @@ function preview() {
   el.innerHTML = '<p class="hint">scanning…</p>';
   fetch('{{ url_for("preview") }}').then(r=>r.json()).then(r=>{
     if (!r.ok) { el.innerHTML = `<div class="card"><div class="body" style="color:var(--danger)">${r.message}</div></div>`; return; }
-    if (!r.actions.length) { el.innerHTML = '<div class="card"><div class="body hint">Nothing would be reaped right now.</div></div>'; return; }
+    // Only claimed when the backend says so. The guarantee belongs to the code
+    // that ran the scan, not to this template agreeing with it from a
+    // distance; an older Protectarr, or a future caller that made preview
+    // side-effecting, would omit the flag and get no safety claim.
+    const safe = r.observational === true
+      ? `<p class="hint" style="margin:0 0 12px"><span class="pill on">Observational</span>
+         Observational scan - no priorities, files, or remediation state were changed.
+         Protectarr still read qBittorrent and your applications, and still looked at
+         bytes already on disk.</p>`
+      : '';
+    if (!r.actions.length) { el.innerHTML = `<div class="card"><h2>Dry-run preview</h2><div class="body">${safe}<p class="hint" style="margin:0">Nothing would be reaped right now.</p></div></div>`; return; }
     const rows = r.actions.map(a=>`<tr><td>${a.name}</td><td>${a.bad_file}</td><td>${a.reason||'-'}</td><td>${a.decision}</td><td>${a.arr||'-'}</td></tr>`).join('');
-    el.innerHTML = `<div class="card"><h2>Dry-run preview</h2><div class="body" style="overflow-x:auto">
-      <table><tr><th>Torrent</th><th>Bad file</th><th>Why</th><th>Action</th><th>App</th></tr>${rows}</table></div></div>`;
+    el.innerHTML = `<div class="card"><h2>Dry-run preview</h2><div class="body">${safe}<div style="overflow-x:auto">
+      <table><tr><th>Torrent</th><th>Bad file</th><th>Why</th><th>Action</th><th>App</th></tr>${rows}</table></div></div></div>`;
   });
 }
 </script>

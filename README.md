@@ -105,6 +105,19 @@ with `removeFromClient=true` and `blocklist=true`. That does three things:
 The blocklist entry is what stops the fake from coming straight back, and because
 the *arr performs the removal its queue never ends up stuck.
 
+**Every step of that is on the History page, including the ones that happen
+later.** A reap is not one moment: the removal is verified, then a replacement
+search is followed to whatever conclusion the *arr reaches, and a Protectarr
+that was restarted mid-way finishes the job on its next scan. Each of those
+shows up against the same release rather than as separate incidents, with a
+status of **Pending**, **Recovering**, **Settled** or **Failed Unverified**,
+and a **Details** button for the evidence behind it.
+
+`Settled` means Protectarr finished the workflow and any search it asked for
+reached a terminal state. It does **not** mean a replacement was downloaded -
+the *arr's own message is shown, so `Completed search for 1 movies. 0 reports
+downloaded.` reads as what it is.
+
 **The removal is written down before it happens, and confirmed afterwards.**
 Protectarr records what it is about to do in `intents.json` first; if that
 cannot be written, the removal does not happen. Afterwards it looks for two

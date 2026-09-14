@@ -78,7 +78,7 @@ detection:
     # A fast torrent can still ignore the file we asked for. Once the piece has
     # plainly not been scheduled, holding the boost for the rest of the budget
     # buys nothing, so the probe gives up and puts the settings back.
-    no_progress_seconds: 30
+    no_progress_seconds: 30       # also on the Content Probe settings page
     recheck_minutes: 15           # don't re-probe the same torrent sooner
 
 safety:
@@ -104,7 +104,7 @@ safety:
   # must be continuously absent before Protectarr will act on it. Only passes
   # where that arr's queue was actually READ count, so an arr that is down
   # never ages its own downloads into orphans.
-  orphan_dwell_minutes: 10
+  orphan_dwell_minutes: 10        # also on the Reaping Rules settings page
   # How often to forget torrents qBittorrent no longer has. Needs the full
   # torrent list, measured at 389 ms against a 1208-torrent library.
   ownership_prune_minutes: 60

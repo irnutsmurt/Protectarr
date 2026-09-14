@@ -52,6 +52,38 @@
       <input type="number" name="airdate_grace_hours" min="0" value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
     </div>
   </div>
+
+  <div class="card">
+    <h2>Ownership &amp; Orphan Handling</h2>
+    <div class="body">
+      <p class="hint" style="margin-top:0">
+        Protectarr remembers which application owned each download. When one
+        disappears from that application's queue it becomes an <b>orphan</b>,
+        and only then can the category fallback act on it.
+      </p>
+      <label>Orphan dwell (minutes)</label>
+      <input type="number" name="orphan_dwell_minutes" min="0" max="1440"
+             value="{{ cfg.safety.orphan_dwell_minutes }}" style="max-width:120px">
+      <p class="hint" style="margin-top:6px">
+        How long a previously application-owned download must remain
+        <b>continuously confirmed absent</b> before category fallback may act
+        on it.
+      </p>
+      <p class="hint">
+        Confirmed absence means Protectarr successfully read that application's
+        queue and the download was not in it. A queue it could not reach does
+        <b>not</b> count and does not advance the clock - an application that is
+        down or restarting never ages its own downloads into orphans. If the
+        download reappears the clock resets to zero.
+      </p>
+      <p class="hint">
+        A download that has finished is never an orphan either: succeeding also
+        removes it from the queue, which is the application importing it rather
+        than abandoning it.
+      </p>
+    </div>
+  </div>
+
   <button type="submit" class="btn primary">Save</button>
 </form>
 {% endblock %}

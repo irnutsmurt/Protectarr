@@ -109,6 +109,10 @@ a.tool-btn { text-decoration: none; }
 .pill.off { background: #555; color: #eee; }
 .pill.dry { background: var(--warn); color: #241d00; }
 .pill.live { background: var(--accent); color: #08240f; }
+/* Protectarr deliberately stopped and did nothing further. It has to outrank
+   the greys around it, so it takes the existing danger colour rather than
+   introducing a new one. */
+.pill.bad { background: var(--danger); color: #2a0406; }
 
 /* ---- cards ---- */
 .card {

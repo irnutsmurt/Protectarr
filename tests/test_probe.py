@@ -1023,8 +1023,9 @@ class TestPreviewIsObservational(unittest.TestCase):
         os.makedirs(self.torrent["content_path"], exist_ok=True)
         write(self.torrent["content_path"], "E01.mkv", PE)
         qb = ScanQb([self.torrent], self.files, [2] * 10)   # all downloaded
-        rows = self.service(qb).preview()
-        self.assertEqual([r["hash"] for r in rows], ["t1"])
+        out = self.service(qb).preview()
+        self.assertTrue(out["observational"])
+        self.assertEqual([r["hash"] for r in out["actions"]], ["t1"])
         self.assertEqual(qb.calls, [], "the free pass is not free")
 
     def test_a_real_scan_still_steers(self):

@@ -559,6 +559,14 @@ def _event(a, cfg, **over):
         "peers_harvested": over.pop("peers", 0),
         "dry_run": bool(cfg.get("dry_run", True)),
     }
+    # Only on the paths that actually open a remediation. A warn, a dry run and
+    # a category-fallback delete have no *arr lifecycle to follow, and giving
+    # them an empty block would invite the UI to render a status they cannot
+    # have.
+    for key in ("remediation_id", "remediation"):
+        value = over.pop(key, None)
+        if value:
+            ev[key] = value
     ev.update(over)
     return ev
 
@@ -735,8 +743,21 @@ def apply_actions(actions, state, cfg):
                 _log(state, f"Reaped via {client.name}: {label} | "
                             f"blocklisted={'yes' if blocked else 'UNVERIFIED'} | {requeue}")
                 record_reap(state, client.name, indexer)
+                # Read back rather than reconstructed, so the event carries the
+                # milestone the store actually settled on and the id the store
+                # actually minted. Building a second copy here is how the two
+                # would drift.
+                intent = intents.get(a["hash"]) or {}
                 events.record(_event(
                     a, cfg, indexer=indexer, peers=peers,
+                    remediation_id=intent.get("remediation_id"),
+                    remediation={"milestone": intent.get("milestone"),
+                                 "source": "live",
+                                 "verification": evidence["why"],
+                                 "history_event": (evidence["event"] or {}).get("id"),
+                                 "blocklist_row": (evidence["blocklist"] or {}).get("id"),
+                                 "search": intent.get("search"),
+                                 "error": intent.get("error")},
                     owner={"type": client.type, "instance": client.name,
                            "media": _media_name(record), "release_title": source_title},
                     action={"result": "reaped", "decision": "arr_fail",
@@ -839,23 +860,38 @@ class ProtectarrService:
             _log(self.state, f"IP blocklist update failed: {e}")
 
     def preview(self):
-        """Observational scan for the WebUI - returns serializable action rows.
+        """Observational scan for the WebUI.
 
-        Changes nothing: not qBittorrent, not the probe ledger, not the event
-        history. It reports what Protectarr would decide from what it can see.
+        Returns `{"observational": bool, "actions": [...]}`. It reports what
+        Protectarr would decide from what it can see, and mutates nothing: not
+        qBittorrent's priorities, not the probe ledger, not remediation
+        intents, not the event history. It does still *read* qBittorrent and
+        the *arrs, and the probe's free pass still reads bytes that are
+        already on disk - "nothing was changed" is the claim, not "nothing was
+        done".
+
+        One local decides both the scan and the flag, so the answer the UI
+        shows cannot drift from the argument that made it true. A caller that
+        flipped this to side-effecting would flip the flag with it rather than
+        quietly keep claiming safety.
 
         Does not wait for a running scan. A probe pass can hold the worker for
         its full budget, and a preview request that hangs for two minutes is
         worse than one that says the scanner is busy.
         """
+        side_effects = False
         if not self._scan_lock.acquire(blocking=False):
             raise RuntimeError("A scan is already running. Try again in a moment.")
         try:
             cfg = cfg_mod.load()
-            actions = scan(cfg, self.state, side_effects=False)
+            actions = scan(cfg, self.state, side_effects=side_effects)
         finally:
             self._scan_lock.release()
-        return [{k: v for k, v in a.items() if not k.startswith("_")} for a in actions]
+        return {
+            "observational": not side_effects,
+            "actions": [{k: v for k, v in a.items() if not k.startswith("_")}
+                        for a in actions],
+        }
 
     def apply_banned_ips(self, cfg=None):
         """Push the manual banned-IP list to qBittorrent. Records status."""

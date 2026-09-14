@@ -33,9 +33,11 @@ so that distinction survives into the log.
 """
 
 import time
+import uuid
 
 import requests
 
+from . import events
 from . import logs
 from .store import Store
 
@@ -64,6 +66,12 @@ KEEP_SETTLED_DAYS = 7
 MAX_RECORDS = 500
 
 _store = Store("intents.json", VERSION, "intents", "the remediation intents file")
+
+# When this process started. An intent opened before it was opened by an
+# earlier run, which is the only honest definition of "recovered after a
+# restart" available here - `reconcile` runs on every scan, so the fact that
+# reconcile made a transition says nothing on its own.
+_STARTED = time.time()
 
 
 def broken():
@@ -136,6 +144,13 @@ def open_intent(torrent_hash, client, record, indexer=None, watermark=None):
         intents[thash] = {
             "milestone": PENDING,
             "hash": thash,
+            # One remediation, not one torrent. The infohash cannot carry this
+            # on its own: a release can legitimately be reaped, re-grabbed as
+            # its own replacement and reaped again, which was not a thought
+            # experiment - it happened during the live acceptance run on
+            # 2026-09-13. Without a per-remediation id the history of the
+            # second attempt would fold into the first.
+            "remediation_id": uuid.uuid4().hex,
             "arr": client.name,
             "arr_type": client.type,
             "queue_id": record.get("id"),
@@ -200,6 +215,65 @@ def _prune(intents):
         log.warning("%d remediation intents are unfinished or unverified. "
                     "Protectarr keeps those rather than pruning them; check "
                     "the log for failed_unverified entries.", len(intents))
+
+
+def recovered(intent):
+    """Was this intent left behind by an earlier run of Protectarr?"""
+    return bool(intent.get("opened")) and intent["opened"] < _STARTED
+
+
+def audit(intent, source, note=None):
+    """Write one History event for where a remediation has got to.
+
+    Everything below happens on a background worker, usually minutes or a
+    restart after the operator was last looking. Until now it existed only in
+    the log, which means the two outcomes that most need explaining - a
+    remediation recovered after a crash, and one that deliberately failed
+    closed - were invisible on the History page.
+
+    Deliberately a projection of the intent, not a copy of it. `intents.json`
+    is recovery state with a 7-day age-out and a 500-record cap; the audit
+    trail is `events.jsonl` and has to stand on its own once the intent is
+    gone. So this writes the fields an operator needs to understand the
+    outcome, and leaves the queue ids, attempt counters and watermarks where
+    they belong.
+    """
+    search = intent.get("search") or {}
+    evidence = intent.get("evidence") or {}
+    events.record({
+        "event_type": "remediation",
+        # The join key. Present on the detection event too, so the UI relates
+        # them by equality rather than by guessing from hash and timestamp.
+        "remediation_id": intent.get("remediation_id"),
+        "torrent": {"hash": intent.get("hash"),
+                    "name": intent.get("release_title"),
+                    "indexer": intent.get("indexer")},
+        "owner": {"type": intent.get("arr_type"), "instance": intent.get("arr"),
+                  "media": None, "release_title": intent.get("release_title")},
+        "remediation": {
+            "milestone": intent.get("milestone"),
+            # "live" is the reap itself; "follow-up" is a later scan finishing
+            # what it started. Both are routine.
+            "source": source,
+            # This one is not routine, and it is a separate question from
+            # `source`: reconcile runs on every scan, so the transition being
+            # made by reconcile proves nothing. What makes it a recovery is
+            # that the intent outlived the process that opened it.
+            "recovered": recovered(intent),
+            "note": note,
+            "verification": evidence.get("why"),
+            "history_event": (evidence.get("event") or {}).get("id"),
+            "blocklist_row": (evidence.get("blocklist") or {}).get("id"),
+            "search": {"command_id": search.get("command_id"),
+                       "state": search.get("state"),
+                       "result": search.get("result"),
+                       "message": search.get("message")} if search else None,
+            "error": intent.get("error"),
+        },
+        # These are real actions on a real *arr. A reap only reaches this file
+        # when it was not a dry run, so the History Live filter must show them.
+        "dry_run": False,
+    })
 
 
 def verify(client, intent):
@@ -272,6 +346,8 @@ def _reconcile_one(client, thash, intent, out, on_unverified):
     if intent.get("milestone") == REMOVED:
         if poll_search(client, intent):
             update(thash, milestone=SETTLED)
+            audit(get(thash) or intent, "follow-up",
+                  "the replacement search reached a terminal state")
         return
 
     evidence = verify(client, intent)
@@ -282,6 +358,8 @@ def _reconcile_one(client, thash, intent, out, on_unverified):
                  "event %s, blocklist row %s).", intent.get("release_title"),
                  (evidence["event"] or {}).get("id"),
                  (evidence["blocklist"] or {}).get("id"))
+        audit(get(thash) or intent, "follow-up",
+              "the removal was confirmed against the *arr's own records")
         return
 
     if not evidence.get("reachable", True):
@@ -308,6 +386,8 @@ def _reconcile_one(client, thash, intent, out, on_unverified):
     update(thash, milestone=FAILED_UNVERIFIED, evidence=evidence,
            error=evidence.get("why"))
     out["unverified"] += 1
+    audit(get(thash) or intent, "follow-up",
+          "the queue item is gone and the removal could not be verified")
     log.error(
         "REMEDIATION UNVERIFIED for %r on %s. The queue item is gone but %s. "
         "Protectarr will NOT search for a replacement, because it cannot rule "

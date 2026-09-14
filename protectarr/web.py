@@ -16,6 +16,7 @@ from flask import (Flask, render_template, request, redirect, url_for,
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from . import config as cfg_mod
+from . import events
 from . import logs
 from . import __version__
 from .netauth import resolve_client_ip, is_local
@@ -87,6 +88,168 @@ def _arrs_for_browser(cfg):
             "has_key": bool(a.get("api_key")),
         })
     return out
+
+
+# Milestone -> (pill label, pill class, one line of explanation). The backend
+# has four milestones and this shows three labels: `pending` and `removed` are
+# both "not finished yet" to an operator, and `removed` is normally transient -
+# the destructive half is verified and the replacement search has not reported
+# back. The distinction is not lost, it moves to the line underneath and to the
+# Details dialog, where it can be stated precisely instead of compressed into
+# one word.
+_MILESTONES = {
+    "pending": ("Pending", "off",
+                "the removal has not been verified yet"),
+    "removed": ("Pending", "off",
+                "removal verified; waiting for the replacement search to finish"),
+    "settled": ("Settled", "on",
+                "Protectarr finished the workflow. This does not mean a "
+                "replacement was downloaded"),
+    "failed_unverified": ("Failed Unverified", "bad",
+                          "Protectarr could not prove the release was "
+                          "blocklisted, so it stopped rather than searching "
+                          "for a replacement"),
+}
+
+
+def _history_rows(evs):
+    """Fold a remediation's lifecycle events into one row each.
+
+    A single reap now writes several events over its life: the reap itself,
+    then whatever a later scan or a restart discovers about it. Listing those
+    separately would make one release look like several incidents, and the
+    newest row would be the one with the least context - a bare "settled" with
+    no finding attached.
+
+    So events sharing a `remediation_id` collapse into one row whose status
+    comes from the newest and whose detail comes from the detection event.
+    `evs` must be newest first, which is what `events.read` returns. The join
+    is equality on an id minted when the intent was opened; nothing here
+    matches on hash, title or time.
+    """
+    rows, by_id = [], {}
+    for e in evs:
+        rid = e.get("remediation_id")
+        if rid and rid in by_id:
+            row = by_id[rid]
+            row["timeline"].append(e)
+            # The detection event carries the findings, the policy and the
+            # torrent record. A lifecycle event carries none of that, so when
+            # the richer one turns up it becomes the row's base.
+            if e.get("event_type") != "remediation":
+                row["ev"] = e
+                _base(row, e)
+            continue
+        row = {"ev": e, "latest": e, "timeline": [e]}
+        _base(row, e)
+        if rid:
+            by_id[rid] = row
+        rows.append(row)
+    for row in rows:
+        row["status"] = _history_status(row)
+    return rows
+
+
+def _detail(row):
+    """What the Details dialog may show, named field by field.
+
+    An allowlist, for the same reason `_arrs_for_browser` is one: this goes
+    into the page as JSON, so serialising the raw event would publish whatever
+    a future field happens to contain. Nothing here is a credential today, and
+    naming the fields is what keeps that true when someone adds one.
+    """
+    e, latest = row["ev"], row["latest"]
+    t = e.get("torrent") or {}
+    o = e.get("owner") or {}
+    act = e.get("action") or {}
+    rd = e.get("redownload") or {}
+    rem = (latest.get("remediation") or e.get("remediation") or {})
+    search = rem.get("search") or {}
+    return {
+        "release": t.get("name") or o.get("release_title"),
+        "media": o.get("media"),
+        "app": f"{o.get('instance')} ({o.get('type')})" if o.get("instance") else None,
+        "indexer": t.get("indexer"),
+        "size": row.get("size"),
+        "category": t.get("category"),
+        "hash": t.get("hash"),
+        "why": row.get("why"),
+        "also": row.get("also") or [],
+        "severity": row.get("severity"),
+        "profile": row.get("profile"),
+        "decision": act.get("decision"),
+        "status": row.get("status"),
+        "recovered": any((x.get("remediation") or {}).get("recovered")
+                         for x in row["timeline"]),
+        "queue_delete": act.get("queue_delete"),
+        "verification": rem.get("verification") or act.get("verification"),
+        "history_event": rem.get("history_event") or act.get("history_event"),
+        "blocklist_row": rem.get("blocklist_row") or act.get("blocklist_row"),
+        "error": rem.get("error") or act.get("error"),
+        "requeue": row.get("requeue"),
+        "search_command": search.get("command_id") or rd.get("command_id"),
+        "search_state": search.get("state"),
+        "search_result": search.get("result"),
+        "search_message": search.get("message"),
+        # Oldest first here: a timeline that runs backwards is a puzzle.
+        "timeline": [{
+            "when": x.get("timestamp"),
+            "what": _timeline_label(x),
+            "note": (x.get("remediation") or {}).get("note"),
+        } for x in reversed(row["timeline"])],
+    }
+
+
+def _timeline_label(e):
+    rem = e.get("remediation") or {}
+    if e.get("event_type") == "remediation":
+        milestone = rem.get("milestone") or "updated"
+        return _MILESTONES.get(milestone, (milestone,))[0]
+    return (e.get("action") or {}).get("result") or "recorded"
+
+
+def _base(row, e):
+    """Everything a row takes from its base event.
+
+    One function rather than a few assignments because the base is replaced
+    when the richer detection event turns up later in the fold. The first
+    version of this only re-derived the finding, so a folded row silently lost
+    its release size and its requeue decision to the lifecycle event that
+    happened to be newest.
+    """
+    findings, decisive, severity, profile = events.normalize(e)
+    row["why"] = events.describe(decisive)
+    row["also"] = [events.describe(f) for f in findings if f is not decisive]
+    row["severity"] = severity
+    row["profile"] = profile
+    row["requeue"] = events.describe_requeue(e.get("redownload"))
+    row["size"] = _human_size((e.get("torrent") or {}).get("size"))
+
+
+def _history_status(row):
+    """(label, pill class, explanation) for a folded row.
+
+    Only remediations have a milestone. A warn, a dry run and a category
+    fallback delete never opened one, so they keep the older action-based
+    wording rather than being given a lifecycle they do not have.
+    """
+    rem = (row["latest"].get("remediation")
+           or row["ev"].get("remediation") or {})
+    milestone = rem.get("milestone")
+    if not milestone:
+        return None
+    label, cls, why = _MILESTONES.get(
+        milestone, (milestone.replace("_", " ").title(), "off", ""))
+    # "Recovering" says this process is finishing work an earlier one left
+    # behind, which is worth saying out loud: the operator did not ask for it
+    # and may be wondering why History changed on its own. It is keyed on the
+    # intent outliving its process, not on which code path made the
+    # transition - reconcile runs every scan, so that would label routine
+    # follow-up as a crash recovery.
+    if rem.get("recovered") and milestone in ("pending", "removed"):
+        label = "Recovering"
+    return {"label": label, "cls": cls, "why": why,
+            "milestone": milestone, "source": rem.get("source")}
 
 
 def _mapping_rows(raw):
@@ -301,26 +464,15 @@ def create_app(service):
 
     @app.route("/history")
     def history():
-        from . import events
         # Default to Live so a burst of dry-run testing can't make the page look
         # like Protectarr stopped three hundred attacks.
         show = (request.args.get("show") or "live").lower()
         if show not in ("live", "dry", "all"):
             show = "live"
         dry = {"live": False, "dry": True, "all": None}[show]
-        rows = []
-        for e in events.read(limit=250, dry_run=dry):
-            findings, decisive, severity, profile = events.normalize(e)
-            rows.append({
-                "ev": e,
-                "why": events.describe(decisive),
-                "also": [events.describe(f) for f in findings if f is not decisive],
-                "severity": severity,
-                "profile": profile,
-                "requeue": events.describe_requeue(e.get("redownload")),
-                "size": _human_size((e.get("torrent") or {}).get("size")),
-            })
-        return page("history.html", active="history", rows=rows, show=show)
+        rows = _history_rows(events.read(limit=400, dry_run=dry))[:250]
+        return page("history.html", active="history", rows=rows, show=show,
+                    detail_rows=[_detail(r) for r in rows])
 
     @app.route("/settings")
     def settings_index():
@@ -385,6 +537,15 @@ def create_app(service):
                                  f.getlist("allowed_tags") if t.strip()]
             s["requeue_after_airdate"] = f.get("requeue_after_airdate") == "on"
             s["airdate_grace_hours"] = max(0, int(f.get("airdate_grace_hours", 0) or 0))
+            # Clamped like every other numeric setting. 0 is allowed and means
+            # "act as soon as absence is confirmed", which is a legitimate
+            # choice; the upper bound just stops a typo turning the fallback
+            # off for a year.
+            try:
+                s["orphan_dwell_minutes"] = min(1440, max(0, int(float(
+                    f.get("orphan_dwell_minutes") or 0))))
+            except (TypeError, ValueError):
+                pass
 
         elif section == "probe":
             pr = cfg["detection"].setdefault("probe", {})
@@ -400,7 +561,8 @@ def create_app(service):
                                        ("torrent_timeout_seconds", "probe_timeout", 5, 900),
                                        ("scan_budget_seconds", "probe_budget", 5, 1800),
                                        ("min_speed_kib", "probe_minspeed", 0, 1048576),
-                                       ("recheck_minutes", "probe_recheck", 1, 1440)):
+                                       ("recheck_minutes", "probe_recheck", 1, 1440),
+                                       ("no_progress_seconds", "probe_noprogress", 0, 900)):
                 try:
                     pr[key] = min(hi, max(lo, int(float(f.get(field) or 0))))
                 except (TypeError, ValueError):
@@ -698,7 +860,7 @@ def create_app(service):
     @app.route("/preview", endpoint="preview")
     def preview():
         try:
-            return jsonify(ok=True, actions=service.preview())
+            return jsonify(ok=True, **service.preview())
         except Exception as e:
             return jsonify(ok=False, message=str(e))
 
@@ -821,7 +983,6 @@ def create_app(service):
 
     @app.route("/api/v1/history")
     def api_history():
-        from . import events
         n = min(max(request.args.get("limit", type=int) or 100, 1), 1000)
         dry = {"live": False, "dry": True}.get(
             (request.args.get("show") or "all").lower())
@@ -839,7 +1000,7 @@ def create_app(service):
     @app.route("/api/v1/preview")
     def api_preview():
         try:
-            return jsonify(ok=True, actions=service.preview())
+            return jsonify(ok=True, **service.preview())
         except Exception as e:
             return jsonify(ok=False, message=str(e)), 500
 

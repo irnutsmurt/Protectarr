@@ -83,6 +83,18 @@
         <div><label>Minutes before re-probing a torrent</label>
           <input type="number" name="probe_recheck" min="1" max="1440" value="{{ pr.recheck_minutes }}"></div>
       </div>
+      <label>Give up after no progress for (seconds)</label>
+      <input type="number" name="probe_noprogress" min="0" max="900"
+             value="{{ pr.no_progress_seconds }}" style="max-width:160px">
+      <p class="hint" style="margin-top:6px">
+        Stop steering early when Protectarr sees no progress toward the target
+        file's <b>opening piece</b> for this long, and put the settings back.
+        This watches that one piece, not the file's overall progress: a torrent
+        can be pulling bytes for the file at full speed while the piece we
+        actually need is never requested, which is measured behaviour rather
+        than a hypothetical. Without this the probe would hold the boost for
+        its whole budget while accomplishing nothing.
+      </p>
       <label>Minimum download speed to bother steering (KiB/s)</label>
       <input type="number" name="probe_minspeed" min="0" value="{{ pr.min_speed_kib }}" style="max-width:160px">
       <p class="hint" style="margin-top:6px">
