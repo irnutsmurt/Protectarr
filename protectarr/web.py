@@ -48,6 +48,24 @@ SETTINGS_SECTIONS_FULL = [
 SETTINGS_SECTIONS = [(k, l, i) for k, l, i, _ in SETTINGS_SECTIONS_FULL]
 SETTINGS_KEYS = {k for k, *_ in SETTINGS_SECTIONS_FULL}
 
+# Pages whose content is tables and charts, which read better with more width
+# than the 1320px cap that keeps forms readable. Keyed on the page rather than
+# the template so the decision is "what kind of page is this", made once, and
+# a new data page opts in by being added here rather than by copying a style
+# attribute.
+#
+# Deliberately absent, despite all three containing tables:
+#   settings      every section under it is a form.
+#   applications  a configuration surface. It holds structured lists, but they
+#                 are URLs, API keys and path mappings, and stretching a
+#                 credential field across an ultrawide display helps nobody.
+#   system        its main element is a seven-row key/value table with a fixed
+#                 220px label column and short values, which gets worse with
+#                 width, not better: the label ends up an inch from its value.
+#                 The log box below it benefits slightly, but it is
+#                 height-capped and scrolls, so it is the lesser half.
+WIDE_PAGES = {"dashboard", "history", "watchlist"}
+
 
 def _mappings_from_form(form):
     """Paired path inputs -> (mappings, half-filled rows).
@@ -471,6 +489,7 @@ def create_app(service):
     def page(template, active, active_sub=None, **ctx):
         return render_template(
             template, active=active, active_sub=active_sub,
+            wide=active in WIDE_PAGES,
             cfg=cfg_mod.load(), state=service.state,
             arr_types=sorted(ARR_TYPES.keys()),
             settings_sections=SETTINGS_SECTIONS,

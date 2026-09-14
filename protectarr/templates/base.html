@@ -7,10 +7,37 @@
   <meta name="csrf" content="{{ csrf_token }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="icon" href="{{ url_for('static', filename='logo-icon.png') }}">
+  <script>
+    // Blocking, and in the head, deliberately. Reading the preference after
+    // first paint means the sidebar renders expanded and then snaps to the
+    // rail, which reads as a bug every single page load. This runs before the
+    // body exists, so the class is on <html> in time for the first paint.
+    //
+    // No class at all is a valid state: the stylesheet's own media query
+    // decides, which is what keeps auto-collapse working without JavaScript.
+    (function () {
+      try {
+        var p = localStorage.getItem('protectarr.nav');
+        if (p === 'collapsed' || p === 'expanded') {
+          document.documentElement.classList.add('nav-' + p);
+        }
+      } catch (e) { /* private mode, disabled storage: fall back to the CSS */ }
+    })();
+  </script>
 </head>
 <body>
   <header class="app-header">
     <a class="header-logo" href="{{ url_for('applications') }}"><img class="brand-icon" src="{{ url_for('static', filename='logo-icon.png') }}" alt=""><span class="brand-name">Protectarr</span></a>
+    {# aria-expanded is updated by the toggle, so assistive tech is told the
+       state changed rather than only the icon rotating. #}
+    <button type="button" class="nav-toggle" id="navToggle" onclick="toggleNav()"
+            aria-controls="sidebar" aria-expanded="true" aria-label="Collapse navigation"
+            title="Collapse navigation">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 5l-7 7 7 7"/>
+      </svg>
+    </button>
     <div class="header-spacer"></div>
     <div class="header-icons">
       {% if user %}<span>👤 {{ user }}</span><a href="{{ url_for('logout') }}">Logout</a>
@@ -18,14 +45,39 @@
     </div>
   </header>
 
-  <aside class="sidebar">
-    <nav class="nav">
-      <a href="{{ url_for('applications') }}" class="{{ 'active' if active=='applications' }}">Applications</a>
-      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active=='dashboard' }}">Dashboard</a>
-      <a href="{{ url_for('history') }}" class="{{ 'active' if active=='history' }}">History</a>
-      <a href="{{ url_for('watchlist') }}" class="{{ 'active' if active=='watchlist' }}">IP Watchlist</a>
+{#- Nav icons. Authored here as inline SVG rather than pulled from an icon
+    library: six glyphs do not justify a dependency, and the rail needs them to
+    inherit currentColor so the active and hover states keep working. One
+    viewBox and one stroke weight throughout, to match the existing flat
+    Servarr-ish language. -#}
+{%- set NAV_ICONS = {
+  'applications': '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  'dashboard':    '<path d="M3 21h18"/><path d="M6 21V11"/><path d="M12 21V4"/><path d="M18 21v-6"/>',
+  'history':      '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.4 2"/>',
+  'watchlist':    '<path d="M12 3.2l7.2 3v5.1c0 4.4-3.1 8.2-7.2 9.1-4.1-.9-7.2-4.7-7.2-9.1V6.2z"/>',
+  'settings':     '<path d="M4 7h7"/><path d="M15.5 7H20"/><path d="M4 17h4.5"/><path d="M13 17h7"/><circle cx="13.2" cy="7" r="2.3"/><circle cx="10.7" cy="17" r="2.3"/>',
+  'system':       '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01"/><path d="M7 16.5h.01"/>'
+} -%}
+{%- macro navlink(key, endpoint, label) -%}
+  {#- title= gives the rail a hover tooltip; the label itself stays in the DOM
+      and is only moved off-screen when collapsed, so the accessible name
+      survives either way. -#}
+  <a href="{{ url_for(endpoint) }}" class="{{ 'active' if active==key }}" title="{{ label }}">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true">{{ NAV_ICONS[key] | safe }}</svg>
+    <span class="label">{{ label }}</span>
+  </a>
+{%- endmacro -%}
 
-      <a href="{{ url_for('settings_index') }}" class="{{ 'active' if active=='settings' }}">Settings</a>
+  <aside class="sidebar" id="sidebar">
+    <nav class="nav" aria-label="Primary">
+      {{ navlink('applications', 'applications', 'Applications') }}
+      {{ navlink('dashboard', 'dashboard', 'Dashboard') }}
+      {{ navlink('history', 'history', 'History') }}
+      {{ navlink('watchlist', 'watchlist', 'IP Watchlist') }}
+
+      {{ navlink('settings', 'settings_index', 'Settings') }}
       {% if active == 'settings' %}
       <div class="subnav">
         {% for key, label, icon in settings_sections %}
@@ -34,12 +86,12 @@
       </div>
       {% endif %}
 
-      <a href="{{ url_for('system') }}" class="{{ 'active' if active=='system' }}">System</a>
+      {{ navlink('system', 'system', 'System') }}
     </nav>
-    <div class="sidebar-foot">Protectarr v{{ version }}</div>
+    <div class="sidebar-foot"><span class="foot-text">Protectarr v{{ version }}</span></div>
   </aside>
 
-  <main class="content">
+  <main class="content{{ ' wide' if wide }}">
     {% with messages = get_flashed_messages() %}
       {% if messages %}<div class="flash">{{ messages[0] }}</div>{% endif %}
     {% endwith %}
@@ -47,6 +99,47 @@
   </main>
 
   <script>
+    // ---- sidebar collapse ----
+    // The stylesheet owns the widths; this only owns the class and the stored
+    // preference. Nothing here measures or sets a pixel value, so the rail,
+    // the breakpoint and the mobile layout stay in one place.
+    var NAV_KEY = 'protectarr.nav';
+    var NAV_AUTO_BELOW = 1200;   // must match the media query in style.css
+
+    function navCollapsed() {
+      var c = document.documentElement.classList;
+      if (c.contains('nav-collapsed')) return true;
+      if (c.contains('nav-expanded')) return false;
+      return window.innerWidth <= NAV_AUTO_BELOW;   // no preference: CSS decides
+    }
+
+    function paintNav() {
+      var btn = document.getElementById('navToggle');
+      if (!btn) return;
+      var collapsed = navCollapsed();
+      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      var label = collapsed ? 'Expand navigation' : 'Collapse navigation';
+      btn.setAttribute('aria-label', label);
+      btn.setAttribute('title', label);
+    }
+
+    function toggleNav() {
+      var c = document.documentElement.classList;
+      var next = navCollapsed() ? 'expanded' : 'collapsed';
+      c.remove('nav-collapsed', 'nav-expanded');
+      c.add('nav-' + next);
+      try { localStorage.setItem(NAV_KEY, next); } catch (e) { /* storage off */ }
+      paintNav();
+    }
+
+    // Only relevant while no manual choice is stored: once the user has an
+    // opinion, crossing the breakpoint must not overrule it.
+    window.addEventListener('resize', function () {
+      var c = document.documentElement.classList;
+      if (!c.contains('nav-collapsed') && !c.contains('nav-expanded')) paintNav();
+    });
+    paintNav();
+
     // CSRF: expose the token and stamp it into every form.
     window.CSRF = document.querySelector('meta[name=csrf]').content;
     document.querySelectorAll('form').forEach(function (f) {

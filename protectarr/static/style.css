@@ -30,29 +30,64 @@ body {
 }
 a { color: var(--accent); text-decoration: none; }
 
-/* ---- layout: full-width header on top, sidebar below (Servarr shell) ---- */
-:root { --header-h: 66px; }
+/* ---- layout: full-width header on top, sidebar below (Servarr shell) ----
+   A two-column grid rather than a fixed sidebar plus a matching margin on the
+   content. The old shell stated the sidebar's width twice, so the content
+   could only reclaim collapsed space if both agreed. Here `--sidebar-w` is the
+   grid track: change the variable and the content column resizes because
+   there is nothing else for the remaining width to do.
+
+   The sidebar is `sticky`, not `fixed`, which keeps the nav in place while the
+   page scrolls (its old behaviour) without taking it out of flow, so it still
+   occupies a grid track. */
+:root { --header-h: 66px; --rail-w: 60px; }
+body {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: var(--header-h) 1fr;
+  min-height: 100vh;
+}
+/* minmax(0, 1fr) above, not 1fr: a grid track's default minimum is its
+   content, so one wide table would push the column past the viewport and
+   scroll the whole page instead of scrolling inside its own wrapper. */
 .app-header {
-  position: fixed; top: 0; left: 0; right: 0; height: var(--header-h);
+  grid-column: 1 / -1; grid-row: 1;
+  position: sticky; top: 0; height: var(--header-h);
   background: var(--topbar-bg); border-bottom: 1px solid var(--border);
   display: flex; align-items: center; z-index: 30;
 }
 .header-logo {
   display: flex; align-items: center; gap: 10px;
   width: var(--sidebar-w); min-width: var(--sidebar-w); box-sizing: border-box;
-  padding: 0 18px; height: 100%;
+  padding: 0 18px; height: 100%; overflow: hidden;
   font-size: 20px; font-weight: 600; color: var(--text-head);
   border-right: 1px solid var(--border);
 }
 .header-logo .logo { font-size: 24px; }
-.brand-icon { height: 42px; width: auto; display: block; }
-.brand-name { font-size: 21px; font-weight: 600; color: var(--text-head); letter-spacing: .2px; }
+.brand-icon { height: 42px; width: auto; display: block; flex: 0 0 auto; }
+.brand-name { font-size: 21px; font-weight: 600; color: var(--text-head); letter-spacing: .2px; white-space: nowrap; }
 .header-spacer { flex: 1; }
 .header-icons { display: flex; align-items: center; gap: 16px; padding: 0 22px; color: var(--text-dim); font-size: 13px; }
 
+/* ---- sidebar collapse toggle ---- */
+.nav-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; margin-left: 14px; flex: 0 0 auto;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+  color: var(--text-dim); cursor: pointer; padding: 0;
+}
+.nav-toggle:hover { background: #2e2e2e; color: var(--text-head); }
+.nav-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nav-toggle svg { width: 18px; height: 18px; display: block; }
+/* The chevron points the way the sidebar will go, so it flips with the state. */
+:root.nav-collapsed .nav-toggle svg { transform: scaleX(-1); }
+
 .sidebar {
-  position: fixed; top: var(--header-h); bottom: 0; left: 0;
-  width: var(--sidebar-w); background: var(--sidebar-bg);
+  grid-column: 1; grid-row: 2;
+  position: sticky; top: var(--header-h); align-self: start;
+  height: calc(100vh - var(--header-h));
+  width: auto; min-width: 0; overflow: hidden;
+  background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; z-index: 20;
 }
@@ -62,15 +97,34 @@ a { color: var(--accent); text-decoration: none; }
 }
 .brand .logo { font-size: 22px; }
 .brand small { display:block; font-size: 10px; color: var(--text-dim); font-weight: 400; letter-spacing:.5px; }
-.nav { flex: 1; padding: 10px 0; overflow-y: auto; }
+.nav { flex: 1; padding: 10px 0; overflow-y: auto; overflow-x: hidden; }
 .nav a {
   display: flex; align-items: center; gap: 11px;
   padding: 11px 20px; font-size: 15px; color: var(--text); border-left: 3px solid transparent;
+  white-space: nowrap;
 }
 .nav a:hover { background: #2e2e2e; }
 .nav a.active { border-left-color: var(--accent); background: #2e2e2e; color: var(--text-head); }
-.nav .ico { width: 18px; text-align: center; opacity: .85; }
-.sidebar-foot { padding: 12px 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); }
+.nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.nav .ico { width: 18px; height: 18px; flex: 0 0 18px; opacity: .85; display: block; }
+.nav a.active .ico { opacity: 1; }
+.sidebar-foot { padding: 12px 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+
+/* ---- collapsed rail ----
+   The label is moved out of sight rather than `display:none`, so it stays in
+   the accessibility tree: an icon-only link still has to announce itself. */
+:root.nav-collapsed .nav .label,
+:root.nav-collapsed .brand-name,
+:root.nav-collapsed .sidebar-foot .foot-text {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+:root.nav-collapsed .nav a { justify-content: center; padding-left: 0; padding-right: 0; }
+:root.nav-collapsed .header-logo { padding: 0; justify-content: center; }
+/* Settings sections are text; there is no room and no flyout in this release,
+   so the Settings icon leads to the index, which lists them. */
+:root.nav-collapsed .subnav { display: none; }
+:root.nav-collapsed .sidebar-foot { padding: 12px 0; text-align: center; }
 
 /* settings sub-menu under the sidebar's Settings item */
 .subnav { display: flex; flex-direction: column; background: #202020; }
@@ -85,7 +139,44 @@ a { color: var(--accent); text-decoration: none; }
 .settings-link-title { display: block; color: var(--accent); font-size: 15px; font-weight: 600; }
 .settings-link .hint { display: block; margin-top: 2px; }
 
-.content { margin-left: var(--sidebar-w); margin-top: var(--header-h); padding: 28px 32px; max-width: 1320px; }
+.content { grid-column: 2; grid-row: 2; min-width: 0; padding: 28px 32px; max-width: 1320px; }
+/* min-width:0 for the same reason as the track's minmax: without it a grid
+   item refuses to shrink below its content, and a wide table becomes a
+   page-level scrollbar instead of a wrapper-level one. */
+
+/* Data-heavy pages opt into more width. Settings and other forms keep the
+   1320px cap, because a label-and-input column stretched across a 1920px
+   monitor is harder to read, not easier. Applied by page type in `page()`,
+   so it is one decision rather than a per-template pixel hack. */
+.content.wide { max-width: 1800px; }
+
+/* ---- sidebar collapse state ----
+   `--sidebar-w` is the grid track, so these three rules are the entire
+   mechanism: the content column takes whatever the sidebar gives up.
+
+   Auto-collapse is a media query so it still works with JavaScript disabled.
+   An explicit choice outranks it because `.nav-expanded` is the more specific
+   selector, which is what makes a manual override stick below the breakpoint
+   without JavaScript having to fight the stylesheet.
+
+   1200px, not 1400px. The rail is worth a flat ~180px at every width, so the
+   threshold is not a question about pixels gained but about when text labels
+   stop being worth their cost. 1400 made icon-only navigation the default on
+   an ordinary 1366px laptop, which is too early to spend legibility on width
+   the page was not short of. */
+@media (max-width: 1200px) { :root { --sidebar-w: var(--rail-w); } }
+:root.nav-collapsed { --sidebar-w: var(--rail-w); }
+:root.nav-expanded { --sidebar-w: 240px; }
+
+/* Below this the rail is not a preference. A 240px sidebar on a 768px tablet
+   leaves 464px of content, which is less than the 536px the same page gets at
+   600px wide once the mobile layout drops the sidebar entirely: shrinking the
+   window would hand back width, which is the specific inversion this release
+   exists to remove. Honouring a stored "expanded" here would preserve it for
+   exactly the users who once clicked the toggle on a desktop.
+
+   Same specificity as the rule above and deliberately after it, so it wins. */
+@media (max-width: 900px) { :root.nav-expanded { --sidebar-w: var(--rail-w); } }
 
 /* ---- content toolbar (icon-over-label action buttons, Servarr-style) ---- */
 .toolbar { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; flex-wrap: wrap; }
@@ -251,13 +342,34 @@ pre.log {
 .login-error { background: #4a2224; border: 1px solid var(--danger); color: #f3b6b8;
   padding: 9px 12px; border-radius: 4px; font-size: 13px; margin-bottom: 14px; }
 
-/* ---- responsive ---- */
+/* ---- responsive ----
+   Below this width the shell leaves the grid entirely and returns to normal
+   flow: the sidebar becomes a wrapping top nav, which already costs zero
+   horizontal space (measured: 0px, against 93px of vertical). The rail solves
+   a problem that does not exist down here, so it is switched off rather than
+   layered on top. Everything in this block is the pre-0.4.0 mobile layout,
+   deliberately unchanged. */
 @media (max-width: 720px) {
-  .header-logo { width: auto; min-width: 0; border-right: none; }
-  .sidebar { position: static; top: 0; width: 100%; height: auto; flex-direction: row; flex-wrap: wrap; }
-  .content { margin-left: 0; margin-top: var(--header-h); }
+  body { display: block; }
+  .app-header { position: fixed; top: 0; left: 0; right: 0; }
+  .header-logo { width: auto; min-width: 0; border-right: none; padding: 0 18px; justify-content: flex-start; }
+  .sidebar {
+    position: static; top: 0; width: 100%; height: auto;
+    flex-direction: row; flex-wrap: wrap; align-self: auto; overflow: visible;
+  }
+  .content { margin-left: 0; margin-top: var(--header-h); max-width: none; }
   .nav { display: flex; flex-wrap: wrap; padding: 4px; }
   .nav a { border-left: none; border-bottom: 3px solid transparent; padding: 8px 12px; }
   .nav a.active { border-left: none; border-bottom-color: var(--accent); }
   .sidebar-foot { display: none; }
+  /* No rail on mobile, whatever the stored preference says. */
+  .nav-toggle { display: none; }
+  :root.nav-collapsed .nav .label,
+  :root.nav-collapsed .brand-name {
+    position: static; width: auto; height: auto; margin: 0;
+    overflow: visible; clip: auto;
+  }
+  :root.nav-collapsed .nav a { justify-content: flex-start; padding: 8px 12px; }
+  :root.nav-collapsed .header-logo { padding: 0 18px; justify-content: flex-start; }
+  :root.nav-collapsed .subnav { display: flex; }
 }
