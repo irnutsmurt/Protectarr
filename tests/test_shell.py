@@ -316,7 +316,7 @@ class TestNavigationRemainsUsable(ShellCase):
 
     def test_icons_carry_a_tooltip_for_pointer_users(self):
         html = self.get("/history")
-        self.assertIn('title="IP Watchlist"', html)
+        self.assertIn('title="Swarm Observations"', html)
 
     def test_the_toggle_announces_its_state(self):
         html = self.get("/history")

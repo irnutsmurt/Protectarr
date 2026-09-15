@@ -17,6 +17,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from . import config as cfg_mod
 from . import events
+from . import evidence
 from . import logs
 from . import __version__
 from .netauth import resolve_client_ip, is_local
@@ -131,6 +132,94 @@ _MILESTONES = {
 
 
 HISTORY_LIMIT = 250
+
+# Swarm Observations shows one row per IP, and an IP is only here because
+# Protectarr acted on a torrent it was in. Deeper than this is a job for the
+# API, not for a page the operator is meant to read.
+WATCHLIST_LIMIT = 500
+
+# Encounter outcome -> (label, pill class). The four milestone keys reuse
+# _MILESTONES' wording exactly, because this is the same fact about the same
+# remediation seen from the other end, and two names for it would be two
+# things to keep in step. Everything here describes what Protectarr's action
+# did. None of it describes the peer.
+_OUTCOMES = {
+    "pending": ("Pending", "off"),
+    "removed": ("Pending", "off"),
+    "settled": ("Settled", "on"),
+    "failed_unverified": ("Failed Unverified", "bad"),
+    "deleted_no_arr": ("Deleted (no *arr)", "on"),
+    "not_attempted": ("Not Attempted", "off"),
+    "failed": ("Failed", "bad"),
+    "partial": ("Partial", "off"),
+}
+# Migrated rows and encounters still in flight both land here. "Unknown" is a
+# real answer and gets the same neutral pill as any other unfinished state
+# rather than a class of its own.
+_OUTCOME_UNKNOWN = ("Outcome Unknown", "off")
+
+
+def _outcome(token):
+    """(label, pill class) for an encounter outcome, never None."""
+    return _OUTCOMES.get(token, _OUTCOME_UNKNOWN) if token else _OUTCOME_UNKNOWN
+
+
+def _swarm_view(row):
+    """One Swarm Observations table row, ready to render.
+
+    `encounters` and `distinct_torrents` are both here and both plain counts.
+    An encounter is one action Protectarr took; a distinct torrent is one
+    infohash. Ten encounters against one torrent and ten against ten torrents
+    are very different evidence, and collapsing them into a single "distinct
+    fakes" number - which is what this page used to show - hid the difference.
+    """
+    label, cls = _outcome(row.get("latest_outcome"))
+    out = dict(row)
+    out["outcome_label"] = label
+    out["outcome_class"] = cls
+    # A lower bound is shown as "6+" rather than "6". Migration can prove an IP
+    # was in more encounters than it can place, and printing the placeable
+    # count alone would state a number we know to be too low.
+    out["encounters_display"] = (f"{row['encounters']}+"
+                                 if row.get("encounters_lower_bound")
+                                 else str(row["encounters"]))
+    return out
+
+
+def _swarm_detail(p):
+    """The Peer Profile Details payload for one IP.
+
+    The two notices are separate facts and are computed separately. Detail can
+    be missing because retention expired it, or because the legacy ledger
+    overwrote it and never recorded which encounter it belonged to. Calling
+    both "pruned" would blame the retention policy for data the old harvest
+    ledger lost years before any policy existed.
+    """
+    if not p:
+        return {}
+    history = []
+    for h in p.get("history") or []:
+        label, cls = _outcome(h.get("outcome"))
+        row = dict(h)
+        row["outcome_label"] = label
+        row["outcome_class"] = cls
+        history.append(row)
+    expired = max(0, p["encounters"] - (p.get("retained_details") or 0))
+    return {
+        "ip": p["ip"],
+        "first_observed": p.get("first_observed"),
+        "last_observed": p.get("last_observed"),
+        "encounters": p["encounters"],
+        "encounters_display": (f"{p['encounters']}+"
+                               if p.get("encounters_lower_bound")
+                               else str(p["encounters"])),
+        "distinct_torrents": p.get("distinct_torrents"),
+        "retained_details": p.get("retained_details"),
+        "details_expired": expired,
+        "legacy_unattributed": p.get("legacy_unattributed") or 0,
+        "ever_seeder": p.get("ever_seeder"),
+        "history": history,
+    }
 
 
 def _history_rows(evs, limit=None):
@@ -513,13 +602,19 @@ def create_app(service):
 
     @app.route("/system")
     def system():
-        return page("system.html", active="system")
+        return page("system.html", active="system",
+                    swarm_health=evidence.health(),
+                    swarm_totals=evidence.counts())
 
     @app.route("/watchlist")
     def watchlist():
-        from . import harvest
+        rows = evidence.observations(limit=WATCHLIST_LIMIT) or []
+        details = evidence.profiles([r["ip"] for r in rows])
         return page("watchlist.html", active="watchlist",
-                    rows=harvest.watchlist())
+                    rows=[_swarm_view(r) for r in rows],
+                    broken=evidence.broken(), totals=evidence.counts(),
+                    detail_rows=[_swarm_detail(details.get(r["ip"]))
+                                 for r in rows])
 
     @app.route("/history")
     def history():
@@ -1043,8 +1138,28 @@ def create_app(service):
 
     @app.route("/api/v1/watchlist")
     def api_watchlist():
-        from . import harvest
-        return jsonify(harvest.watchlist(min_fakes=request.args.get("min_fakes", type=int) or 1))
+        # `min_encounters` replaces the old `min_fakes`, which was never the
+        # number it claimed: it counted distinct infohashes, not fakes, and an
+        # IP in one torrent reaped three times scored 1. Both filters are
+        # offered because they answer different questions, and the old name is
+        # still accepted so an existing caller keeps working.
+        if evidence.broken():
+            # 503, not an empty list. A caller polling this must be able to
+            # tell "no IPs have been observed" from "the evidence is
+            # unreadable", and 200 with [] says the first while meaning the
+            # second.
+            return jsonify(error="evidence store unavailable",
+                           detail=evidence.broken()), 503
+        args = request.args
+        if args.get("ip"):
+            return jsonify(evidence.profile(args["ip"]) or {})
+        min_enc = args.get("min_encounters", type=int) or 0
+        min_tor = (args.get("min_torrents", type=int)
+                   or args.get("min_fakes", type=int) or 0)
+        n = min(max(args.get("limit", type=int) or WATCHLIST_LIMIT, 1), 5000)
+        return jsonify([r for r in (evidence.observations(limit=n) or [])
+                        if r["encounters"] >= min_enc
+                        and r["distinct_torrents"] >= min_tor])
 
     @app.route("/api/v1/history")
     def api_history():

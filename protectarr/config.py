@@ -152,11 +152,22 @@ DEFAULTS = {
         "path": "",                # blank = <config dir>/logs
         "retention_days": 14,
     },
-    # Seeder-IP harvest: on each reap, enumerate the fake's swarm from
-    # qBittorrent and log the peers to an observation ledger (harvest.json) for
-    # pattern-spotting. Passive - collects data only, never bans on its own.
+    # Swarm observations: on each reap, enumerate the fake's swarm from
+    # qBittorrent before removing it and record the peers as evidence
+    # (evidence.db) for pattern-spotting. Passive - collects data only, never
+    # bans on its own.
+    #
+    # The retention numbers are config-only on purpose. They came out of a
+    # growth model measured against real swarm captures, and none of them is a
+    # choice an operator can make well from a form without that curve in front
+    # of them. Detail expires first and profiles outlive it, because an IP's
+    # recurrence is the evidence worth keeping long after the per-peer detail
+    # of any one encounter has stopped being interesting.
     "harvest": {
         "enabled": True,
+        "detail_encounters": 2000,      # keep per-peer detail for the newest N
+        "single_profile_days": 90,      # IPs seen in exactly one encounter
+        "recurring_profile_days": 365,  # IPs seen in two or more
     },
     # Optional peer IP blocklist (Naunter/BT_BlockLists) applied to qBittorrent's
     # IP filter. The file is written to `path`, which qBittorrent must be able to

@@ -53,7 +53,7 @@ Applications: qBittorrent and each *arr, with a Test button per connection.
 </p>
 
 <details>
-<summary><b>More screenshots</b> - reaping rules, detection settings, the IP watchlist, and System</summary>
+<summary><b>More screenshots</b> - reaping rules, detection settings, swarm observations, and System</summary>
 
 <br>
 
@@ -72,13 +72,22 @@ lure-filename and archive rules.
   <img src="screenshots/extensions.png" alt="Protectarr monitored extensions settings" width="820">
 </p>
 
-IP Watchlist: every peer seen sharing a confirmed fake, recorded from the swarm
-**before** the torrent is removed. Passive observation only - nothing here is
-blocked automatically. What to look for is an IP, or a subnet, appearing across
-many *distinct* fakes while seeding.
+Swarm Observations: the peers that were in a torrent's swarm, recorded
+**before** remediation is attempted. An entry means only that the IP was
+connected to that torrent at that moment - it is not a judgement about the IP,
+and nothing is blocked automatically. The encounter is kept whether the
+remediation went on to succeed, fail, or finish unverified, and the outcome is
+shown beside it. Open **Details** for the encounter history: when each one
+happened, which release it was, and what Protectarr's action actually turned
+out to do, including the ones that failed.
+
+Two counts are shown because they are different evidence. *Encounters* is how
+many times Protectarr acted on a torrent this IP was in; *Distinct Torrents* is
+how many separate infohashes those were. One torrent reaped ten times is not
+the same as ten unrelated fakes.
 
 <p align="center">
-  <img src="screenshots/iplist.png" alt="Protectarr IP watchlist of peers seen seeding confirmed fakes" width="820">
+  <img src="screenshots/iplist.png" alt="Protectarr swarm observations, showing peers recorded from torrents it acted on" width="820">
 </p>
 
 System: version, worker state, and a live view of the activity log.
@@ -463,7 +472,7 @@ behind a requeue. Level, retention and log downloads live in
   docker-compose. Without either, a container runs on **UTC**, so its logs read
   hours away from your own clock. Every timestamp carries its UTC offset
   regardless, so a log is never ambiguous about which zone produced it. This
-  applies to history and the harvest ledger too, not just logs.
+  applies to history and the swarm evidence too, not just logs.
 - **Levels:** `debug`, `info`, `warning`, `error`. The file level and the
   console level (what `docker logs` shows) are set separately, so the file can
   be verbose while the console stays readable.
@@ -575,7 +584,7 @@ GET  /ping                     # health check, no auth - {"status":"ok",...}
 GET  /api/v1                    # index of available endpoints
 GET  /api/v1/system/status      # version, running, dryRun, lastScan, lastError
 GET  /api/v1/stats              # reaped totals (by app / by indexer), blocklist, banned
-GET  /api/v1/watchlist          # harvested seeder-IP ledger (?min_fakes=N)
+GET  /api/v1/watchlist          # swarm observations (?min_encounters=N&min_torrents=N&ip=A.B.C.D)
 GET  /api/v1/history            # structured event history (?limit=N&show=all|live|dry)
 GET  /api/v1/log?limit=N        # recent activity log lines
 GET  /api/v1/logfiles           # log files available to download

@@ -112,6 +112,21 @@ safety:
 poll_interval: 20         # seconds between scans
 dry_run: true             # true = log only; set false to actually reap
 
+# Swarm observations. Before removing a fake, Protectarr enumerates its swarm
+# and records the peers as evidence in evidence.db beside this file. Passive:
+# it collects data and never bans anything on its own.
+#
+# The retention numbers below came out of a growth model measured against real
+# swarm captures, so the defaults are the recommended values rather than round
+# guesses. Detail expires first; the per-IP summary outlives it, because an
+# IP's recurrence is what stays interesting long after the per-peer detail of
+# any single encounter has stopped being.
+harvest:
+  enabled: true
+  detail_encounters: 2000       # keep per-peer detail for the newest N encounters
+  single_profile_days: 90       # forget IPs seen in exactly one encounter after
+  recurring_profile_days: 365   # ...and IPs seen in two or more after
+
 # Optional: peer IP blocklist applied to qBittorrent's IP filter.
 ip_blocklist:
   enabled: false

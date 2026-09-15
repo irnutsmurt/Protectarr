@@ -9,7 +9,7 @@ import threading
 import requests
 
 from . import config as cfg_mod
-from . import harvest
+from . import evidence as swarm
 from . import events
 from . import detectors
 from . import policy
@@ -97,24 +97,52 @@ def record_reap(state, app, indexer):
     save_stats(s)
 
 
-def _harvest_peers(a, indexer, app, state, cfg):
-    """Before a fake is removed, enumerate its swarm and log the peers to the
-    harvest ledger. Best-effort - never let it break a reap. Returns the number
-    of distinct peer IPs recorded."""
+def _harvest_peers(a, indexer, app, state, cfg, source):
+    """Before a fake is removed, enumerate its swarm and record the encounter.
+
+    Returns `(encounter_id, peer_count)`. The id is how everything discovered
+    later - the remediation that followed, and what that remediation turned out
+    to do - gets attached to these observations. It is None when nothing was
+    stored, which is not the same as a failure: an empty swarm is not written
+    at all, because a row with no peers would inflate every encounter count
+    without recording anything.
+
+    Best effort throughout. A swarm that cannot be read or written is a lost
+    audit trail, never a reason to leave a fake in place, so this swallows
+    everything and lets the caller proceed.
+    """
     if not cfg.get("harvest", {}).get("enabled", True):
-        return 0
+        return None, 0
     try:
         peers = a["_qb"].peers(a["hash"])
-        n = harvest.record(peers, {
-            "hash": a["hash"], "name": a["name"], "ext": a["bad_file"],
-            "indexer": indexer, "app": app,
-        })
-        if n:
-            _log(state, f"Harvested {n} peer IP(s) from {a['name']!r}")
-        return n
     except Exception as e:  # noqa: BLE001 - harvest must never abort a reap
         _log(state, f"Peer harvest failed for {a['name']!r}: {e}", logging.WARNING)
-        return 0
+        return None, 0
+    n = len({p.get("ip") for p in peers if p.get("ip")})
+    try:
+        _, decisive, severity, profile = events.normalize(a)
+        owner = a.get("_owner")
+        enc_id = swarm.record_encounter(peers, {
+            "infohash": a["hash"],
+            "release_title": a["name"],
+            "trigger_file": a["bad_file"],
+            "source": source,
+            "arr_instance": app,
+            "arr_type": owner[0].type if owner else None,
+            "indexer": indexer,
+            "category": a.get("category") or None,
+            "finding": events.describe(decisive),
+            "severity": severity,
+            "profile": profile,
+            "decision": a.get("decision"),
+        })
+    except Exception as e:  # noqa: BLE001 - evidence must never abort a reap
+        _log(state, f"Could not record swarm evidence for {a['name']!r}: {e}",
+             logging.WARNING)
+        return None, n
+    if n:
+        _log(state, f"Harvested {n} peer IP(s) from {a['name']!r}")
+    return enc_id, n
 
 
 # Wording of the existing log lines, keyed by the finding's reason code. The
@@ -428,6 +456,25 @@ def scan(cfg, state, side_effects=True):
         except Exception:  # noqa: BLE001 - never let cleanup break a scan
             log.exception("Remediation intent reconcile failed")
 
+        # Swarm evidence housekeeping. Both calls are no-ops after the first
+        # useful one - the migration records that it ran, and pruning deletes
+        # nothing once the store is inside its limits - so running them on
+        # every pass costs an indexed query and keeps retention honest on a
+        # long-lived process that is never restarted.
+        try:
+            swarm.migrate_legacy()
+            if time.time() >= state.get("evidence_pruned_at", 0):
+                pruned = swarm.prune(cfg)
+                state["evidence_pruned_at"] = time.time() + 6 * 3600
+                if pruned and (pruned["details_expired"]
+                               or pruned["profiles_expired"]):
+                    log.info("Swarm evidence retention: expired detail for %d "
+                             "observation(s) and %d IP profile(s).",
+                             pruned["details_expired"],
+                             pruned["profiles_expired"])
+        except Exception:  # noqa: BLE001 - evidence never breaks a scan
+            log.exception("Swarm evidence housekeeping failed")
+
         # Ownership pruning needs the FULL inventory, not the scan's filtered
         # list: a torrent that finished downloading is missing from the latter
         # and very much present in qBittorrent, and forgetting it would turn a
@@ -642,6 +689,9 @@ def apply_actions(actions, state, cfg):
         # in the verification/requeue half afterwards isn't reported as if
         # nothing happened.
         removed = False
+        # Bound before the branch because the handler below reports on it, and
+        # the throw can happen before either branch has harvested anything.
+        enc_id = None
         try:
             if a["decision"] == "arr_fail":
                 client, record = a["_owner"]
@@ -649,7 +699,8 @@ def apply_actions(actions, state, cfg):
                 indexer = record.get("indexer") or client.grab_indexer(record.get("downloadId"))
                 log.debug("Failing queue item %s on %s (indexer=%s, title=%r)",
                           record.get("id"), client.name, indexer or "unknown", source_title)
-                peers = _harvest_peers(a, indexer, client.name, state, cfg)  # before removal
+                enc_id, peers = _harvest_peers(a, indexer, client.name, state,
+                                               cfg, swarm.ARR)  # before removal
 
                 # Write-ahead. Everything past this point is irreversible, and
                 # a crash in the middle of it leaves a queue item that is
@@ -658,9 +709,17 @@ def apply_actions(actions, state, cfg):
                 # the *arr's history as it was before we touched it.
                 watermark = client.history_watermark()
                 if not intents.open_intent(a["hash"], client, record,
-                                           indexer=indexer, watermark=watermark):
+                                           indexer=indexer, watermark=watermark,
+                                           encounter_id=enc_id):
                     _log(state, f"Not reaping {label}: the remediation could not "
                                 f"be written down first.", logging.ERROR)
+                    # The swarm was still observed, and that observation is
+                    # true whatever happened next. Saying so keeps the peers
+                    # from sitting in the evidence store implying a removal
+                    # that never took place.
+                    swarm.set_outcome(enc_id, "not_attempted",
+                                      "the remediation could not be written "
+                                      "down first, so nothing was removed")
                     events.record(_event(
                         a, cfg, owner=_owner_block(a["_owner"]),
                         action={"result": "failed", "decision": "arr_fail",
@@ -668,6 +727,11 @@ def apply_actions(actions, state, cfg):
                                 "error": "remediation intent could not be persisted"},
                         redownload={"decision": "none", "reason": "not_applicable"}))
                     continue
+                # Linked as soon as the id exists rather than at the end, so a
+                # crash mid-remediation still leaves the observations pointing
+                # at the lifecycle that reconcile will go on to finish.
+                swarm.attach_remediation(
+                    enc_id, (intents.get(a["hash"]) or {}).get("remediation_id"))
 
                 outcome = client.fail(record["id"])  # remove + blocklist
                 removed = True
@@ -748,6 +812,12 @@ def apply_actions(actions, state, cfg):
                 # actually minted. Building a second copy here is how the two
                 # would drift.
                 intent = intents.get(a["hash"]) or {}
+                # Snapshotted onto the encounter, not joined to it at read
+                # time. events.jsonl rotates at 5 MB across three files, so a
+                # live join would quietly turn older encounters back into
+                # "unknown" as their history aged out from under them.
+                swarm.set_outcome(enc_id, intent.get("milestone"),
+                                  intent.get("error") or evidence["why"])
                 events.record(_event(
                     a, cfg, indexer=indexer, peers=peers,
                     remediation_id=intent.get("remediation_id"),
@@ -773,9 +843,18 @@ def apply_actions(actions, state, cfg):
                             "blocklist_row": (evidence["blocklist"] or {}).get("id")},
                     redownload=rd))
             elif a["decision"] == "qbit_delete":
-                peers = _harvest_peers(a, None, "qBittorrent", state, cfg)  # before removal
+                enc_id, peers = _harvest_peers(a, None, "qBittorrent", state,
+                                               cfg, swarm.QBIT)  # before removal
                 a["_qb"].delete(a["hash"], delete_files=True)
                 removed = True
+                # No *arr owns it, so there is no intent, no remediation_id and
+                # no lifecycle to follow. The encounter still gets an outcome,
+                # because "deleted, with nothing to verify against" is a real
+                # answer and leaving it NULL would render as Outcome Unknown.
+                swarm.set_outcome(enc_id, "deleted_no_arr",
+                                  "removed from qBittorrent by category "
+                                  "fallback; no *arr owned it, so there is no "
+                                  "blocklist or requeue to verify")
                 _log(state, f"Deleted from qBittorrent via category fallback "
                             f"(no *arr owns it): {label}")
                 record_reap(state, "qBittorrent", a.get("category") or None)
@@ -804,6 +883,11 @@ def apply_actions(actions, state, cfg):
                 _log(state, f"Action failed for {label}: {e}", logging.ERROR)
                 result, rd = "failed", {"decision": "none",
                                         "reason": "not_applicable"}
+            # Whatever the peers were observed doing, the action around them
+            # did not complete cleanly. Recording that here is what stops the
+            # Swarm Observations page presenting a failed reap as a successful
+            # one just because the swarm was captured before it broke.
+            swarm.set_outcome(enc_id, result, str(e))
             events.record(_event(
                 a, cfg, owner=_owner_block(a["_owner"]),
                 action={"result": result, "decision": a["decision"],

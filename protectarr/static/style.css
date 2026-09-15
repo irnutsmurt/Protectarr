@@ -309,6 +309,22 @@ textarea { min-height: 70px; font-family: ui-monospace, Menlo, Consolas, monospa
   background: var(--card-bg); border: 1px solid var(--border-light); border-radius: 8px;
   width: 100%; max-width: 560px; box-shadow: 0 12px 40px rgba(0,0,0,.5);
 }
+/* 560px suits a key/value dialog, which is what every modal was until the peer
+   profile put a four-column table inside one. At that width the Release column
+   is narrow enough to wrap release names a character at a time, so the wider
+   variant is for modals whose body is tabular rather than a list of fields. */
+.modal.wide { max-width: 940px; }
+
+/* Encounter history table, in the peer profile dialog.
+   The header cells only. "Remediation Outcome" is the one long enough to wrap,
+   and measurement showed it wrapping at every width from 1920 down whenever the
+   profile happened to contain a long release name, so the header row height
+   differed between two dialogs showing the same columns. This is scoped to
+   thead deliberately: body cells keep wrapping, which is what lets Release and
+   Finding absorb the flex, and the table sits in an overflow-x:auto wrapper so
+   an unbreakable header can only make the dialog scroll, never the page. That
+   distinction is the one the History table got wrong once already. */
+.enc-table thead th { white-space: nowrap; }
 .modal-head {
   display: flex; align-items: center; padding: 14px 18px; font-size: 15px; font-weight: 600;
   color: var(--text-head); background: var(--card-head); border-bottom: 1px solid var(--border);

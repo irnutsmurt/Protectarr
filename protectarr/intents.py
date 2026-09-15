@@ -115,7 +115,8 @@ def media_ref(client, record):
     return ref
 
 
-def open_intent(torrent_hash, client, record, indexer=None, watermark=None):
+def open_intent(torrent_hash, client, record, indexer=None, watermark=None,
+                encounter_id=None):
     """Persist `pending` before the destructive call. Returns True on success.
 
     A False return must stop the caller from issuing the DELETE. An action we
@@ -151,6 +152,15 @@ def open_intent(torrent_hash, client, record, indexer=None, watermark=None):
             # 2026-09-13. Without a per-remediation id the history of the
             # second attempt would fold into the first.
             "remediation_id": uuid.uuid4().hex,
+            # The swarm observed immediately before this remediation, if any.
+            # Optional and nullable by design: the peers are harvested before
+            # the intent exists, harvesting can be switched off, and the
+            # category-fallback path opens no intent at all. Carried here so
+            # the outcome can be written back onto the encounter from
+            # `audit()`, which is the one place every later transition passes
+            # through - including the ones a reconcile makes after a restart.
+            # Intents written before this field existed simply have None.
+            "encounter_id": encounter_id,
             "arr": client.name,
             "arr_type": client.type,
             "queue_id": record.get("id"),
@@ -274,6 +284,31 @@ def audit(intent, source, note=None):
         # when it was not a dry run, so the History Live filter must show them.
         "dry_run": False,
     })
+    # Keep the swarm evidence in step with the lifecycle. This runs on every
+    # transition, including the ones a reconcile makes minutes or a restart
+    # later, which is why the encounter id rides on the intent rather than
+    # being held in memory by whoever opened it.
+    _sync_encounter_outcome(intent)
+
+
+def _sync_encounter_outcome(intent):
+    """Snapshot the current milestone onto the encounter. Best effort.
+
+    Imported here rather than at module scope: the evidence store is optional
+    to the remediation path and must never be the reason an audit event fails
+    to be written.
+    """
+    enc_id = intent.get("encounter_id")
+    if not enc_id:
+        return
+    try:
+        from . import evidence
+        evidence.set_outcome(enc_id, intent.get("milestone"),
+                             intent.get("error")
+                             or (intent.get("evidence") or {}).get("why"))
+    except Exception as e:  # noqa: BLE001 - evidence never blocks the audit
+        log.warning("Could not update swarm evidence for remediation %s: %s",
+                    intent.get("remediation_id"), e)
 
 
 def verify(client, intent):

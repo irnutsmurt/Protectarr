@@ -20,6 +20,7 @@ import time
 import gzip
 import shutil
 import logging
+import datetime
 import logging.handlers
 from collections import deque
 
@@ -35,6 +36,30 @@ TS_FORMAT = "%Y-%m-%d %H:%M:%S %z"
 def now():
     """Current local time as a string, offset included."""
     return time.strftime(TS_FORMAT)
+
+
+def stamp(epoch):
+    """An epoch as a display string in the same format, or None.
+
+    None in, None out. A record whose timestamp was never captured has to stay
+    visibly absent rather than being rendered as the epoch or as "now".
+    """
+    if epoch is None:
+        return None
+    try:
+        return time.strftime(TS_FORMAT, time.localtime(float(epoch)))
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def parse_stamp(text):
+    """A timestamp written by `now()` back into an epoch, or None."""
+    if not text:
+        return None
+    try:
+        return datetime.datetime.strptime(text, TS_FORMAT).timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def apply_timezone(cfg):

@@ -16,6 +16,23 @@
         {% if state.banned.last %}{{ state.banned.count }} applied <span class="hint">({{ state.banned.last }})</span>{% else %}-{% endif %}
         {% if state.banned.error %}<span style="color:var(--danger)"> {{ state.banned.error }}</span>{% endif %}
       </td></tr>
+      {# Evidence collection is best effort and never blocks a reap, so a
+         failure here is silent by design everywhere except this row. If it
+         were not surfaced, losing the audit trail would look exactly like
+         having nothing to record. #}
+      <tr><th>Swarm observations</th><td>
+        {% if swarm_health.broken %}
+        <span class="pill bad">unavailable</span>
+        <span style="color:var(--danger)"> {{ swarm_health.broken }}</span>
+        {% else %}
+        {{ swarm_totals.ips }} IP(s), {{ swarm_totals.encounters }} encounter(s),
+        {{ swarm_totals.observations }} retained observation(s)
+        {% endif %}
+        {% if swarm_health.failures %}
+        <br><span style="color:var(--danger)">{{ swarm_health.failures }} write(s) lost since start</span>
+        <span class="hint">({{ swarm_health.last_failure }})</span>
+        {% endif %}
+      </td></tr>
       <tr><th>Config file</th><td><code>{{ config_path }}</code></td></tr>
     </table>
   </div>

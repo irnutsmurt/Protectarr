@@ -2,54 +2,176 @@
 {% block content %}
 
 <div class="card">
-  <h2>IP Watchlist <span class="hint" style="font-weight:400">- peers seen sharing confirmed fakes</span></h2>
+  <h2>Swarm Observations <span class="hint" style="font-weight:400">- peers seen in torrents Protectarr acted on</span></h2>
   <div class="body">
     <p class="hint" style="margin-top:0">
-      Every time Protectarr reaps a fake, it records the torrent's swarm here <b>before</b> removing it.
-      This is passive observation only - nothing is blocked automatically. Watch for IPs (and subnets)
-      that show up across <b>many distinct fakes</b> while <b>seeding</b>: those are the likely sources.
+      Before attempting remediation, Protectarr enumerates the torrent's swarm and records who was in it.
+      An entry here means <b>this IP was connected to that torrent at that moment</b> - nothing more.
+      It is not a judgement about the IP, and nothing is blocked automatically.
+      Open <b>Details</b> to see each encounter and what Protectarr's action actually did.
     </p>
 
-    {% if rows %}
+    {% if broken %}
+    <p class="hint" style="color:var(--danger)">
+      <span class="pill bad">unavailable</span>
+      The evidence store could not be read, so this page cannot show what has been observed.
+      This is not the same as having observed nothing. {{ broken }}
+    </p>
+    {% elif rows %}
     <div style="overflow-x:auto">
       <table class="applist">
         <thead>
           <tr>
-            <th>IP</th>
-            <th style="text-align:right">Distinct fakes</th>
-            <th>Role</th>
-            <th style="text-align:right">Observations</th>
-            <th>Indexers</th>
-            <th>Client</th>
-            <th>Country</th>
-            <th>First seen</th>
-            <th>Last seen</th>
+            <th>IP Address</th>
+            {# Two counts, not one. An encounter is one action Protectarr took;
+               a distinct torrent is one infohash. An IP in ten unrelated fakes
+               is different evidence from an IP in one fake reaped ten times,
+               and a single combined number cannot say which happened. #}
+            <th style="text-align:right">Encounters</th>
+            <th style="text-align:right">Distinct Torrents</th>
+            <th>Latest Associated Finding</th>
+            <th>Last Observed</th>
+            <th style="text-align:right">Details</th>
           </tr>
         </thead>
         <tbody>
           {% for r in rows %}
-          <tr title="{{ r.samples | join(' · ') }}">
+          <tr>
             <td><code>{{ r.ip }}</code></td>
-            <td style="text-align:right"><b>{{ r.distinct_fakes }}</b></td>
+            <td style="text-align:right"><b>{{ r.encounters_display }}</b></td>
+            <td style="text-align:right">{{ r.distinct_torrents }}</td>
             <td>
-              {% if r.was_seeder %}<span class="pill dry">seeder</span>{% else %}<span class="hint">leecher</span>{% endif %}
+              {{ r.latest_finding or '-' }}
+              {% if r.latest_release %}<br><span class="hint">{{ r.latest_release }}</span>{% endif %}
             </td>
-            <td style="text-align:right">{{ r.hits }}{% if r.seed_hits %} <span class="hint">({{ r.seed_hits }} seeding)</span>{% endif %}</td>
-            <td class="hint">{{ r.indexers | join(', ') or '-' }}</td>
-            <td class="hint">{{ r.clients | join(', ') or '-' }}</td>
-            <td class="hint">{{ r.countries | join(', ') or '-' }}</td>
-            <td class="hint">{{ r.first_seen or '-' }}</td>
-            <td class="hint">{{ r.last_seen or '-' }}</td>
+            <td class="hint">{{ r.last_observed or 'not recorded' }}</td>
+            <td style="text-align:right">
+              <button type="button" class="btn small" onclick="showPeer({{ loop.index0 }})">Details</button>
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <p class="hint" style="margin-top:12px">{{ rows | length }} IP(s) observed. Hover a row to see sample release names.</p>
+    <p class="hint" style="margin-top:12px">
+      Showing {{ rows | length }} {{ 'IP' if rows | length == 1 else 'IPs' }}
+      from {{ totals.encounters }} encounter{{ '' if totals.encounters == 1 else 's' }}.
+      Evidence is kept in <code>evidence.db</code> next to your config.
+    </p>
     {% else %}
-    <p class="hint">No peers harvested yet. Once Protectarr reaps a fake (Live mode) with harvesting enabled, the swarm shows up here.</p>
+    <p class="hint">
+      No swarms observed yet. Once Protectarr acts on a fake in Live mode with harvesting
+      enabled, the peers that were sharing it show up here.
+    </p>
     {% endif %}
   </div>
 </div>
 
+<div class="modal-overlay" id="peerModal" hidden>
+  <div class="modal wide">
+    <div class="modal-head"><span>Peer Profile</span>
+      <button type="button" class="modal-x" onclick="closePeer()">&times;</button></div>
+    <div class="modal-body" id="peer_body"></div>
+    <div class="modal-foot">
+      <button type="button" class="btn" onclick="closePeer()">Close</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+var PEERS = {{ detail_rows | tojson }};
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+function section(title, pairs){
+  var rows = pairs.filter(function(p){ return p[1] !== null && p[1] !== undefined && p[1] !== ''; });
+  if (!rows.length) return '';
+  return '<h3 style="margin:16px 0 6px; font-size:13px; color:var(--text-head)">' + esc(title) + '</h3>'
+    + '<table class="applist"><tbody>' + rows.map(function(p){
+        return '<tr><th style="width:190px; text-align:left; vertical-align:top">' + esc(p[0])
+             + '</th><td style="word-break:break-word">' + (p[2] ? p[1] : esc(p[1])) + '</td></tr>';
+      }).join('') + '</tbody></table>';
+}
+
+function pill(label, cls){
+  return '<span class="pill ' + esc(cls) + '">' + esc(label) + '</span>';
+}
+
+// The encounter table is the point of this dialog: one row per time Protectarr
+// acted on a torrent this IP was in, and what that action turned out to do.
+function encounters(rows){
+  if (!rows.length) return '';
+  return '<h3 style="margin:16px 0 6px; font-size:13px; color:var(--text-head)">Encounter history</h3>'
+    + '<div style="overflow-x:auto"><table class="applist enc-table"><thead><tr>'
+    + '<th>Date</th><th>Release</th><th>Finding</th><th>Remediation Outcome</th>'
+    + '</tr></thead><tbody>'
+    + rows.map(function(h){
+        return '<tr>'
+          + '<td class="hint" style="white-space:nowrap">' + esc(h.observed_at || 'not recorded') + '</td>'
+          + '<td style="word-break:break-word; min-width:220px">' + esc(h.release || '-')
+          + (h.infohash ? '<br><span class="hint" style="white-space:nowrap"><code>'
+              + esc(h.infohash.slice(0, 12)) + '</code></span>' : '')
+          + '</td>'
+          + '<td>' + esc(h.finding || '-') + '</td>'
+          + '<td>' + pill(h.outcome_label, h.outcome_class)
+          + (h.outcome_detail ? '<br><span class="hint">' + esc(h.outcome_detail) + '</span>' : '')
+          + '</td>'
+          + '</tr>';
+      }).join('')
+    + '</tbody></table></div>';
+}
+
+// Two different losses with two different explanations. Retention expiring old
+// detail is a policy working as configured; the legacy ledger overwriting a
+// sighting is data that was destroyed before any policy existed. Saying
+// "pruned" for both would blame the wrong thing.
+function notices(p){
+  var out = [];
+  if (p.details_expired > 0) {
+    // Nothing left at all reads badly as "Showing 0 ...", which opens the
+    // section by counting something that is not there. It gets its own
+    // sentence rather than a pluralisation branch.
+    out.push(p.retained_details === 0
+      ? 'No detailed encounter records retained. Older details have expired '
+        + 'under the configured retention policy.'
+      : 'Showing ' + p.retained_details + ' retained encounter detail'
+        + (p.retained_details === 1 ? '' : 's')
+        + '. Older encounter details have expired under the configured retention policy.');
+  }
+  if (p.legacy_unattributed > 0) {
+    out.push(p.legacy_unattributed + ' legacy sighting'
+      + (p.legacy_unattributed === 1 ? '' : 's')
+      + ' could not be attributed to a specific encounter.');
+  }
+  if (!out.length) return '';
+  return '<p class="hint" style="margin-top:14px">' + out.map(esc).join('<br>') + '</p>';
+}
+
+function showPeer(i){
+  var p = PEERS[i]; if (!p) return;
+  var html = section('Observed', [
+    ['IP address', '<code>' + esc(p.ip) + '</code>', true],
+    ['First seen', p.first_observed],
+    ['Last seen', p.last_observed],
+    ['Encounters', p.encounters_display],
+    ['Distinct torrents', p.distinct_torrents]
+  ]);
+  html += encounters(p.history || []);
+  html += notices(p);
+  document.getElementById('peer_body').innerHTML = html;
+  document.getElementById('peerModal').hidden = false;
+}
+
+function closePeer(){ document.getElementById('peerModal').hidden = true; }
+
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape') closePeer();
+});
+document.getElementById('peerModal').addEventListener('click', function(e){
+  if (e.target === this) closePeer();
+});
+</script>
 {% endblock %}
