@@ -325,6 +325,52 @@ textarea { min-height: 70px; font-family: ui-monospace, Menlo, Consolas, monospa
    an unbreakable header can only make the dialog scroll, never the page. That
    distinction is the one the History table got wrong once already. */
 .enc-table thead th { white-space: nowrap; }
+
+/* ---- History Details dossier ----
+   Single column by default, which is what mobile keeps and what every record
+   used to get at every width: the dialog was a fixed 560px from 1920 down to
+   600, so a full record was 1840px tall and needed 1020px of overlay scrolling
+   on a 900px screen while ~1300px of desktop width sat unused beside it.
+
+   Auto-flow, not named areas. Sections with nothing to show are dropped before
+   render, so "the third section" is Replacement search on one record and
+   Timeline on the next; anything keyed on position would lay out a different
+   record wrongly. Letting sections fill the columns in DOM order also keeps
+   reading order and visual order identical, which explicit placement would
+   not. `align-items: start` stops a short section stretching to its row's
+   height and leaving a table ruled to the bottom of a mostly empty cell.
+
+   Separation is the grid's row gap rather than a margin on each heading, so
+   that two sections sharing a row start on the same line. With the margin the
+   left section began 14px above the right one, because only the very first
+   heading had its top margin removed and the right column's first heading is
+   not it. */
+.detail-grid { display: grid; gap: 16px 26px; }
+.dsec h3 { margin: 0 0 6px; font-size: 13px; color: var(--text-head); }
+.dsec th {
+  width: 190px; text-align: left; vertical-align: top; font-weight: 600;
+}
+.dsec td { word-break: break-word; }
+/* 900px, and it is a measured knee rather than the usual round number. Sweeping
+   the two-column layout down in 20px steps, the tallest stress record sits flat
+   at 1276px from 1920 all the way to 880, then climbs: 1299 at 860, 1367 at 820,
+   1412 at 768. The second record leaves its floor one step earlier, at 880. So
+   900 is the narrowest width at which neither record has started paying for the
+   second column in extra wrapping, and it is above the 720px mobile stack with
+   room to spare. Two columns still beat one at 768 (1412 vs 1840), but by then
+   value cells are down to 166px, and at 600 the layout loses outright: 2051 vs
+   1840. Below the breakpoint this is a plain single-column stack, unchanged. */
+@media (min-width: 900px) {
+  .detail-grid { grid-template-columns: 1fr 1fr; align-items: start; }
+  .dsec.span { grid-column: 1 / -1; }
+  /* Timeline only, and only where the section is full width. Its labels are
+     25-character timestamps, which wrap in a 190px column at any dialog width -
+     they did before this change too. The fix is confined to the media query
+     because the rule is only safe while the section is guaranteed 832px or
+     more; letting it reach the single-column stack would put an unbreakable
+     200px cell in a 343px dialog, which is the History regression again. */
+  .dsec.span th { white-space: nowrap; }
+}
 .modal-head {
   display: flex; align-items: center; padding: 14px 18px; font-size: 15px; font-weight: 600;
   color: var(--text-head); background: var(--card-head); border-bottom: 1px solid var(--border);
@@ -339,6 +385,16 @@ textarea { min-height: 70px; font-family: ui-monospace, Menlo, Consolas, monospa
 table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
 th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
 th { color: var(--text-dim); font-weight: 600; }
+/* Live controls above the activity log. Not `.toolbar`, which is the tab strip
+   with a bottom rule under it; this is one line of controls over a box. */
+.log-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.log-live { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); }
+.log-live input { margin: 0; }
+.log-bar .btn.small { margin-left: auto; }
+/* `.btn` sets `display: inline-flex`, and an explicit display beats the user
+   agent's `[hidden] { display: none }`, so the attribute alone leaves the
+   button on screen. `.modal[hidden]` above exists for the same reason. */
+.log-bar .btn[hidden] { display: none; }
 pre.log {
   background: #181818; border: 1px solid var(--border); border-radius: 4px;
   padding: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;

@@ -146,10 +146,13 @@
 </div>
 
 <div class="modal-overlay" id="detailModal" hidden>
-  <div class="modal">
+  {# Wide for the same reason the peer profile is: this dialog is a dossier of
+     five sections, not a short list of fields, and at 560px it was a 1840px
+     column on a 900px screen. The width is what buys the second column. #}
+  <div class="modal wide">
     <div class="modal-head"><span>Details</span>
       <button type="button" class="modal-x" onclick="closeDetails()">&times;</button></div>
-    <div class="modal-body" id="detail_body"></div>
+    <div class="modal-body detail-grid" id="detail_body"></div>
     <div class="modal-foot">
       <button type="button" class="btn" onclick="closeDetails()">Close</button>
     </div>
@@ -167,14 +170,21 @@ function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c
 // Absent fields are dropped rather than rendered as empty rows. Half this
 // dialog is only meaningful for an *arr remediation, so a category-fallback
 // delete would otherwise be mostly blanks and read like something went wrong.
-function section(title, pairs){
+//
+// The <section> wrapper exists for the grid: a bare <h3> and <table> are two
+// sibling grid items and would be placed in two different cells. Dropping
+// empty sections is also why the columns are filled by auto-flow rather than
+// by naming cells - which section is third depends on the record, so any rule
+// keyed on position would put Timeline in the left column for the half of the
+// records that have no replacement search.
+function section(title, pairs, span){
   var rows = pairs.filter(function(p){ return p[1] !== null && p[1] !== undefined && p[1] !== ''; });
   if (!rows.length) return '';
-  return '<h3 style="margin:16px 0 6px; font-size:13px; color:var(--text-head)">' + esc(title) + '</h3>'
+  return '<section class="dsec' + (span ? ' span' : '') + '"><h3>' + esc(title) + '</h3>'
     + '<table class="applist"><tbody>' + rows.map(function(p){
-        return '<tr><th style="width:190px; text-align:left; vertical-align:top">' + esc(p[0])
-             + '</th><td style="word-break:break-word">' + (p[2] ? p[1] : esc(p[1])) + '</td></tr>';
-      }).join('') + '</tbody></table>';
+        return '<tr><th>' + esc(p[0])
+             + '</th><td>' + (p[2] ? p[1] : esc(p[1])) + '</td></tr>';
+      }).join('') + '</tbody></table></section>';
 }
 
 function showDetails(i){
@@ -217,9 +227,11 @@ function showDetails(i){
     ['Arr message', r.search_message]
   ]);
   if (r.timeline && r.timeline.length > 1){
+    // Full width: it is chronological, its label column is a timestamp rather
+    // than a field name, and it is the one section that grows without bound.
     html += section('Timeline', r.timeline.map(function(t){
       return [t.when, esc(t.what) + (t.note ? ' <span class="hint">' + esc(t.note) + '</span>' : ''), true];
-    }));
+    }), true);
   }
   if (!html) html = '<p class="hint">Nothing further was recorded for this event.</p>';
   document.getElementById('detail_body').innerHTML = html;

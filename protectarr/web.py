@@ -138,6 +138,11 @@ HISTORY_LIMIT = 250
 # API, not for a page the operator is meant to read.
 WATCHLIST_LIMIT = 500
 
+# How often the System page re-reads the activity log while Live is on. A scan
+# runs on a multi-second cycle and the log is prose about what it did, so
+# anything faster is a request per second that returns the same bytes.
+LOG_POLL_MS = 5000
+
 # Encounter outcome -> (label, pill class). The four milestone keys reuse
 # _MILESTONES' wording exactly, because this is the same fact about the same
 # remediation seen from the other end, and two names for it would be two
@@ -604,7 +609,12 @@ def create_app(service):
     def system():
         return page("system.html", active="system",
                     swarm_health=evidence.health(),
-                    swarm_totals=evidence.counts())
+                    swarm_totals=evidence.counts(),
+                    # Live mode re-reads the same ring the page was rendered
+                    # from, so it asks for exactly as much as the ring holds.
+                    # Taken from logs rather than written twice, or a change to
+                    # RING_SIZE would silently start truncating the live view.
+                    log_limit=logs.RING_SIZE, log_poll_ms=LOG_POLL_MS)
 
     @app.route("/watchlist")
     def watchlist():

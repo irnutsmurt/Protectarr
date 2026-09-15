@@ -40,6 +40,81 @@
 
 <div class="card">
   <h2>Recent activity</h2>
-  <div class="body"><pre class="log">{{ log_lines | join('\n') or "(no activity yet)" }}</pre></div>
+  <div class="body">
+    <div class="log-bar">
+      <label class="log-live"><input type="checkbox" id="live_toggle"> Live</label>
+      {# Stays empty while polling succeeds. It is the only thing a failed
+         refresh changes: the lines already on screen are the last ones known
+         to be true, and blanking them would turn a network blip into "nothing
+         is happening", which is the opposite of what it means. #}
+      <span class="hint" id="live_status" role="status" aria-live="polite"></span>
+      <button type="button" class="btn small" id="log_latest" hidden>Jump to latest</button>
+    </div>
+    <pre class="log" id="log_box">{{ log_lines | join('\n') or "(no activity yet)" }}</pre>
+  </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var box = document.getElementById('log_box');
+  var toggle = document.getElementById('live_toggle');
+  var status = document.getElementById('live_status');
+  var jump = document.getElementById('log_latest');
+  // A few pixels of slack. A wheel or trackpad stop almost never lands on the
+  // last pixel, and an exact test would drop out of follow mode constantly.
+  var SLACK = 24, EVERY = {{ log_poll_ms }}, timer = null;
+
+  function atBottom() {
+    return box.scrollHeight - box.scrollTop - box.clientHeight <= SLACK;
+  }
+  function toBottom() { box.scrollTop = box.scrollHeight; }
+  function syncJump() { jump.hidden = atBottom(); }
+
+  // Chronological order is kept, so the newest line is the last one and the
+  // box opens ~480 lines above whatever just happened. This is the whole of
+  // the "position at the newest entries" change: the order is not reversed.
+  toBottom();
+  box.addEventListener('scroll', syncJump);
+
+  function refresh() {
+    fetch('{{ url_for("api_log") }}?limit={{ log_limit }}',
+          {credentials: 'same-origin'})
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (lines) {
+        var text = lines.join('\n');
+        // Replace, never append. The endpoint returns the whole ring on every
+        // call, so the box holds exactly what the ring holds and cannot grow
+        // past it however long a Live session runs. It also means no line is
+        // ever compared against another, so a message that legitimately
+        // repeats is not mistaken for one that was already shown.
+        if (text !== box.textContent) {
+          var follow = atBottom(), top = box.scrollTop;
+          box.textContent = text;
+          // Reading older lines wins over following new ones. Restoring
+          // scrollTop can still shift the view if the ring evicted lines off
+          // the top between polls, which needs more than {{ log_limit }} lines
+          // inside one interval.
+          if (follow) { toBottom(); } else { box.scrollTop = top; }
+        }
+        status.textContent = '';
+        status.style.color = '';
+        syncJump();
+      })
+      .catch(function () {
+        status.textContent = 'Live update failed';
+        status.style.color = 'var(--danger)';
+      });
+  }
+
+  toggle.addEventListener('change', function () {
+    if (timer) { clearInterval(timer); timer = null; }
+    status.textContent = '';
+    status.style.color = '';
+    if (toggle.checked) { refresh(); timer = setInterval(refresh, EVERY); }
+  });
+  jump.addEventListener('click', toBottom);
+})();
+</script>
 {% endblock %}

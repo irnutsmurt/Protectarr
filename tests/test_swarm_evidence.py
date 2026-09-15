@@ -704,13 +704,21 @@ class TestEncounterTableLayout(EvidenceCase):
         self.assertIn("word-break:break-word", self.tpl)
 
     def test_the_wide_modal_variant_is_opt_in(self):
-        """History's dialog keeps the 560px default."""
+        """A dialog has to ask for the width; 560px stays the default.
+
+        History opted in too in 0.5.1, so this no longer checks that History
+        is narrow - that would now be asserting the opposite of the design.
+        What still has to hold is that `wide` is a separate class a dialog
+        chooses, not something `.modal` grew: the Applications dialogs are
+        key/value forms that 940px would only stretch.
+        """
         self.assertIn('<div class="modal wide">', self.tpl)
+        self.assertRegex(self.css, r"\.modal\s*\{[^}]*max-width:\s*560px")
         self.assertRegex(self.css, r"\.modal\.wide\s*\{[^}]*max-width")
-        history = open(os.path.join(
+        apps = open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "protectarr", "templates", "history.html")).read()
-        self.assertIn('<div class="modal">', history)
+            "protectarr", "templates", "applications.html")).read()
+        self.assertIn('<div class="modal">', apps)
 
 
 class TestRetentionNotices(EvidenceCase):
