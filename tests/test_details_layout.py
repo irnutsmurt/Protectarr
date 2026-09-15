@@ -13,23 +13,27 @@ shipped once:
     is the mistake that put the History Details button outside its scroll
     container in 0.3.x
 
-The browser checks below need chromium and are skipped without it, so CI keeps
-running the structural half.
+The browser checks below are skipped when this machine has no working headless
+browser, so CI keeps running the structural half. What counts as "working" is
+probed rather than assumed; see tests/browser.py.
 """
 import os
 import re
+import sys
 import json
 import shutil
 import tempfile
 import unittest
-import subprocess
 
-from protectarr import config as cfg_mod
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import browser  # noqa: E402
+from protectarr import config as cfg_mod  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(ROOT, "protectarr", "templates")
 CSS_PATH = os.path.join(ROOT, "protectarr", "static", "style.css")
-CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
 
 def read(path):
@@ -222,7 +226,7 @@ window.addEventListener('load', function () {
 </script>"""
 
 
-@unittest.skipUnless(CHROMIUM, "needs chromium to lay the dialog out")
+@unittest.skipUnless(browser.BROWSER, browser.REASON)
 class TestDetailGridGeometry(unittest.TestCase):
     """What the rules above actually produce, at a desktop and a phone width.
 
@@ -270,12 +274,8 @@ class TestDetailGridGeometry(unittest.TestCase):
         path = os.path.join(self.tmp, "p%d.html" % width)
         with open(path, "w") as fh:
             fh.write(self.page)
-        r = subprocess.run(
-            [CHROMIUM, "--headless", "--disable-gpu", "--hide-scrollbars",
-             "--window-size=%d,%d" % (width, height),
-             "--virtual-time-budget=4000", "--dump-dom", "file://" + path],
-            capture_output=True, text=True)
-        m = re.search(r'<pre id="M">(.*?)</pre>', r.stdout, re.S)
+        out = browser.dom(path, width, height)
+        m = re.search(r'<pre id="M">(.*?)</pre>', out, re.S)
         self.assertTrue(m and m.group(1).strip(), "the dialog never rendered")
         return json.loads(m.group(1).replace("&quot;", '"')
                           .replace("&amp;", "&").replace("&lt;", "<")

@@ -9,7 +9,8 @@ The behavioural half drives a real browser with `fetch` stubbed, because the
 things worth asserting - that scrolling up is not undone by the next poll, and
 that a failed poll leaves the lines on screen alone - are timing and scroll
 state, which no amount of reading the template can show. It is skipped when
-chromium is missing so CI still runs the rest.
+this machine has no working headless browser, which is probed rather than
+assumed; see tests/browser.py.
 """
 import os
 import re
@@ -19,17 +20,17 @@ import shutil
 import logging
 import tempfile
 import unittest
-import subprocess
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import browser  # noqa: E402
 from protectarr import config as cfg_mod  # noqa: E402
 from protectarr import logs  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE = os.path.join(ROOT, "protectarr", "templates", "system.html")
 CSS_PATH = os.path.join(ROOT, "protectarr", "static", "style.css")
-CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser")
 
 FAKE_KEY = "0123456789abcdef" * 4
 
@@ -338,7 +339,7 @@ window.addEventListener('load', function () {
 </script>"""
 
 
-@unittest.skipUnless(CHROMIUM, "needs chromium to run the viewer")
+@unittest.skipUnless(browser.BROWSER, browser.REASON)
 class TestRestingState(SystemPageCase):
     """The page as it arrives, with nothing touched and no network stubbed.
 
@@ -363,11 +364,8 @@ class TestRestingState(SystemPageCase):
         path = os.path.join(self.dir, "resting.html")
         with open(path, "w") as fh:
             fh.write(page.replace("</body>", RESTING + "</body>"))
-        r = subprocess.run(
-            [CHROMIUM, "--headless", "--disable-gpu", "--hide-scrollbars",
-             "--window-size=1440,900", "--virtual-time-budget=4000",
-             "--dump-dom", "file://" + path], capture_output=True, text=True)
-        m = re.search(r'<pre id="M">(.*?)</pre>', r.stdout, re.S)
+        out = browser.dom(path, 1440, 900)
+        m = re.search(r'<pre id="M">(.*?)</pre>', out, re.S)
         self.assertTrue(m and m.group(1).strip(), "the page never reported")
         TestRestingState.trace = json.loads(
             m.group(1).replace("&quot;", '"').replace("&amp;", "&"))
@@ -391,7 +389,7 @@ class TestRestingState(SystemPageCase):
         self.assertFalse(self.trace["jumpShown"])
 
 
-@unittest.skipUnless(CHROMIUM, "needs chromium to run the viewer")
+@unittest.skipUnless(browser.BROWSER, browser.REASON)
 class TestViewerBehaviour(SystemPageCase):
     """One scripted session, asserted from its trace.
 
@@ -418,13 +416,10 @@ class TestViewerBehaviour(SystemPageCase):
         path = os.path.join(self.dir, "system.html")
         with open(path, "w") as fh:
             fh.write(page)
-        r = subprocess.run(
-            [CHROMIUM, "--headless", "--disable-gpu", "--hide-scrollbars",
-             "--window-size=1440,900", "--virtual-time-budget=40000",
-             "--dump-dom", "file://" + path], capture_output=True, text=True)
-        m = re.search(r'<pre id="M">(.*?)</pre>', r.stdout, re.S)
+        out = browser.dom(path, 1440, 900, budget=40000)
+        m = re.search(r'<pre id="M">(.*?)</pre>', out, re.S)
         self.assertTrue(m and m.group(1).strip(),
-                        "the driver never finished:\n" + r.stdout[-2000:])
+                        "the driver never finished:\n" + out[-2000:])
         TestViewerBehaviour.trace = json.loads(
             m.group(1).replace("&quot;", '"').replace("&amp;", "&")
             .replace("&lt;", "<").replace("&gt;", ">"))
