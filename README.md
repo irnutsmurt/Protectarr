@@ -616,13 +616,13 @@ they were actually running.
 Available image tags:
 
 ```
-ghcr.io/irnutsmurt/protectarr:0.5.0    # exact release, never moves
+ghcr.io/irnutsmurt/protectarr:0.5.1    # exact release, never moves
 ghcr.io/irnutsmurt/protectarr:0.5      # newest patch of that minor line
 ghcr.io/irnutsmurt/protectarr:latest   # newest master build
 ghcr.io/irnutsmurt/protectarr:master   # same thing, named explicitly
 ```
 
-Pin to `0.5.0` or `0.5` if you want to know what you are running. Use `latest`
+Pin to `0.5.1` or `0.5` if you want to know what you are running. Use `latest`
 if you would rather track master and do not mind it moving under you.
 
 The version Protectarr reports comes from one place, `protectarr/__init__.py`.
