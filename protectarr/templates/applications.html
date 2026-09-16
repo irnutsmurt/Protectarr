@@ -5,7 +5,10 @@
   <form method="post" action="{{ url_for('control', action='start') }}"><button class="tool-btn"><span class="ti">▶️</span>Start</button></form>
   <form method="post" action="{{ url_for('control', action='stop') }}"><button class="tool-btn"><span class="ti">⏹️</span>Stop</button></form>
   <button class="tool-btn" type="button" onclick="openApp()"><span class="ti">➕</span>Add Application</button>
-  <button class="tool-btn" type="button" onclick="testAll()"><span class="ti">✔️</span>Test All</button>
+  <button class="tool-btn" type="button" id="testAllBtn" onclick="testAll(this)"><span class="ti">✔️</span>Test All</button>
+  {#- The button's own label carries the progress, but a label that changes
+      under a screen reader is not always announced. This is. -#}
+  <span id="testAllStatus" class="sr-only" role="status" aria-live="polite"></span>
 </div>
 
 <div class="statusbar">
@@ -49,7 +52,13 @@
       <tbody>
         {% for a in cfg.arrs %}
         <tr>
-          <td><span class="st st-unknown" id="st_{{ loop.index0 }}" data-name="{{ a.name }}" title="not tested">●</span></td>
+          {#- `data-index` is how the server finds the stored API key. The key
+              itself is never sent to the browser, so a per-app test carries an
+              index rather than a credential. -#}
+          <td><span class="st st-unknown" id="st_{{ loop.index0 }}"
+                    data-name="{{ a.name }}" data-index="{{ loop.index0 }}"
+                    data-type="{{ a.type }}" data-url="{{ a.url }}"
+                    title="not tested">●</span></td>
           <td><b>{{ a.name }}</b></td>
           <td>{{ a.type }}</td>
           <td class="hint">{{ a.url }}</td>
@@ -221,7 +230,96 @@ function loadAppHealth() {
     }
   });
 }
-function testAll() { if (document.getElementById('qbit_url')) testQbit(); loadAppHealth(); }
+// ---- Test All -------------------------------------------------------------
+// One request per application, in order, so each row can resolve as its own
+// answer arrives rather than all of them changing at once when a single bulk
+// call returns. That is also what makes "Testing 2 of 4" a true statement.
+//
+// The page load still uses the bulk call: it is one request for a view nobody
+// asked to refresh, and there is no progress to report.
+var QBIT_TEST = {
+  // The backend URL, not `web_url`: that one is the browser-facing link for
+  // the "open" button and may not be reachable from this container at all.
+  url: {{ cfg.qbittorrent.url | tojson }},
+  username: {{ cfg.qbittorrent.username | tojson }},
+  verify_ssl: {{ cfg.qbittorrent.verify_ssl | tojson }}
+};
+
+function testTargets() {
+  var out = [];
+  var qs = document.getElementById('qbit_status');
+  if (qs) out.push({el: qs, kind: 'qbit', label: 'qBittorrent'});
+  document.querySelectorAll('[id^=st_]').forEach(function (el) {
+    out.push({el: el, kind: 'arr', label: el.dataset.name,
+              index: Number(el.dataset.index),
+              type: el.dataset.type, url: el.dataset.url});
+  });
+  return out;
+}
+
+function testOne(t) {
+  if (t.kind === 'qbit') {
+    // Password and API key left out on purpose: blank means "use the stored
+    // one", which is how the credential stays on the server.
+    return post('{{ url_for("test_qbit") }}', QBIT_TEST);
+  }
+  return post('{{ url_for("test_arr") }}',
+              {name: t.label, type: t.type, url: t.url, index: t.index});
+}
+
+function testAll(btn) {
+  if (btn.dataset.busy === '1') return;      // a second click does nothing
+  var targets = testTargets();
+  if (!targets.length) return;
+  var live = document.getElementById('testAllStatus');
+  var original = btn.innerHTML;
+  var ok = 0;
+
+  btn.dataset.busy = '1';
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  targets.forEach(function (t) { setStatus(t.el, null); });
+
+  function progress(n) {
+    var text = 'Testing ' + n + ' of ' + targets.length;
+    btn.innerHTML = '<span class="spinner" aria-hidden="true"></span>' + text;
+    live.textContent = text + ': ' + targets[n - 1].label;
+  }
+
+  function step(i) {
+    if (i >= targets.length) return done();
+    var t = targets[i];
+    progress(i + 1);
+    t.el.classList.add('st-testing');
+    return testOne(t).then(function (r) {
+      setStatus(t.el, !!r.ok, r.message);
+      if (r.ok) ok++;
+    }, function (e) {
+      setStatus(t.el, false, String(e));
+    }).then(function () {
+      t.el.classList.remove('st-testing');
+      return step(i + 1);
+    });
+  }
+
+  function done() {
+    var bad = targets.length - ok;
+    var text = bad ? bad + ' of ' + targets.length + ' failed'
+                   : 'All ' + targets.length + ' online';
+    btn.innerHTML = '<span class="ti">' + (bad ? '⚠️' : '✔️') + '</span>' + text;
+    live.textContent = text;
+    // Back to normal on its own. A result that stayed would read as the
+    // button's name by the next time anyone looked at it.
+    setTimeout(function () {
+      btn.innerHTML = original;
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+      btn.dataset.busy = '';
+    }, 2600);
+  }
+
+  step(0);
+}
 loadAppHealth();
 </script>
 {% endblock %}

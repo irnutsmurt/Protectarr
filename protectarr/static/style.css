@@ -748,6 +748,37 @@ textarea { min-height: 70px; font-family: ui-monospace, Menlo, Consolas, monospa
 .st-ok { color: var(--accent); }
 .st-err { color: var(--danger); }
 .st-unknown { color: #666; }
+/* The row currently being tested, during Test All. */
+.st-testing { color: var(--warn); animation: pulse 1s ease-in-out infinite; }
+
+/* ---- Test All progress ----
+   Inline in the button, no overlay: the page stays readable and each row
+   resolves in place as its own answer arrives. */
+.tool-btn[aria-busy="true"] { opacity: .85; cursor: progress; }
+.tool-btn:disabled { cursor: default; }
+.spinner {
+  display: inline-block; width: 14px; height: 14px; flex: 0 0 auto;
+  border: 2px solid var(--border-light); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .7s linear infinite;
+}
+/* In the toolbar the spinner stands where the icon stood, so it takes the
+   icon's box (measured: 23px) rather than its own. A 14px ring there moved the
+   label up nine pixels every time a test started. */
+.tool-btn .spinner { width: 23px; height: 23px; border-width: 2.5px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .35; } }
+/* The count in the label carries the progress on its own, so with motion
+   turned down the ring simply stops rather than being replaced by nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .st-testing { animation: none; }
+}
+
+/* Announced but not drawn. Used for the Test All progress, which a changing
+   button label does not reliably report to a screen reader. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 .iconbtn {
   display: inline-block; padding: 4px 8px; margin-left: 2px; border-radius: 4px;
   background: transparent; border: none; color: var(--text-dim); cursor: pointer;
