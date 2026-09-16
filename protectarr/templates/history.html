@@ -19,7 +19,17 @@
 
     {% if rows %}
     <div style="overflow-x:auto">
-      <table class="applist">
+      {#- `histcards` is the narrow-width behaviour. Measured: with ordinary
+          release names this table cannot compress below 834px, and the card
+          gives it the viewport less 166px, so 1000px is the last width where
+          every column is on screen. Below that the browser was pushing Why,
+          Replacement, Peers and Details past the right edge, where only a
+          sideways drag would find them. Down there the rows become stacked
+          records instead. The `data-label`s are the column headings, reprinted
+          per field once the header row is gone; `h-when` and `h-action` are
+          the two that share the top line. Desktop is untouched - see the
+          media query in style.css. -#}
+      <table class="applist histcards">
         <thead>
           <tr>
             <th>When</th>
@@ -27,7 +37,7 @@
             <th>Why</th>
             <th>Action</th>
             <th>Replacement</th>
-            <th style="text-align:right">Peers</th>
+            <th class="num">Peers</th>
             <th></th>
           </tr>
         </thead>
@@ -41,8 +51,8 @@
             {# Date and time wrap onto separate lines rather than holding a 165px
                floor open for a string nobody needs on one line. This was the
                binding constraint once the Action cell was fixed. #}
-            <td class="hint">{{ e.timestamp }}</td>
-            <td>
+            <td class="hint h-when">{{ e.timestamp }}</td>
+            <td data-label="Release">
               <div><code>{{ t.name }}</code></div>
               <div class="hint">
                 {% if o.instance %}{{ o.instance }}{% endif %}
@@ -51,7 +61,7 @@
                 {% if r.size %} · {{ r.size }}{% endif %}
               </div>
             </td>
-            <td>
+            <td data-label="Why">
               {# The detection event rotated out from under a remediation that
                  is still on the page. Naming that is the point: the row's own
                  evidence is gone, and a bare "-" here next to a confident
@@ -77,7 +87,7 @@
                636px MINIMUM on this column. The table cannot shrink below a
                column's minimum, so every other column was squeezed around it
                and the Details button ended up outside the scroll container. #}
-            <td>
+            <td class="h-action">
               {% if act.result == 'reaped' %}<span class="pill live">reaped</span>
               {% elif act.result == 'would_reap' %}<span class="pill dry">dry run</span>
               {% elif act.result == 'partial' %}<span class="pill dry">partial</span>
@@ -105,9 +115,9 @@
                 {% endif %}
               </div>
             </td>
-            <td class="hint">{{ r.requeue }}</td>
-            <td style="text-align:right">{{ e.peers_harvested or '-' }}</td>
-            <td style="text-align:right">
+            <td class="hint" data-label="Replacement">{{ r.requeue }}</td>
+            <td class="num" data-label="Peers">{{ e.peers_harvested or '-' }}</td>
+            <td class="act">
               <button type="button" class="btn small" onclick="showDetails({{ loop.index0 }})">Details</button>
             </td>
           </tr>

@@ -371,6 +371,119 @@ a.tool-btn { text-decoration: none; }
   .rowcards .btn.small { padding: 7px 14px; font-size: 12.5px; }
 }
 
+/* ---- History rows as records ----
+   Same idea as `.rowcards` above, at a different width and in a different
+   order, so it is a separate block rather than a fourth thing bolted onto
+   that one.
+
+   1000, and the reason is arithmetic rather than taste. The History table has
+   seven columns and will not compress below 834px once the release names are
+   ordinary length (measured on the stress fixture: When 67, Release 298,
+   Why 85, Action 104, Replacement 141, Peers 60, action 79). The History card
+   hands the table the viewport less 166px while the rail is up, so 1000 is the
+   last width where 834 still fits. At 980 the deficit is 20px and two cells
+   are already past the right edge; by 768 it is 232px and six cells.
+
+   A release name is a single unbreakable token, so a 106-character one raises
+   the table's floor to 1366px on its own and it will still scroll sideways on
+   a 1440 desktop. That is pre-existing, it is what the `overflow-x:auto`
+   wrapper is for, and the desktop table is explicitly out of scope here.
+   Note that `overflow-wrap: break-word` does not help a table: it permits a
+   break during layout but does not reduce the cell's min-content contribution,
+   so the column still demands the whole word. Measured - it changed the floor
+   by 0px. Inside a card there is no column to widen, so it works there.
+
+   999 is not any of the other breakpoints: 1200 and 900 are the sidebar's,
+   869 is the Dashboard tables', 1024 and 980 are card grids, 720 is the
+   shell's. */
+.histcards td.act, .histcards td.num, .histcards th.num { text-align: right; }
+
+@media (max-width: 999px) {
+  /* No `td` in here, unlike `.rowcards` above: the row below is a grid, and a
+     grid item is blockified whatever its own `display` said, so a rule for the
+     cells would be dead. Confirmed by mutation - removing it moved nothing.
+     These two are in the same position on this engine, since `display: grid`
+     on the row already takes it out of table layout and leaves the table and
+     tbody boxes wrapping ordinary blocks. They stay because table fixup is the
+     part of layout browsers least agree on, and the cost of saying it out loud
+     is two declarations. */
+  .histcards, .histcards tbody { display: block; }
+  .histcards thead { display: none; }
+  /* A grid, not a plain stack, because the brief's reading order is not the
+     DOM order: When and the outcome pills share the top line and everything
+     else is full width underneath. Grid placement gets that without moving a
+     single cell in the markup, which is what keeps the desktop table honest.
+     Row 1 is claimed explicitly; the remaining cells auto-place in source
+     order, which is already Release, Why, Replacement, Peers, Details. */
+  .histcards tr {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 12px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: #262626; padding: 12px 14px; margin-bottom: 10px;
+  }
+  .histcards tr:last-child { margin-bottom: 0; }
+  .histcards td {
+    border: none; padding: 0; text-align: left;
+    grid-column: 1 / -1; min-width: 0;
+  }
+  /* `minmax(0, 1fr)` above and `min-width: 0` here are the usual guard against
+     a grid item's automatic minimum being its own content - a release name
+     that does not break. Measured, neither is currently doing anything: the
+     `overflow-wrap` below already lets that name wrap, so the automatic
+     minimum never gets large, and swapping the track to `auto auto` or
+     dropping the `min-width` moves nothing. They are kept as the backstop for
+     the rule that IS load bearing; take the wrapping away and the card is as
+     wide as the title again. Mutating the wrapping alone proves that. */
+  .histcards td.h-when { grid-column: 1; grid-row: 1; }
+  .histcards td.h-action { grid-column: 2; grid-row: 1; }
+  /* Both of these are right-aligned in the table and must not stay that way in
+     a card. Peers is a number in a column of numbers up there; down here there
+     is no column, and a lone right-aligned figure reads as belonging to
+     whatever sits beside it rather than to its own label. The outcome cell is
+     worse: right-aligning it strands the pills against the far edge, away from
+     the timestamp they belong to, and leaves two lines of explanation ragged
+     down the left. The Details cell keeps its alignment - a card action does
+     belong at the end. */
+  .histcards td.num, .histcards td.h-action { text-align: left; }
+  .histcards td[data-label]::before {
+    content: attr(data-label); display: block;
+    font-size: 11px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--text-dim); margin-bottom: 3px;
+  }
+  /* `break-word`, not `break-all`: only a token that cannot fit a line of its
+     own is split, so the prose in Why and Replacement still wraps at spaces. */
+  .histcards code, .histcards td { overflow-wrap: break-word; }
+  /* Taller, not wider. The desktop button is 26px high, which is under the
+     44px a fingertip wants. `min-height` rather than more padding because the
+     button is already a centring flex box, so the height is stated once and
+     does not have to be re-derived from the font every time the type changes.
+     Not full width: measured, going full width buys nothing here and spends a
+     whole row of the card on a secondary action. */
+  .histcards .btn.small {
+    min-height: 44px; padding: 8px 18px; font-size: 13px;
+  }
+}
+
+/* The outcome pills stop sharing the top line here. Measured: a row of pills
+   needs 177px, and the widest pair is the worst case rather than a sample
+   because the labels are a closed set - "reaped" next to "Failed Unverified",
+   the longest entry in _MILESTONES. The When cell takes 145px for a timestamp,
+   so the card runs out of room at 470px of viewport. 500 is that floor with
+   headroom, and nothing between the two is a real device width.
+
+   Below this the pills drop to their own full-width line directly under the
+   timestamp. Still the top of the card, still before the release name, so the
+   reading order the page promises survives; it just stops being two-up. */
+@media (max-width: 499px) {
+  .histcards tr { grid-template-columns: minmax(0, 1fr); }
+  .histcards td.h-when { grid-column: 1; grid-row: 1; }
+  .histcards td.h-action { grid-column: 1; grid-row: 2; }
+  .histcards td[data-label="Release"] { grid-row: 3; }
+  .histcards td[data-label="Why"] { grid-row: 4; }
+  .histcards td[data-label="Replacement"] { grid-row: 5; }
+  .histcards td[data-label="Peers"] { grid-row: 6; }
+  .histcards td.act { grid-row: 7; }
+}
+
 /* ---- forms ---- */
 label { display: block; font-size: 12px; color: var(--text-dim); margin: 12px 0 4px; }
 label:first-child { margin-top: 0; }
@@ -552,11 +665,23 @@ pre.log {
   body { display: block; }
   .app-header { position: fixed; top: 0; left: 0; right: 0; }
   .header-logo { width: auto; min-width: 0; border-right: none; padding: 0 18px; justify-content: flex-start; }
+  /* The offset belongs to whatever comes first in the flow, and down here that
+     is the nav, not the content. The header leaves the flow (`fixed`) while
+     the body leaves the grid (`display: block`), so the nav became the first
+     in-flow element and sat at y=0 underneath a 66px header: measured, the
+     first row of links was covered completely and the second was covered by
+     20px of its 42. The 66px the content was reserving did not help it - the
+     content is after the nav, so that margin only opened a 66px gap lower down
+     the page. One offset, on the element that actually needs it, and both
+     symptoms go: the nav clears the header and the gap closes. Every page
+     inherits this because every page is this shell; the login screen has no
+     header or sidebar at all, so it is unaffected. */
   .sidebar {
     position: static; top: 0; width: 100%; height: auto;
     flex-direction: row; flex-wrap: wrap; align-self: auto; overflow: visible;
+    margin-top: var(--header-h);
   }
-  .content { margin-left: 0; margin-top: var(--header-h); max-width: none; }
+  .content { margin-left: 0; margin-top: 0; max-width: none; }
   .nav { display: flex; flex-wrap: wrap; padding: 4px; }
   .nav a { border-left: none; border-bottom: 3px solid transparent; padding: 8px 12px; }
   .nav a.active { border-left: none; border-bottom-color: var(--accent); }

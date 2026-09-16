@@ -516,12 +516,25 @@ class TestHistoryTableLayout(WebCase):
     LONG = ("Les Murs vagabonds / Drifting Home / Ame wo Tsugeru Hyouryuu "
             "Danchi (2022) [Blu-Ray JPN 1080p-HEVC Multi VF / VOSTFR / Eng]")
 
+    @staticmethod
+    def split_table(html):
+        """(everything before the History table, the table itself).
+
+        Matched on the opening tag rather than an exact class string: the table
+        has picked up a second class since this was written and splitting on
+        the literal silently handed these tests the tail of the page, where
+        every assertion about cells passed for want of any cells at all.
+        """
+        m = re.search(r'<table class="applist[^"]*">', html)
+        assert m, "the History table did not render"
+        return html[:m.start()], html[m.end():].split("</table>")[0]
+
     def body(self):
         client = FakeArr()
         self.reap(client)
         intents.reconcile([client])
         html = self.client.get("/history").get_data(as_text=True)
-        return html, html.split('<table class="applist">')[1].split("</table>")[0]
+        return html, self.split_table(html)[1]
 
     def test_no_history_cell_refuses_to_wrap(self):
         """The actual regression. Any nowrap cell can pin the table open."""
@@ -550,7 +563,7 @@ class TestHistoryTableLayout(WebCase):
         scrolls horizontally.
         """
         html, _ = self.body()
-        before = html.split('<table class="applist">')[0]
+        before = self.split_table(html)[0]
         self.assertIn("overflow-x:auto", before.rsplit("<div", 1)[-1])
 
     def test_every_column_survived_the_fix(self):
@@ -583,7 +596,7 @@ class TestHistoryTableLayout(WebCase):
             "redownload": {"decision": "held", "reason": "not_yet_aired"},
         })
         html = self.client.get("/history").get_data(as_text=True)
-        table = html.split('<table class="applist">')[1].split("</table>")[0]
+        table = self.split_table(html)[1]
         self.assertIn(self.LONG, table)
         self.assertEqual([c for c in re.findall(r"<td[^>]*>", table)
                           if "nowrap" in c], [])

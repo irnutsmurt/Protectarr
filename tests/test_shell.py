@@ -259,6 +259,73 @@ class TestMobileIsUnchanged(ShellCase):
         self.assertIn("position: static", m)
 
 
+class TestMobileHeaderClearance(ShellCase):
+    """Who reserves the height of the fixed header.
+
+    Down here the header leaves the flow (`fixed`) and the body leaves the grid
+    (`display: block`), which makes the nav the first in-flow element on the
+    page. It was the *content* that reserved the header's 66px, and the content
+    is not what sits under the header. Measured at 375 before the fix: the
+    first row of nav links was covered completely and the second lost 20 of its
+    42 pixels, while the 66px the content had reserved opened an equal band of
+    dead space further down, where nothing needed one. One misplaced offset,
+    both symptoms.
+
+    Every page is this shell, so the fix belongs here and nowhere else. A
+    second offset on a page would not cancel the first, it would double it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.mobile = media("(max-width: 720px)")
+
+    def test_the_header_is_out_of_the_flow_down_here(self):
+        """The premise of everything below. If the header stops being fixed it
+        occupies its own space again and the clearance becomes a bug."""
+        self.assertIn("position: fixed", block(".app-header", self.mobile))
+
+    def test_the_nav_clears_the_header(self):
+        self.assertIn("margin-top: var(--header-h)",
+                      block(".sidebar", self.mobile))
+
+    def test_the_content_does_not_reserve_it_a_second_time(self):
+        c = block(".content", self.mobile)
+        self.assertIn("margin-top: 0", c)
+        self.assertNotIn("margin-top: var(--header-h)", c)
+
+    def test_the_clearance_is_the_header_variable_not_a_copy_of_its_value(self):
+        """66 written out here is a number that stops tracking --header-h the
+        day the header changes height."""
+        self.assertNotIn("margin-top: 66px", self.mobile)
+
+    def test_only_one_element_reserves_the_header(self):
+        """Two reservations is the gap; none is the overlap."""
+        self.assertEqual(self.mobile.count("margin-top: var(--header-h)"), 1)
+
+    def test_no_page_corrects_the_shell_for_itself(self):
+        """A page-specific offset would be invisible until the shell changed,
+        and would then be wrong on exactly one page."""
+        tpl = os.path.join(REPO, "protectarr", "templates")
+        for name in sorted(os.listdir(tpl)):
+            if not name.endswith(".html"):
+                continue
+            with open(os.path.join(tpl, name)) as fh:
+                src = fh.read()
+            with self.subTest(template=name):
+                self.assertNotIn("--header-h", src)
+                self.assertNotIn("margin-top:66", src.replace(" ", ""))
+
+    def test_every_page_gets_it_because_every_page_is_this_shell(self):
+        """The routes that render the nav, asserted as a set rather than
+        spot-checked, so a new page cannot quietly opt out of the shell."""
+        for route in ("/", "/dashboard", "/history", "/watchlist",
+                      "/settings", "/system"):
+            with self.subTest(route=route):
+                page = self.get(route)
+                self.assertIn('<aside class="sidebar"', page)
+                self.assertIn('<header class="app-header">', page)
+
+
 class TestWideContent(ShellCase):
     def test_data_pages_opt_into_the_wider_shell(self):
         for route in ("/dashboard", "/history", "/watchlist"):
