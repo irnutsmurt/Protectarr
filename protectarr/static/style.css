@@ -218,6 +218,23 @@ a.tool-btn { text-decoration: none; }
 .card .body { padding: 18px 20px; }
 .hint { color: var(--text-dim); font-size: 12px; }
 
+/* A division inside a card, not a card of its own.
+   0.7.0 folded the multi-card Settings sections into one card each, because a
+   card with its own heading reads as something that saves on its own and these
+   do not: one card is one <form> is one POST that overwrites the whole
+   section. `h3.sub` is what an Archive Detection or a Budget gets instead of
+   the card header it used to have. The rule above it is the seam. */
+h3.sub {
+  margin: 26px 0 12px; padding-top: 18px; font-size: 13px; font-weight: 600;
+  letter-spacing: .3px; text-transform: uppercase; color: var(--text-head);
+  border-top: 1px solid var(--border);
+}
+.card .body > h3.sub:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+/* Anchored cards must clear the fixed mobile header when jumped to. */
+.card[id] { scroll-margin-top: calc(var(--header-h) + 12px); }
+/* Right-aligned numeric columns, without an inline style per cell. */
+.applist th.num, .applist td.num { text-align: right; }
+
 /* ---- dashboard ----
    Removed with the 0.6.0 redesign: `.cards`/`.statcard`, and the `.chart` /
    `.legend` SVG chart styles with them. The Dashboard was their only consumer

@@ -28,6 +28,7 @@ Run with:  python -m unittest discover -s tests
 """
 
 import os
+import re
 import sys
 import copy
 import tempfile
@@ -484,17 +485,45 @@ class TestTheRoutesThemselves(BoundaryCase):
     name them. Whatever 0.7.0 does with the navigation, they have to keep
     resolving."""
 
-    def test_every_declared_section_has_a_page_and_a_save(self):
+    def test_every_declared_section_still_renders_and_still_saves(self):
         for name in SECTIONS:
             with self.subTest(section=name):
-                self.assertEqual(
-                    self.client.get(f"/settings/{name}").status_code, 200)
+                r = self.client.get(f"/settings/{name}", follow_redirects=True)
+                self.assertEqual(r.status_code, 200)
+                self.assertIn(f'id="section-{name}"', r.get_data(as_text=True))
                 self.assertEqual(self.post(name).status_code, 200)
 
-    def test_the_table_here_matches_the_sections_the_app_declares(self):
-        """So a section added to `web.py` without a boundary entry fails here
-        rather than shipping unpinned."""
-        self.assertEqual(set(SECTIONS), set(web.SETTINGS_KEYS))
+    def test_the_table_here_matches_the_save_sections_the_app_declares(self):
+        """So a boundary added to `web.py` without an entry here fails rather
+        than shipping unpinned. Asserted against SAVE_SECTIONS, not against the
+        page list: the two are separate tables in 0.7.0 precisely so that
+        moving a card cannot move a config key."""
+        self.assertEqual(set(SECTIONS), set(web.SAVE_SECTIONS))
+
+    def test_a_pre_0_7_0_url_redirects_to_the_card_it_became(self):
+        """Seven public URLs. A bookmark is not allowed to 404, and landing on
+        the top of a long page is not much better than 404ing."""
+        for name in SECTIONS:
+            with self.subTest(section=name):
+                r = self.client.get(f"/settings/{name}")
+                self.assertEqual(r.status_code, 302)
+                where = r.headers["Location"]
+                self.assertTrue(where.endswith(f"#section-{name}"), where)
+                self.assertIn(f"/settings/{web.SECTION_PAGE[name]}", where)
+
+    def test_a_save_returns_to_the_card_that_was_saved(self):
+        for name, spec in SECTIONS.items():
+            with self.subTest(section=name):
+                r = self.client.post(f"/settings/{name}/save",
+                                     data={"csrf_token": "test-csrf-token"})
+                self.assertEqual(r.status_code, 302)
+                self.assertTrue(
+                    r.headers["Location"].endswith(f"#section-{name}"))
+
+    def test_every_save_section_lives_on_exactly_one_page(self):
+        seen = [s for _, _, _, sections in web.SETTINGS_PAGES for s in sections]
+        self.assertEqual(sorted(seen), sorted(web.SAVE_SECTIONS))
+        self.assertEqual(len(seen), len(set(seen)))
 
     def test_an_unknown_section_goes_to_the_index_rather_than_404(self):
         r = self.client.get("/settings/nonsense")
@@ -504,12 +533,132 @@ class TestTheRoutesThemselves(BoundaryCase):
                              data={"csrf_token": "test-csrf-token"})
         self.assertEqual(r.status_code, 302)
 
+    def test_the_settings_index_lists_the_pages_not_the_sections(self):
+        html = self.client.get("/settings").get_data(as_text=True)
+        for key in web.SETTINGS_PAGE_KEYS:
+            self.assertIn(f'href="/settings/{key}"', html)
+        for name in SECTIONS:
+            self.assertNotIn(f'href="/settings/{name}"', html)
+
     def test_there_is_no_page_wide_save_endpoint(self):
         """0.7.0 must not grow one. Seven independent boundaries is the
         contract the pages are being rearranged around."""
         saves = {str(r) for r in self.app.url_map.iter_rules()
                  if "save" in str(r) and "settings" in str(r)}
         self.assertEqual(saves, {"/settings/<section>/save"})
+
+
+# The information architecture, frozen by decision for 0.7.0 rather than
+# derived from anything. Written down here because every other test in this
+# class reads the grouping out of `web.SETTINGS_PAGES`, which makes them agree
+# with whatever that table happens to say. Something has to assert what it is
+# supposed to say, and the only source for that is the decision itself.
+FROZEN_IA = [
+    ("detection-remediation", "Detection & Remediation",
+     ["detection", "safety", "probe"]),
+    ("network", "Network Controls", ["blocklist", "bannedips"]),
+    ("administration", "Administration", ["security", "logging"]),
+]
+
+
+class TestThePagesComposeTheBoundaries(BoundaryCase):
+    """Three pages, seven forms, and no card that implies a Save it does not
+    have.
+
+    This is the structural half of the 0.7.0 consolidation. The rest of this
+    file says a section's POST is unchanged; this says the pages are built out
+    of those POSTs rather than around them.
+    """
+
+    def forms(self, html):
+        """Every settings-save action on the page, in order."""
+        return re.findall(r'<form[^>]+action="/settings/([^/]+)/save"', html)
+
+    def page(self, key):
+        return self.client.get(f"/settings/{key}").get_data(as_text=True)
+
+    def test_the_pages_are_the_frozen_information_architecture(self):
+        """Three pages, in this order, holding these boundaries, under these
+        names. Not derived from the app, so a change to the grouping has to be
+        a change to the agreed design rather than an edit nobody notices."""
+        self.assertEqual([(k, label, sections)
+                          for k, label, _, sections in web.SETTINGS_PAGES],
+                         FROZEN_IA)
+
+    def test_the_frozen_pages_really_render_those_forms(self):
+        """The IA and the rendered page, checked against each other rather than
+        each against the same table."""
+        for key, _, sections in FROZEN_IA:
+            with self.subTest(page=key):
+                self.assertEqual(self.forms(self.page(key)), sections)
+
+    def test_each_page_carries_exactly_its_own_sections_forms(self):
+        for key, _, _, sections in web.SETTINGS_PAGES:
+            with self.subTest(page=key):
+                self.assertEqual(self.forms(self.page(key)), sections)
+
+    def test_no_page_posts_to_a_section_it_does_not_render(self):
+        for key, _, _, sections in web.SETTINGS_PAGES:
+            with self.subTest(page=key):
+                self.assertEqual(set(self.forms(self.page(key))) - set(sections),
+                                 set())
+
+    def test_every_section_gets_its_own_form_element(self):
+        """One card, one form, one boundary. Two cards sharing a form would
+        mean one Save silently owning another card's fields; one card with two
+        forms would be invalid HTML and an ambiguous Save."""
+        for key, _, _, sections in web.SETTINGS_PAGES:
+            with self.subTest(page=key):
+                posted = self.forms(self.page(key))
+                self.assertEqual(len(posted), len(set(posted)))
+                self.assertEqual(len(posted), len(sections))
+
+    def test_each_section_card_is_anchored_by_its_section_key(self):
+        for key, _, _, sections in web.SETTINGS_PAGES:
+            html = self.page(key)
+            for s in sections:
+                with self.subTest(page=key, section=s):
+                    self.assertIn(f'id="section-{s}"', html)
+
+    def test_a_submit_inside_one_card_cannot_reach_another(self):
+        """A stray `form=` attribute, or a card rendered outside its form,
+        would let one Save carry a neighbour's controls into a POST that
+        overwrites a different section."""
+        for key, _, _, sections in web.SETTINGS_PAGES:
+            with self.subTest(page=key):
+                self.assertNotIn("form=", self.page(key))
+
+    def test_the_navigation_offers_three_pages_and_no_sections(self):
+        html = self.client.get("/settings").get_data(as_text=True)
+        subnav = html.split('class="subnav"')[1].split("</div>")[0]
+        for key, label, _, _ in web.SETTINGS_PAGES:
+            self.assertIn(f'href="/settings/{key}"', subnav)
+        for name in SECTIONS:
+            self.assertNotIn(f'href="/settings/{name}"', subnav)
+
+    def test_the_multi_card_sections_became_subsections(self):
+        """Archive Detection, Path Mapping and Budget each had a card header of
+        their own, over a POST they shared with their neighbours. A heading
+        that looks like a card looks like a Save."""
+        html = self.page("detection-remediation")
+        for heading in ("Archive Detection", "Lure Filenames",
+                        "Ownership &amp; Orphan Handling", "Path Mapping",
+                        "Budget"):
+            with self.subTest(heading=heading):
+                self.assertIn(heading, html)
+                self.assertNotIn(f"<h2>{heading}", html)
+
+    def test_the_cards_that_are_not_forms_are_not_pretending_to_be(self):
+        """Log files and the API key are separate cards on purpose: their
+        actions have their own endpoints and are not part of any section's
+        POST. What they must not do is sit inside one."""
+        html = self.page("administration")
+        self.assertIn('id="section-logfiles"', html)
+        self.assertIn('id="section-apikey"', html)
+        for anchor in ('id="section-logfiles"', 'id="section-apikey"'):
+            before = html.split(anchor)[0]
+            self.assertLessEqual(before.count("<form"), before.count("</form>"),
+                                 f"{anchor} is inside an open <form>")
 
 
 if __name__ == "__main__":

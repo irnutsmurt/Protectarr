@@ -13,7 +13,7 @@
     {% if state.running %}<span class="pill on">Running</span>{% else %}<span class="pill off">Stopped</span>{% endif %}
   </span>
   <span class="stat">Mode
-    {% if cfg.dry_run %}<span class="pill dry">Dry run</span> <span class="hint">- <a href="{{ url_for('settings_page', section='safety') }}">switch to Live in Reaping Rules</a></span>{% else %}<span class="pill live">Live</span>{% endif %}
+    {% if cfg.dry_run %}<span class="pill dry">Dry run</span> <span class="hint">- <a href="{{ url_for('settings_page', key='detection-remediation') ~ '#section-safety' }}">switch to Live in Remediation Policy</a></span>{% else %}<span class="pill live">Live</span>{% endif %}
   </span>
   <span class="stat">Last scan: <b>{{ state.last_scan or "-" }}</b></span>
   {% if state.last_error %}<span class="stat" style="color:var(--danger)">Error: {{ state.last_error }}</span>{% endif %}

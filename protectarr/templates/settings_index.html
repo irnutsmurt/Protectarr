@@ -3,8 +3,8 @@
 <div class="card">
   <h2>Settings</h2>
   <div class="body">
-    {% for key, label, icon, desc in settings_sections_full %}
-    <a class="settings-link" href="{{ url_for('settings_page', section=key) }}">
+    {% for key, label, desc, sections in settings_pages %}
+    <a class="settings-link" href="{{ url_for('settings_page', key=key) }}">
       <span class="settings-link-title">{{ label }}</span>
       <span class="hint">{{ desc }}</span>
     </a>

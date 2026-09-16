@@ -1,9 +1,13 @@
-{% extends "base.html" %}
-{% block content %}
+{#- Remediation Policy: one card, one form, one save boundary.
+
+    Reaping Rules and Ownership & Orphan Handling were two cards over one POST.
+    They are subsections now, for the same reason as File Detection: a Save
+    that only carried half of this section would clear the other half. -#}
 <form method="post" action="{{ url_for('save_section', section='safety') }}">
-  <div class="card">
-    <h2>Reaping Rules</h2>
+  <div class="card" id="section-safety">
+    <h2>Remediation Policy</h2>
     <div class="body">
+      <h3 class="sub">Reaping Rules</h3>
       <label class="check"><input type="checkbox" name="dry_run" {% if cfg.dry_run %}checked{% endif %}>
         Dry run - scan and log only, never remove anything <span class="hint">(uncheck to go Live)</span></label>
       <p class="hint" style="margin:-4px 0 14px">Currently: {% if cfg.dry_run %}<b>Dry run</b> - nothing will be reaped.{% else %}<b style="color:var(--danger)">Live</b> - fakes will be removed for real.{% endif %}</p>
@@ -50,12 +54,8 @@
         Requeue after reaping - but only once the episode/movie has aired/released</label>
       <label>Air-date grace (hours)</label>
       <input type="number" name="airdate_grace_hours" min="0" max="8760" value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>Ownership &amp; Orphan Handling</h2>
-    <div class="body">
+      <h3 class="sub">Ownership &amp; Orphan Handling</h3>
       <p class="hint" style="margin-top:0">
         Protectarr remembers which application owned each download. When one
         disappears from that application's queue it becomes an <b>orphan</b>,
@@ -81,19 +81,16 @@
         removes it from the queue, which is the application importing it rather
         than abandoning it.
       </p>
+
+      <button type="submit" class="btn primary">Save</button>
     </div>
   </div>
-
-  <button type="submit" class="btn primary">Save</button>
 </form>
-{% endblock %}
-{% block scripts %}
 <script>
 // Saved selections, so a category or tag that qBittorrent no longer reports is
 // still offered (checked) rather than silently dropped on the next save.
 var SAVED_CATS = {{ cfg.safety.allowed_categories | tojson }};
 var SAVED_TAGS = {{ cfg.safety.allowed_tags | tojson }};
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 function renderBoxes(elId, field, noun, saved, live, err) {
   var el = document.getElementById(elId);
@@ -148,4 +145,3 @@ fetch('{{ url_for("qbit_taxonomy") }}').then(function(r){ return r.json(); }).th
   renderBoxes('tag_boxes', 'allowed_tags', 'tags', SAVED_TAGS, [], String(e));
 });
 </script>
-{% endblock %}

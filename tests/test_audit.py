@@ -401,6 +401,13 @@ class WebCase(AuditCase):
         return self.client.post(f"/settings/{section}/save", data=fields,
                                 follow_redirects=True)
 
+    def page(self, section):
+        """The page a save section renders on, reached the way a pre-0.7.0
+        bookmark reaches it. Following the redirect rather than naming the new
+        URL keeps these tests about the section, not about the grouping."""
+        return self.client.get(f"/settings/{section}",
+                               follow_redirects=True).get_data(as_text=True)
+
 
 class TestNewSettingsAreSaved(WebCase):
     SAFETY = {"safety_mode": "either", "airdate_grace_hours": "0"}
@@ -409,13 +416,13 @@ class TestNewSettingsAreSaved(WebCase):
 
     def test_the_orphan_dwell_field_is_on_the_reaping_rules_page(self):
         """Asserted on the input, not on text that could come from base.html."""
-        html = self.client.get("/settings/safety").get_data(as_text=True)
+        html = self.page("safety")
         self.assertIn('name="orphan_dwell_minutes"', html)
         self.assertIn("Ownership &amp; Orphan Handling", html)
 
     def test_the_orphan_dwell_help_keeps_the_key_semantic(self):
         """"Could not observe" must not read as "confirmed absent"."""
-        html = self.client.get("/settings/safety").get_data(as_text=True)
+        html = self.page("safety")
         self.assertIn("continuously confirmed absent", html)
         self.assertIn("does\n        <b>not</b> count", html)
 
@@ -435,12 +442,12 @@ class TestNewSettingsAreSaved(WebCase):
         self.assertEqual(cfg_mod.load()["safety"]["orphan_dwell_minutes"], 30)
 
     def test_the_no_progress_field_is_on_the_probe_page(self):
-        html = self.client.get("/settings/probe").get_data(as_text=True)
+        html = self.page("probe")
         self.assertIn('name="probe_noprogress"', html)
 
     def test_the_no_progress_help_does_not_claim_whole_file_progress(self):
         """It watches one piece. The file can advance while that piece does not."""
-        html = self.client.get("/settings/probe").get_data(as_text=True)
+        html = self.page("probe")
         self.assertIn("opening piece", html)
         self.assertIn("not the file's overall progress", html)
 
@@ -456,9 +463,8 @@ class TestNewSettingsAreSaved(WebCase):
 
     def test_the_prune_interval_stays_out_of_the_ui(self):
         """Measured cheap and not something a user has a reason to tune."""
-        for path in ("/settings/safety", "/settings/probe"):
-            html = self.client.get(path).get_data(as_text=True)
-            self.assertNotIn("ownership_prune_minutes", html)
+        for section in ("safety", "probe"):
+            self.assertNotIn("ownership_prune_minutes", self.page(section))
 
 
 class TestHistoryPageRenders(WebCase):
@@ -614,8 +620,8 @@ class TestNoCredentialRegression(WebCase):
         intents.reconcile([client])
         secrets = (self.QBIT_PASS, self.SONARR_KEY, "web-test-key-value")
         for path in ("/", "/dashboard", "/history", "/system",
-                     "/settings/safety", "/settings/probe",
-                     "/settings/security", "/settings/logging"):
+                     "/settings/detection-remediation",
+                     "/settings/network", "/settings/administration"):
             html = self.client.get(path).get_data(as_text=True)
             for s in secrets:
                 self.assertNotIn(s, html, f"{s[:8]}... leaked into {path}")

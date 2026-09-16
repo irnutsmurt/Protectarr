@@ -115,6 +115,10 @@ class WebCase(EnvCase):
     def cfg(self):
         return cfg_mod.load()
 
+    def page(self, section):
+        return self.client.get(f"/settings/{section}",
+                               follow_redirects=True).get_data(as_text=True)
+
 
 # --------------------------------------------------------------------------
 # 1. The numbers
@@ -186,12 +190,12 @@ class TestNumericFieldsCannotCrash(WebCase):
     def test_the_form_declares_the_same_ceiling_the_server_enforces(self):
         """A browser that silently disagreed with the server would make the
         clamp look like data loss."""
-        html = self.client.get("/settings/safety").get_data(as_text=True)
+        html = self.page("safety")
         self.assertIn('name="airdate_grace_hours"', html)
         self.assertRegex(html, r'name="airdate_grace_hours"[^>]*max="8760"')
-        html = self.client.get("/settings/blocklist").get_data(as_text=True)
+        html = self.page("blocklist")
         self.assertRegex(html, r'name="bl_interval"[^>]*max="8760"')
-        html = self.client.get("/settings/logging").get_data(as_text=True)
+        html = self.page("logging")
         self.assertRegex(html, r'name="log_retention"[^>]*max="365"')
 
 

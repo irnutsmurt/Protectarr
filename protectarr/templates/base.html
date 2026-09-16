@@ -23,6 +23,16 @@
         }
       } catch (e) { /* private mode, disabled storage: fall back to the CSS */ }
     })();
+
+    // Escape for the handful of places that build markup from server data.
+    // Defined once, here, because the Settings cards that need it now share a
+    // page: three identical copies of this in three partials is three chances
+    // for one of them to drift into being the lenient one.
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c];
+      });
+    }
   </script>
 </head>
 <body>
@@ -80,8 +90,8 @@
       {{ navlink('settings', 'settings_index', 'Settings') }}
       {% if active == 'settings' %}
       <div class="subnav">
-        {% for key, label, icon in settings_sections %}
-        <a href="{{ url_for('settings_page', section=key) }}" class="{{ 'active' if active_sub==key }}">{{ label }}</a>
+        {% for key, label, desc, sections in settings_pages %}
+        <a href="{{ url_for('settings_page', key=key) }}" class="{{ 'active' if active_sub==key }}">{{ label }}</a>
         {% endfor %}
       </div>
       {% endif %}

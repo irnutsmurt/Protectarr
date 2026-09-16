@@ -1,7 +1,11 @@
-{% extends "base.html" %}
-{% block content %}
+{#- Peer IP Blocklist: one card, one form, one save boundary.
+
+    Two submit buttons on purpose. "Save & Update now" is a distinct operational
+    action (it saves, then forces a refresh of the list) and stays useful when
+    nothing has been edited, so it is not folded into the dirty-state controls.
+    The plain Save is the ordinary one. -#}
 <form method="post" action="{{ url_for('save_section', section='blocklist') }}">
-  <div class="card">
+  <div class="card" id="section-blocklist">
     <h2>Peer IP Blocklist</h2>
     <div class="body">
       <p class="hint" style="margin-top:0">Downloads a peer blocklist (default: Naunter/BT_BlockLists) and points qBittorrent's IP filter at it. The file path must be readable by qBittorrent - in Docker, a volume shared by both containers.</p>
@@ -23,8 +27,7 @@
           {% else %}Never updated{% endif %}
         </span>
       </div>
+      <button type="submit" class="btn primary" style="margin-top:14px">Save</button>
     </div>
   </div>
-  <button type="submit" class="btn primary">Save</button>
 </form>
-{% endblock %}

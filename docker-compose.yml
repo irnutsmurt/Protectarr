@@ -8,8 +8,8 @@ services:
       - "8090:8090"
     volumes:
       - ./config:/config
-      # For the optional Content Probe (Settings > Content Probe): Protectarr
-      # has to READ the files qBittorrent is writing. Mount the same download
+      # For the optional Content Probe (Settings > Detection & Remediation):
+      # Protectarr has to READ the files qBittorrent is writing. Mount the same
       # directory here, read-only - the probe only ever reads headers, and it
       # steers qBittorrent through its API, never through the filesystem.
       #
@@ -21,7 +21,7 @@ services:
       # - "/volume2/General Storage/torrents:/General Storage/torrents:ro"
       # Quote the whole entry when the path contains spaces.
       #
-      # Don't guess which path qBittorrent reports. Settings > Content Probe >
+      # Don't guess which path qBittorrent reports. The Content Probe card's
       # "Test against current downloads" prints it for a live download, next to
       # the path Protectarr looked at, so a mismatch is obvious.
       #
@@ -34,7 +34,7 @@ services:
       # - ./blocklist:/blocklist        # and in qBittorrent: - ./blocklist:/blocklist
     environment:
       # Your timezone, so log and history timestamps match your clock. Without
-      # it a container runs on UTC. Can also be set in Settings > Logging.
+      # it a container runs on UTC. Can also be set in Settings > Administration.
       # List of timezone names:
       # https://gist.github.com/alejzeis/ad5827eb14b5c22109ba652a1a267af5
       - TZ=America/Los_Angeles

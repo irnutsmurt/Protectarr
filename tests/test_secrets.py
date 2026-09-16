@@ -138,15 +138,16 @@ class TestNothingLeaksIntoThePage(WebCase):
         self.assertNotIn(QBIT_PASS, html)
 
     def test_the_protectarr_key_is_absent_from_the_security_page(self):
-        html = self.body("/settings/security")
+        html = self.body("/settings/administration")
         self.assertNotIn(WEB_KEY, html)
 
     def test_no_page_anywhere_contains_a_credential(self):
         """A sweep, so a new page that renders cfg wholesale is caught by this
         file rather than by a user reading their own HTML source."""
         secrets = (SONARR_KEY, RADARR_KEY, QBIT_KEY, QBIT_PASS, WEB_KEY)
-        for path in ("/", "/dashboard", "/system", "/settings/security",
-                     "/settings/safety", "/settings/probe", "/settings/logging"):
+        for path in ("/", "/dashboard", "/system",
+                     "/settings/detection-remediation",
+                     "/settings/network", "/settings/administration"):
             r = self.client.get(path)
             if r.status_code != 200:
                 continue

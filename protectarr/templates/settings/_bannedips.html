@@ -1,12 +1,16 @@
-{% extends "base.html" %}
-{% block content %}
+{#- Manual IP Bans: one card, one form, one save boundary.
+
+    The primary action is "Save & Apply" rather than "Save" because that is what
+    the backend does: `save_section()` calls `apply_banned_ips()` on every save
+    of this section, button or not. Naming it Save would describe something
+    other than what happens. -#}
 <form method="post" action="{{ url_for('save_section', section='bannedips') }}">
-  <div class="card">
-    <h2>Manually Banned IPs</h2>
+  <div class="card" id="section-bannedips">
+    <h2>Manual IP Bans</h2>
     <div class="body">
-      <p class="hint" style="margin-top:0">A small hand-curated list of individual IPs pushed to qBittorrent's <em>banned IPs</em> via the API - no file or shared volume required. Applied on Save (and via the button).</p>
+      <p class="hint" style="margin-top:0">A small hand-curated list of individual IPs pushed to qBittorrent's <em>banned IPs</em> via the API - no file or shared volume required.</p>
       <label class="check"><input type="checkbox" name="bip_enabled" {% if cfg.banned_ips.enabled %}checked{% endif %}> Manage qBittorrent's banned IPs</label>
-      <label>Banned IPs <span class="hint">(one per line)</span></label>
+      <label>Banned IPs <span class="hint">(one per line, or comma separated)</span></label>
       <textarea name="bip_ips" placeholder="203.0.113.7&#10;198.51.100.42">{{ cfg.banned_ips.ips | join('\n') }}</textarea>
       <label class="check"><input type="checkbox" name="bip_merge" {% if cfg.banned_ips.merge_existing %}checked{% endif %}> Merge with qBittorrent's existing banned IPs (don't overwrite)</label>
       <div style="margin-top:14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
@@ -17,8 +21,8 @@
           {% else %}Not applied yet{% endif %}
         </span>
       </div>
+      <button type="submit" class="btn primary" style="margin-top:14px">Save &amp; Apply</button>
+      <p class="hint" style="margin-top:8px">Saving pushes the list above to qBittorrent immediately.</p>
     </div>
   </div>
-  <button type="submit" class="btn primary">Save &amp; Apply</button>
 </form>
-{% endblock %}

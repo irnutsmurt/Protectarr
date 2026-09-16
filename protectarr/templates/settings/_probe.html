@@ -1,8 +1,12 @@
-{% extends "base.html" %}
-{% block content %}
+{#- Content Probe: one card, one form, one save boundary.
+
+    Content Probe, Path Mapping and Budget were three cards over one POST. They
+    are subsections now. Budget is the one part of this section that is genuine
+    engine tuning rather than policy, and it is the obvious candidate for the
+    Advanced Tuning disclosure in the next step. -#}
 {% set pr = cfg.detection.probe %}
 <form method="post" action="{{ url_for('save_section', section='probe') }}">
-  <div class="card">
+  <div class="card" id="section-probe">
     <h2>Content Probe <span class="hint" style="font-weight:400">- advanced, opt-in</span></h2>
     <div class="body">
       <p class="hint" style="margin-bottom:12px">
@@ -19,12 +23,8 @@
       </p>
       <label class="check"><input type="checkbox" name="probe_enabled" {% if pr.enabled %}checked{% endif %}>
         Enable the content probe</label>
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>Path Mapping</h2>
-    <div class="body">
+      <h3 class="sub">Path Mapping</h3>
       <p class="hint" style="margin-bottom:12px">
         Protectarr has to be able to <b>read the files qBittorrent is writing</b>, so mount the
         download directory into Protectarr as well. If it lands at the same path qBittorrent
@@ -56,12 +56,8 @@
       <button type="button" class="btn" style="margin-top:10px" onclick="checkPaths()">Test against current downloads</button>
       <p id="probe_msg" class="hint" style="margin-top:8px"></p>
       <div id="probe_rows"></div>
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>Budget</h2>
-    <div class="body">
+      <h3 class="sub">Budget</h3>
       <p class="hint" style="margin-bottom:12px">
         Reading a piece the torrent already happens to have is free, and always allowed. Fetching one
         on purpose means briefly raising one file's priority above the torrent's other files and
@@ -107,16 +103,12 @@
         A scan that has a fake queued for removal reaps it first and probes on the next pass, so
         probing never delays a removal the fast checks already decided on.
       </p>
+
+      <button type="submit" class="btn primary">Save</button>
     </div>
   </div>
-
-  <button type="submit" class="btn primary">Save</button>
 </form>
-{% endblock %}
-{% block scripts %}
 <script>
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
 function mapEmpty() {
   var rows = document.querySelectorAll('#map_rows .maprow');
   document.getElementById('map_empty').style.display = rows.length ? 'none' : '';
@@ -168,4 +160,3 @@ function checkPaths() {
   });
 }
 </script>
-{% endblock %}

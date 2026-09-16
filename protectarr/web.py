@@ -36,19 +36,55 @@ API_ENDPOINTS = {"test_qbit", "test_arr", "preview", "dashboard_data",
                  "api_logfiles", "qbit_taxonomy", "probe_check", "reveal_api_key"}
 BASIC_REALM = 'Basic realm="Protectarr", charset="UTF-8"'
 
-# Settings sub-pages: (key, label, icon, description). qBittorrent + the *arr
-# apps live on their own top-level "Applications" page, not under Settings.
-SETTINGS_SECTIONS_FULL = [
-    ("detection", "Monitored Extensions", "", "File extensions that flag a download for removal (e.g. .exe), and scan scope."),
-    ("safety", "Reaping Rules", "", "Which torrents may be reaped, and air-date-aware requeue."),
-    ("probe", "Content Probe", "", "Check a media file really is media, from its first piece. Off by default."),
-    ("blocklist", "IP Blocklist", "", "Bulk peer IP filter applied to qBittorrent (BT_BlockLists)."),
-    ("bannedips", "Banned IPs", "", "A small hand-curated list of banned IPs (API only)."),
-    ("security", "Security", "", "Authentication for this WebUI."),
-    ("logging", "Logging", "", "Log level, daily rotation and retention, and log downloads."),
+# Two tables, deliberately separate, because they answer different questions.
+#
+# SAVE_SECTIONS is the set of persistence boundaries. Each one is a <form>, a
+# POST, one branch of `save_section()`, and one set of config keys that branch
+# overwrites wholesale. `save_section()` validates against this and nothing
+# else: it has no idea which page a section is rendered on, and it must stay
+# that way, or rearranging the navigation becomes a way to move a config key
+# into a different transaction. tests/test_save_boundaries.py pins what each
+# one owns and what an omitted field does to it.
+#
+# SETTINGS_PAGES is a layout decision: which of those boundaries appear
+# together, in what order, under what heading. Changing it moves cards around
+# and changes URLs. It cannot change what any Save writes.
+#
+# qBittorrent + the *arr apps live on their own top-level "Applications" page,
+# not under Settings.
+SAVE_SECTIONS = ("detection", "safety", "probe", "blocklist", "bannedips",
+                 "security", "logging")
+
+# (key, label, description, [save sections, in render order])
+SETTINGS_PAGES = [
+    ("detection-remediation", "Detection & Remediation",
+     "What flags a download, what Protectarr may do about it, and the optional "
+     "content probe.",
+     ["detection", "safety", "probe"]),
+    ("network", "Network Controls",
+     "Peer filtering applied to qBittorrent: the bulk blocklist, and your own "
+     "banned addresses.",
+     ["blocklist", "bannedips"]),
+    ("administration", "Administration",
+     "Authentication for this WebUI, and logging.",
+     ["security", "logging"]),
 ]
-SETTINGS_SECTIONS = [(k, l, i) for k, l, i, _ in SETTINGS_SECTIONS_FULL]
-SETTINGS_KEYS = {k for k, *_ in SETTINGS_SECTIONS_FULL}
+SETTINGS_PAGE_KEYS = {k for k, *_ in SETTINGS_PAGES}
+# Which page a save section renders on, for the in-page anchor and for sending
+# the pre-0.7.0 URLs somewhere useful instead of 404ing a bookmark.
+SECTION_PAGE = {s: k for k, _, _, sections in SETTINGS_PAGES for s in sections}
+
+
+def section_url(section):
+    """Where the card for `section` lives now.
+
+    One helper, used by the page redirect and by the post-save redirect, so
+    neither `settings_page()` nor `save_section()` carries its own copy of the
+    grouping. `save_section()` calling this is not the same as knowing about
+    pages: it asks where to send the browser afterwards, which is the one
+    presentation question a POST handler cannot avoid.
+    """
+    return url_for("settings_page", key=SECTION_PAGE[section]) + f"#section-{section}"
 
 # Pages whose content is tables and charts, which read better with more width
 # than the 1320px cap that keeps forms readable. Keyed on the page rather than
@@ -705,8 +741,7 @@ def create_app(service):
             wide=active in WIDE_PAGES,
             cfg=cfg_mod.load(), state=service.state,
             arr_types=sorted(ARR_TYPES.keys()),
-            settings_sections=SETTINGS_SECTIONS,
-            settings_sections_full=SETTINGS_SECTIONS_FULL,
+            settings_pages=SETTINGS_PAGES,
             version=__version__, config_path=cfg_mod.CONFIG_PATH,
             user=session.get("user"), basic_user=getattr(g, "auth_user", None),
             api_key_from_env=cfg_mod.api_key_is_from_env(),
@@ -809,28 +844,42 @@ def create_app(service):
     def settings_index():
         return page("settings_index.html", active="settings")
 
-    @app.route("/settings/<section>")
-    def settings_page(section):
-        if section not in SETTINGS_KEYS:
+    @app.route("/settings/<key>")
+    def settings_page(key):
+        """One route for pages and for the old per-section URLs.
+
+        `/settings/administration` and `/settings/security` are the same URL
+        shape, so they cannot be separate rules. A page renders; a section is a
+        bookmark from before 0.7.0 and gets sent to the card it became, anchor
+        and all, rather than to a 404 or to the top of a page it has to be
+        hunted down in.
+        """
+        if key in SECTION_PAGE:
+            return redirect(section_url(key))
+        if key not in SETTINGS_PAGE_KEYS:
             return redirect(url_for("settings_index"))
+        sections = next(s for k, _, _, s in SETTINGS_PAGES if k == key)
+        # Context is gathered per section present, not per page, so moving a
+        # card to another page cannot leave its data behind.
         extra = {}
-        if section == "logging":
+        if "logging" in sections:
             files = logs.list_files(cfg_mod.load())
             for f in files:
                 f["size_h"] = _human_size(f["size"])
                 f["modified_h"] = time.strftime("%Y-%m-%d %H:%M:%S",
                                                 time.localtime(f["modified"]))
-            extra = {"log_files": files,
-                     "log_total_h": _human_size(sum(f["size"] for f in files))}
-        elif section == "probe":
-            extra = {"mapping_rows": _mapping_rows(
+            extra["log_files"] = files
+            extra["log_total_h"] = _human_size(sum(f["size"] for f in files))
+        if "probe" in sections:
+            extra["mapping_rows"] = _mapping_rows(
                 (cfg_mod.load().get("detection") or {}).get("probe", {})
-                .get("path_mappings"))}
-        return page(f"s_{section}.html", active="settings", active_sub=section, **extra)
+                .get("path_mappings"))
+        return page("settings_page.html", active="settings", active_sub=key,
+                    sections=sections, **extra)
 
     @app.route("/settings/<section>/save", methods=["POST"])
     def save_section(section):
-        if section not in SETTINGS_KEYS:
+        if section not in SAVE_SECTIONS:
             return redirect(url_for("settings_index"))
         cfg = cfg_mod.load()
         f = request.form
@@ -982,7 +1031,7 @@ def create_app(service):
                                else "a username" if not username else "a password")
                     flash(f"{method.capitalize()} authentication needs "
                           f"{missing}. Nothing was saved.")
-                    return redirect(url_for("settings_page", section=section))
+                    return redirect(section_url(section))
             auth["method"] = method
             auth["required"] = f.get("auth_required", "enabled")
             auth["username"] = f.get("auth_username", "").strip()
@@ -1002,7 +1051,7 @@ def create_app(service):
         elif section == "blocklist" and f.get("do_update"):
             service.update_blocklist(cfg, force=True)
         flash("Settings saved.")
-        return redirect(url_for("settings_page", section=section))
+        return redirect(section_url(section))
 
     # ---- applications (qBittorrent + the *arr apps live together) ----
     @app.route("/applications/qbit/save", methods=["POST"])
@@ -1259,7 +1308,7 @@ def create_app(service):
     def blocklist_update():
         service.update_blocklist(cfg_mod.load(), force=True)
         flash("IP blocklist update triggered.")
-        return redirect(url_for("settings_page", section="blocklist"))
+        return redirect(section_url("blocklist"))
 
     @app.route("/settings/security/apikey", endpoint="reveal_api_key")
     def reveal_api_key():
@@ -1291,7 +1340,7 @@ def create_app(service):
         else:
             # Auth reads the key per request, so the old one is already dead.
             flash("New API key generated. The previous key no longer works.")
-        return redirect(url_for("settings_page", section="security"))
+        return redirect(section_url("security"))
 
     @app.route("/logs/download/<path:name>")
     def download_log(name):
@@ -1323,7 +1372,7 @@ def create_app(service):
     def bannedips_apply():
         service.apply_banned_ips(cfg_mod.load())
         flash("Manually banned IPs applied to qBittorrent.")
-        return redirect(url_for("settings_page", section="bannedips"))
+        return redirect(section_url("bannedips"))
 
     @app.route("/control/<action>", methods=["POST"])
     def control(action):

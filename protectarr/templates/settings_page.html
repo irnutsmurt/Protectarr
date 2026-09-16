@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{#- One of the three Settings pages. A page is a layout decision: it stacks the
+    cards for the save sections that belong to it, and each of those cards
+    brings its own <form> posting to its own endpoint. There is deliberately no
+    page-level Save, because there is no page-level transaction behind one. -#}
+{% block content %}
+{% for section in sections %}{% include "settings/_" ~ section ~ ".html" %}{% endfor %}
+{% endblock %}

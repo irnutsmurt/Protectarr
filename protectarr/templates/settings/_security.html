@@ -1,7 +1,11 @@
-{% extends "base.html" %}
-{% block content %}
+{#- Security: one card, one form, one save boundary.
+
+    The API key below is a second card on purpose, and it is NOT a second half
+    of this boundary: it has its own endpoint, its own irreversible action, and
+    it is not part of the settings POST at all. A form inside a form would be
+    invalid HTML anyway. -#}
 <form method="post" action="{{ url_for('save_section', section='security') }}">
-  <div class="card">
+  <div class="card" id="section-security">
     <h2>Security</h2>
     <div class="body">
       <div class="row">
@@ -12,6 +16,7 @@
             <option value="basic" {% if cfg.web.auth.method=='basic' %}selected{% endif %}>Basic (browser popup)</option>
             <option value="forms" {% if cfg.web.auth.method=='forms' %}selected{% endif %}>Forms (login page)</option>
           </select>
+          <p class="hint" style="margin-top:6px">Basic and Forms both need a username and a password below. The API key bypasses whichever you pick.</p>
         </div>
         <div>
           <label>Authentication required</label>
@@ -19,23 +24,22 @@
             <option value="enabled" {% if cfg.web.auth.required=='enabled' %}selected{% endif %}>Enabled</option>
             <option value="local_disabled" {% if cfg.web.auth.required=='local_disabled' %}selected{% endif %}>Disabled for Local Addresses</option>
           </select>
+          <p class="hint" style="margin-top:6px">Behind a reverse proxy, "Disabled for Local Addresses" needs the trusted proxies below, or every request looks remote.</p>
         </div>
       </div>
       <div class="row">
         <div><label>Username</label><input type="text" name="auth_username" value="{{ cfg.web.auth.username }}" autocomplete="off"></div>
         <div><label>Password</label><input type="password" name="auth_password" placeholder="{{ '(unchanged)' if cfg.web.auth.password_hash else 'set a password' }}" autocomplete="new-password"></div>
       </div>
-      <label>Trusted proxies <span class="hint">(CIDRs whose X-Forwarded-For is trusted; needed for "Disabled for Local Addresses" behind a reverse proxy)</span></label>
+      <label>Trusted proxies <span class="hint">(CIDRs whose X-Forwarded-For is trusted; comma or newline separated)</span></label>
       <textarea name="trusted_proxies" placeholder="e.g. 172.18.0.0/16">{{ cfg.web.auth.trusted_proxies | join(', ') }}</textarea>
+      <button type="submit" class="btn primary">Save</button>
     </div>
   </div>
-  <button type="submit" class="btn primary">Save</button>
 </form>
 
 {% if cfg.web.api_key %}
-{# Its own card, outside the settings form: a credential you generate, not a
-   field you save - and a form inside a form would be invalid HTML anyway. #}
-<div class="card" style="margin-top:18px">
+<div class="card" id="section-apikey">
   <h2>API key <span class="hint" style="font-weight:400">- for the HTTP API</span></h2>
   <div class="body">
     <p class="hint" style="margin-top:0">
@@ -65,9 +69,6 @@
     {% endif %}
   </div>
 </div>
-{% endif %}
-{% endblock %}
-{% block scripts %}
 {% include "_js.html" %}
 <script>
 // Fetch the key only when asked for. Kept out of _js.html because nothing else
@@ -102,4 +103,4 @@ function copyApiKey(btn) {
   }).catch(() => flash(false));
 }
 </script>
-{% endblock %}
+{% endif %}

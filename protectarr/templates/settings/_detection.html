@@ -1,32 +1,31 @@
-{% extends "base.html" %}
-{% block content %}
+{#- File Detection: one card, one form, one save boundary.
+
+    The three things in here (extensions, lure filenames, archive detection)
+    were three separate cards before 0.7.0, which implied three Saves over a
+    single POST that overwrites all of them together. A card that looks like it
+    persists on its own, over a boundary that does not, is how a partial form
+    erases the fields it did not carry. They are subsections now.
+    See tests/test_save_boundaries.py for what this section owns. -#}
 <form method="post" action="{{ url_for('save_section', section='detection') }}">
-  <div class="card">
-    <h2>Monitored Extensions</h2>
+  <div class="card" id="section-detection">
+    <h2>File Detection</h2>
     <div class="body">
+      <h3 class="sub">Monitored Extensions</h3>
       <p class="hint" style="margin-bottom:12px">A download is flagged for removal when its file list contains any of these
         extensions. Public trackers seed video-sized decoys named like <code>Show.S01E01.1080p….exe</code>.</p>
       <label>Monitored extensions <span class="hint">(comma or newline separated)</span></label>
       <textarea name="blocked_extensions">{{ cfg.detection.blocked_extensions | join(', ') }}</textarea>
       <label class="check"><input type="checkbox" name="only_active" {% if cfg.detection.only_active %}checked{% endif %}>
         Only scan downloading torrents <span class="hint">(recommended - much faster on large libraries)</span></label>
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>Lure Filenames</h2>
-    <div class="body">
+      <h3 class="sub">Lure Filenames</h3>
       <p class="hint" style="margin-bottom:12px">Flag a download when a text-like companion file (readme / nfo / url)
         is <i>named</i> like a fake's instructions - e.g. <code>password.txt</code> or <code>how to download.html</code>.
         Only these note-style files are checked, so a real release titled <code>Password.mkv</code> is never flagged.</p>
       <label>Lure keywords <span class="hint">(matched as substrings of the filename; comma or newline separated)</span></label>
       <textarea name="blocked_name_keywords">{{ cfg.detection.blocked_name_keywords | join(', ') }}</textarea>
-    </div>
-  </div>
 
-  <div class="card">
-    <h2>Archive Detection <span class="hint" style="font-weight:400">- advanced, opt-in</span></h2>
-    <div class="body">
+      <h3 class="sub">Archive Detection <span class="hint" style="font-weight:400">- advanced, opt-in</span></h3>
       <p class="hint" style="margin-bottom:12px">Flags a download that contains <b>only archives</b> (RAR/ZIP/…) with <b>no real media file</b>.
         Legit releases are sometimes packed in RARs - especially on private trackers - so this is
         <b>off by default</b> and only applies to the indexers you list below. Leave the list empty to disable.</p>
@@ -35,18 +34,15 @@
       <label style="margin-top:12px">Apply only to these indexers</label>
       <div id="indexer_boxes" class="checklist"><p class="hint">Loading indexers from your apps…</p></div>
       <p class="hint" style="margin-top:8px">Only <b>*arr-tracked</b> downloads are eligible (that's where the indexer name comes from). Hand-added torrents are never touched by this rule.</p>
+
+      <button type="submit" class="btn primary">Save</button>
     </div>
   </div>
-
-  <button type="submit" class="btn primary">Save</button>
 </form>
-{% endblock %}
-{% block scripts %}
 <script>
 // Saved selections (so we can pre-check, and preserve any indexer that's saved
 // but currently unreachable - never silently drop a user's choice).
 var SAVED_IDX = {{ cfg.detection.archive_detection.indexers | tojson }};
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 function renderIndexerBoxes(indexers, err) {
   var el = document.getElementById('indexer_boxes');
@@ -81,4 +77,3 @@ fetch('{{ url_for("dashboard_data") }}').then(function(r){ return r.json(); }).t
   } else { renderIndexerBoxes([], r.message); }
 }).catch(function(e){ renderIndexerBoxes([], String(e)); });
 </script>
-{% endblock %}

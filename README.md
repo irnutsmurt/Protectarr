@@ -58,7 +58,7 @@ Applications: qBittorrent and each *arr, with a Test button per connection.
 
 <br>
 
-Reaping Rules: which torrents Protectarr may touch. The mode picker is the
+Remediation Policy: which torrents Protectarr may touch. The mode picker is the
 important control here, and `either` is the one that catches orphans - releases
 an application gave up on that keep downloading in qBittorrent anyway.
 
@@ -66,7 +66,7 @@ an application gave up on that keep downloading in qBittorrent anyway.
   <img src="screenshots/reapingrules.png" alt="Protectarr reaping rules, showing the safety mode picker and category allowlist" width="820">
 </p>
 
-Monitored Extensions: the extensions that flag a download, plus the
+File Detection: the extensions that flag a download, plus the
 lure-filename and archive rules.
 
 <p align="center">
@@ -222,7 +222,7 @@ Three Docker gotchas:
   ```
 
   Quote the whole entry if the path has spaces in it. Don't guess which path
-  qBittorrent reports: **Settings → Content Probe → Test against current
+  qBittorrent reports: **Settings → Detection & Remediation → Content Probe → Test against current
   downloads** prints it for a live download, right next to the path Protectarr
   looked at, so a mismatch is obvious at a glance.
 
@@ -265,7 +265,7 @@ where you put it.
 
 ### WebUI authentication
 
-Modelled on the *arr apps (Settings → Security):
+Modelled on the *arr apps (Settings → Administration → Security):
 
 - **Method:** `none`, `basic` (browser popup), or `forms` (login page). Forms and
   Basic both check a username + hashed password; the **API key bypasses** auth.
@@ -285,7 +285,7 @@ username/password. Older versions fall back to the Web UI username/password.
 
 ### Reaping rules
 
-Settings → **Reaping Rules** decides what Protectarr is allowed to touch. The
+Settings → Detection & Remediation → **Remediation Policy** decides what Protectarr is allowed to touch. The
 allowed categories and tags are checkboxes populated from qBittorrent itself, so
 there is no name to mistype; anything already saved stays on the list even if
 qBittorrent is unreachable or the category has since been deleted.
@@ -518,7 +518,7 @@ metadata is lying. See below.
 
 ### Content probe (opt-in)
 
-Settings → **Content Probe**. Off by default.
+Settings → Detection & Remediation → **Content Probe**. Off by default.
 
 It downloads the **first piece of one file** - a few MB out of many GB, typically
 well under 1% of the torrent - and asks whether those bytes really are the format
@@ -580,7 +580,7 @@ next move, not a fix for something broken.
 ## HTTP API
 
 Protectarr exposes a small JSON API, authenticated the same way as the *arr apps.
-A key is auto-generated on first run and shown in **Settings → Security**; send it
+A key is auto-generated on first run and shown in **Settings → Administration → Security**; send it
 as the `X-Api-Key` header (preferred) or `?apikey=` (convenient, but it can land
 in proxy/access logs). With WebUI auth set to `none`, the read endpoints are open
 like the UI - enable Basic/Forms auth to require the key. The `command` endpoint

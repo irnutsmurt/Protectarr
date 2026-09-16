@@ -1,12 +1,14 @@
-{% extends "base.html" %}
-{% block content %}
+{#- Logging: one card, one form, one save boundary.
+
+    The Log files card below is a second card and NOT a second half of this
+    boundary: it is download links, not fields, and nothing in it is posted. -#}
 <form method="post" action="{{ url_for('save_section', section='logging') }}">
-  <div class="card">
+  <div class="card" id="section-logging">
     <h2>Logging</h2>
     <div class="body">
       <div class="row">
         <div>
-          <label>Log level <span class="hint">(file and the log below)</span></label>
+          <label>Log level <span class="hint">(file and the log on the System page)</span></label>
           <select name="log_level">
             {% for lvl in log_levels %}
             <option value="{{ lvl }}" {% if cfg.logging.level == lvl %}selected{% endif %}>{{ lvl | capitalize }}</option>
@@ -60,23 +62,23 @@
         <b>Credentials are redacted from every log</b>, so a file here is safe to attach
         to a GitHub issue.
       </p>
+      <button type="submit" class="btn primary">Save</button>
     </div>
   </div>
-  <button type="submit" class="btn primary">Save</button>
 </form>
 
-<div class="card" style="margin-top:18px">
+<div class="card" id="section-logfiles">
   <h2>Log files <span class="hint" style="font-weight:400">- download for a bug report</span></h2>
   <div class="body">
     {% if log_files %}
     <div style="overflow-x:auto">
       <table class="applist">
-        <thead><tr><th>File</th><th style="text-align:right">Size</th><th>Modified</th><th></th></tr></thead>
+        <thead><tr><th>File</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
         <tbody>
           {% for f in log_files %}
           <tr>
             <td><code>{{ f.name }}</code>{% if f.name.endswith('.gz') %} <span class="hint">(compressed)</span>{% endif %}</td>
-            <td style="text-align:right">{{ f.size_h }}</td>
+            <td class="num">{{ f.size_h }}</td>
             <td class="hint">{{ f.modified_h }}</td>
             <td><a class="btn small" href="{{ url_for('download_log', name=f.name) }}">Download</a></td>
           </tr>
@@ -97,4 +99,3 @@
     {% endif %}
   </div>
 </div>
-{% endblock %}

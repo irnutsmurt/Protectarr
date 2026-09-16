@@ -339,8 +339,9 @@ class TestWideContent(ShellCase):
         key/value table with a fixed 220px label column. Both get worse when
         stretched, so containing a `<table>` is not the test.
         """
-        for route in ("/", "/system", "/settings", "/settings/safety",
-                      "/settings/security", "/settings/logging"):
+        for route in ("/", "/system", "/settings",
+                      "/settings/detection-remediation",
+                      "/settings/network", "/settings/administration"):
             html = self.get(route)
             self.assertRegex(html, r'<main class="content"',
                              f"{route} should keep the readable width")
@@ -409,7 +410,7 @@ class TestNavigationRemainsUsable(ShellCase):
         self.assertIn('href="/settings"', html)
         self.assertIn(":root.nav-collapsed .subnav { display: none; }", css())
         index = self.get("/settings")
-        for key in web.SETTINGS_KEYS:
+        for key in web.SETTINGS_PAGE_KEYS:
             self.assertIn(f'href="/settings/{key}"', index)
 
     def test_svg_icons_are_inline_with_no_external_dependency(self):

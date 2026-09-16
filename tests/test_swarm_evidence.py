@@ -566,11 +566,19 @@ class TestRetention(EvidenceCase):
     def test_retention_is_config_only(self):
         """No Settings UI for these in v0.5.0, by ruling."""
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Every Settings template, walked. This used to list one directory and
+        # match names starting with "settings", which only ever caught
+        # settings_index.html - the seven templates that actually held the
+        # forms were never read. The cards live under templates/settings/ now,
+        # so the walk is both the fix and what the test always meant.
         forms = ""
         tdir = os.path.join(root, "protectarr", "templates")
-        for name in os.listdir(tdir):
-            if name.startswith("settings"):
-                forms += open(os.path.join(tdir, name)).read()
+        for base, _, names in os.walk(tdir):
+            for name in names:
+                if name.startswith("settings") or "settings" in base:
+                    with open(os.path.join(base, name)) as fh:
+                        forms += fh.read()
+        assert "blocked_extensions" in forms, "the settings sweep found no forms"
         for key in ("detail_encounters", "single_profile_days",
                     "recurring_profile_days"):
             self.assertNotIn(key, forms)
