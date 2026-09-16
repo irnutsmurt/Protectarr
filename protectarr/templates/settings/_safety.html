@@ -9,8 +9,24 @@
     the long-form explanations are collapsed. -#}
 <form method="post" action="{{ url_for('save_section', section='safety') }}">
   <div class="card" id="section-safety">
-    <h2>Remediation Policy</h2>
+    <h2>Remediation Policy {% if summaries.safety %}<span class="chip {{ summaries.safety.tone }}">{{ summaries.safety.text }}</span>{% endif %}</h2>
     <div class="body">
+      {#- Derived from saved config only, never from the form. It answers "what
+          will happen right now", so following an unsaved edit would make it
+          answer a question nobody asked. See `_current_policy()` in web.py for
+          the edge cases each row has to survive. -#}
+      <div class="policy">
+        <div class="policy-head">Current policy</div>
+        <dl>
+          {% for label, value, muted in current_policy %}
+          <div class="policy-row{{ ' muted' if muted }}">
+            <dt>{{ label }}</dt>
+            <dd>{{ value }}</dd>
+          </div>
+          {% endfor %}
+        </dl>
+      </div>
+
       <h3 class="sub">Reaping Rules</h3>
       {#- The most consequential switch in the product. Never collapsed, and
           the current state is stated in words underneath rather than left to
@@ -120,7 +136,7 @@
         </div>
       </details>
 
-      <button type="submit" class="btn primary">Save</button>
+      <div class="card-actions"><button type="submit" class="btn primary">Save</button></div>
     </div>
   </div>
 </form>

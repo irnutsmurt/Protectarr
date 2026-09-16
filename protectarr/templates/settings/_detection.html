@@ -11,7 +11,7 @@
     "risky" is a reason to keep a control visible, not to fold it away. -#}
 <form method="post" action="{{ url_for('save_section', section='detection') }}">
   <div class="card" id="section-detection">
-    <h2>File Detection</h2>
+    <h2>File Detection {% if summaries.detection %}<span class="chip {{ summaries.detection.tone }}">{{ summaries.detection.text }}</span>{% endif %}</h2>
     <div class="body">
       <h3 class="sub">Monitored Extensions</h3>
       <label for="d_ext">Monitored extensions</label>
@@ -51,7 +51,8 @@
         </div>
       </details>
 
-      <h3 class="sub">Archive Detection <span class="hint" style="font-weight:400">- advanced, opt-in</span></h3>
+      <h3 class="sub">Archive Detection <span class="hint" style="font-weight:400">- advanced, opt-in</span>
+        {% if summaries.archive %}<span class="chip {{ summaries.archive.tone }}">{{ summaries.archive.text }}</span>{% endif %}</h3>
       {#- Prominent and outside the disclosure on purpose. This is the one
           detector that can act on a legitimate release, and an operator
           switching it on has to meet that sentence before the checkbox. -#}
@@ -75,7 +76,7 @@
         </div>
       </details>
 
-      <button type="submit" class="btn primary">Save</button>
+      <div class="card-actions"><button type="submit" class="btn primary">Save</button></div>
     </div>
   </div>
 </form>

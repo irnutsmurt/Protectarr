@@ -577,6 +577,230 @@ def _mapping_rows(raw):
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Saved-state summaries.
+#
+# Everything below reads `cfg` and nothing else. That is the whole design: a
+# header chip has to describe what is *saved*, and the reliable way to promise
+# that is for the browser to have no way of changing it. Nothing here is
+# recomputed in JavaScript, and the dirty-state code deliberately leaves these
+# alone, so a card with unsaved edits keeps showing the state it would have if
+# you navigated away.
+#
+# The hard part is not the booleans, it is the configurations that are switched
+# on and still do nothing. "Enabled" on a feature that cannot fire is worse
+# than no chip at all, because it answers the operator's question wrongly.
+# ---------------------------------------------------------------------------
+
+# (text, tone). `tone` is on | off | warn, and `warn` means "switched on but
+# not actually doing anything", which is the state worth catching the eye.
+def _chip(text, tone):
+    return {"text": text, "tone": tone}
+
+
+def _summaries(cfg):
+    """Header chips, keyed by the card (or subsection) they sit on."""
+    det = cfg.get("detection") or {}
+    ad = det.get("archive_detection") or {}
+    pr = det.get("probe") or {}
+    bl = cfg.get("ip_blocklist") or {}
+    bip = cfg.get("banned_ips") or {}
+    auth = (cfg.get("web") or {}).get("auth") or {}
+    lg = cfg.get("logging") or {}
+    out = {}
+
+    # Archive detection scoped to an empty indexer list returns [] without ever
+    # looking at the files. Enabled and inert.
+    if not ad.get("enabled"):
+        out["archive"] = _chip("Disabled", "off")
+    elif not [i for i in (ad.get("indexers") or []) if str(i).strip()]:
+        out["archive"] = _chip("Enabled, no indexers", "warn")
+    else:
+        out["archive"] = _chip("Enabled", "on")
+
+    # The probe cannot steer in a dry run (engine.inspect refuses), so an
+    # operator who switched it on while testing gets the free pass only.
+    if not pr.get("enabled"):
+        out["probe"] = _chip("Disabled", "off")
+    elif cfg.get("dry_run", True):
+        out["probe"] = _chip("Enabled, read-only in dry run", "warn")
+    elif not pr.get("steer", True):
+        out["probe"] = _chip("Enabled, no steering", "warn")
+    else:
+        out["probe"] = _chip("Enabled", "on")
+
+    if not bl.get("enabled"):
+        out["blocklist"] = _chip("Disabled", "off")
+    elif not bl.get("apply_to_qbit"):
+        out["blocklist"] = _chip("Enabled, not applied", "warn")
+    else:
+        out["blocklist"] = _chip("Enabled", "on")
+
+    ips = [i for i in (bip.get("ips") or []) if str(i).strip()]
+    if not bip.get("enabled"):
+        out["bannedips"] = _chip("Disabled", "off")
+    elif not ips:
+        out["bannedips"] = _chip("Enabled, list empty", "warn")
+    else:
+        out["bannedips"] = _chip(f"Enabled, {len(ips)} address"
+                                 f"{'' if len(ips) == 1 else 'es'}", "on")
+
+    exts = [e for e in (det.get("blocked_extensions") or []) if str(e).strip()]
+    out["detection"] = _chip(f"{len(exts)} extension"
+                             f"{'' if len(exts) == 1 else 's'} monitored",
+                             "on" if exts else "warn")
+
+    method = auth.get("method", "none")
+    if method == "none":
+        out["security"] = _chip("No authentication", "off")
+    else:
+        label = {"basic": "Basic", "forms": "Forms"}.get(method, method)
+        if auth.get("required") == "local_disabled":
+            out["security"] = _chip(f"{label}, not for local addresses", "warn")
+        else:
+            out["security"] = _chip(label, "on")
+
+    level = str(lg.get("level", "info")).capitalize()
+    if lg.get("file_enabled"):
+        out["logging"] = _chip(f"{level}, writing a file", "on")
+    else:
+        out["logging"] = _chip(f"{level}, no file", "off")
+
+    out["safety"] = _chip(_policy_scope(cfg)[0],
+                          "off" if cfg.get("dry_run", True) else "on")
+    return out
+
+
+def _policy_scope(cfg):
+    """(short scope label, whether the allowlist is consulted at all)."""
+    mode = (cfg.get("safety") or {}).get("mode", "arr_tracked")
+    return {
+        "arr_tracked": ("Arr-tracked only", False),
+        "either": ("Arr + category fallback", True),
+        "both": ("Arr and category matched", True),
+        "allowlist": ("Category matched only", True),
+    }.get(mode, (f"Unknown mode {mode!r}", True))
+
+
+def _airdate_capable(cfg):
+    """Do any configured applications have a release date to gate on?
+
+    Lidarr and Readarr have no air-date resource at all, so `airdate_status()`
+    can only ever answer "unknown" for them, and every replacement search is
+    held. On an install with only those two, "Replacement search: enabled" is
+    true and useless, which is exactly the kind of accurate-but-misleading row
+    this box is supposed to avoid.
+
+    Returns None when nothing is configured yet, so the row can say that
+    instead of guessing.
+    """
+    arrs = cfg.get("arrs") or []
+    if not arrs:
+        return None
+    for a in arrs:
+        meta = ARR_TYPES.get(str(a.get("type", "")).lower())
+        if meta and (meta.get("airdate") or (None,))[0]:
+            return True
+    return False
+
+
+def _current_policy(cfg):
+    """The firewall-style summary, as ordered (label, value, muted) rows.
+
+    `muted` marks a row the current mode makes inapplicable. Those rows are
+    kept and labelled rather than dropped: "not used in this mode" is an answer,
+    and a row that silently disappears looks like a setting that was lost.
+    """
+    safety = cfg.get("safety") or {}
+    mode = safety.get("mode", "arr_tracked")
+    dry = cfg.get("dry_run", True)
+    scope, uses_allowlist = _policy_scope(cfg)
+    cats = [c for c in (safety.get("allowed_categories") or []) if str(c).strip()]
+    tags = [t for t in (safety.get("allowed_tags") or []) if str(t).strip()]
+    requeue = safety.get("requeue_after_airdate", True)
+    grace = safety.get("airdate_grace_hours", 0)
+    dwell = safety.get("orphan_dwell_minutes", 10)
+    rows = []
+
+    rows.append(("Mode",
+                 "Dry run, nothing is removed" if dry
+                 else "Live, fakes are removed for real", False))
+    rows.append(("Scope", scope, False))
+
+    # The allowlist matches on category OR tag, so naming only one of them
+    # would describe a narrower rule than the one in force.
+    if not uses_allowlist:
+        rows.append(("Category fallback",
+                     "Not used in this mode. Your selection is kept.", True))
+    elif not cats and not tags:
+        rows.append(("Category fallback",
+                     "Nothing selected, so nothing matches", False))
+    else:
+        parts = []
+        if cats:
+            parts.append("Categories: " + ", ".join(cats))
+        if tags:
+            parts.append("Tags: " + ", ".join(tags))
+        rows.append(("Category fallback", " · ".join(parts), False))
+
+    # The dwell only gates the direct-delete path, and only `either` and
+    # `allowlist` have one. Under `arr_tracked` and `both` an orphan has no
+    # owning application, so nothing reaches the dwell at all.
+    if mode in ("arr_tracked", "both"):
+        rows.append(("Orphan handling",
+                     "Not used in this mode. Only an application can act.", True))
+    elif dwell <= 0:
+        rows.append(("Orphan handling",
+                     "Act as soon as absence is confirmed", False))
+    else:
+        rows.append(("Orphan handling",
+                     f"Act after {dwell} minute{'' if dwell == 1 else 's'} "
+                     f"of confirmed absence", False))
+
+    # Never unconditional: it needs the removal to have been verified, and a
+    # category-fallback delete has no application to search with.
+    if not requeue:
+        rows.append(("Replacement search", "Never. Blocklist only.", False))
+    else:
+        capable = _airdate_capable(cfg)
+        if capable is None:
+            value = ("After a verified removal, once the release is out. "
+                     "No applications configured yet.")
+        elif capable is False:
+            value = ("Always held: the configured application types have no "
+                     "release date to check.")
+        else:
+            value = "After a verified removal, once the release is out"
+        if mode in ("either", "allowlist"):
+            value += (". Downloads deleted by category fallback are never "
+                      "replaced, because no application owns them.")
+        rows.append(("Replacement search", value, False))
+
+    if not requeue:
+        rows.append(("Air-date constraint",
+                     "Not used while the replacement search is off", True))
+    elif grace <= 0:
+        rows.append(("Air-date constraint", "As soon as it has aired", False))
+    else:
+        rows.append(("Air-date constraint",
+                     f"{grace} hour{'' if grace == 1 else 's'} after it has "
+                     f"aired", False))
+
+    # Profiles can turn a blocking finding into a warn or an allow, and none of
+    # the four places they can be set is in this UI. Shown only when something
+    # is actually set, so the usual case stays quiet.
+    det = cfg.get("detection") or {}
+    custom = (det.get("profile") and det["profile"] != "media"
+              or det.get("profiles")
+              or safety.get("category_profiles")
+              or any(a.get("profile") for a in (cfg.get("arrs") or [])))
+    if custom:
+        rows.append(("Judgement",
+                     "Custom profiles are set in config.yaml, so some findings "
+                     "may be downgraded to a warning or allowed.", False))
+    return rows
+
+
 def _human_size(n):
     """Bytes -> the sizes people recognise from a torrent client."""
     try:
@@ -861,7 +1085,10 @@ def create_app(service):
         sections = next(s for k, _, _, s in SETTINGS_PAGES if k == key)
         # Context is gathered per section present, not per page, so moving a
         # card to another page cannot leave its data behind.
-        extra = {}
+        saved = cfg_mod.load()
+        extra = {"summaries": _summaries(saved)}
+        if "safety" in sections:
+            extra["current_policy"] = _current_policy(saved)
         if "logging" in sections:
             files = logs.list_files(cfg_mod.load())
             for f in files:

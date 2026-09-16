@@ -10,7 +10,8 @@
 {% set pr = cfg.detection.probe %}
 <form method="post" action="{{ url_for('save_section', section='probe') }}">
   <div class="card" id="section-probe">
-    <h2>Content Probe <span class="hint" style="font-weight:400">- advanced, opt-in</span></h2>
+    <h2>Content Probe <span class="hint" style="font-weight:400">- advanced, opt-in</span>
+      {% if summaries.probe %}<span class="chip {{ summaries.probe.tone }}">{{ summaries.probe.text }}</span>{% endif %}</h2>
     <div class="body">
       <label class="check"><input type="checkbox" name="probe_enabled" {% if pr.enabled %}checked{% endif %}>
         Enable the content probe</label>
@@ -42,7 +43,10 @@
       </details>
 
       <h3 class="sub">Path Mapping</h3>
-      <div id="map_rows">
+      {#- Rows can be added and removed, which no form default can
+          describe, so Discard puts back a clone taken at page load.
+          Path mappings, not secrets. -#}
+      <div id="map_rows" data-restore-on-discard>
         {% for m in mapping_rows %}
         <div class="row maprow">
           <div><label>Path qBittorrent reports</label>
@@ -131,7 +135,7 @@
         </div>
       </details>
 
-      <button type="submit" class="btn primary">Save</button>
+      <div class="card-actions"><button type="submit" class="btn primary">Save</button></div>
     </div>
   </div>
 </form>
@@ -160,6 +164,9 @@ function currentMappings() {
   }).filter(function(m){ return m.from && m.to; });
 }
 mapEmpty();
+// Discard swaps the whole container, so the empty-state note has to be
+// recomputed against the rows that came back.
+document.addEventListener('protectarr:restored', mapEmpty);
 
 function checkPaths() {
   var msg = document.getElementById('probe_msg');

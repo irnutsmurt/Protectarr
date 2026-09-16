@@ -4,7 +4,7 @@
     boundary: it is download links, not fields, and nothing in it is posted. -#}
 <form method="post" action="{{ url_for('save_section', section='logging') }}">
   <div class="card" id="section-logging">
-    <h2>Logging</h2>
+    <h2>Logging {% if summaries.logging %}<span class="chip {{ summaries.logging.tone }}">{{ summaries.logging.text }}</span>{% endif %}</h2>
     <div class="body">
       <div class="row">
         <div>
@@ -70,7 +70,7 @@
       </div>
       <p class="hint"><b>Credentials are redacted from every log</b>, so a file here is safe
         to attach to a GitHub issue.</p>
-      <button type="submit" class="btn primary">Save</button>
+      <div class="card-actions"><button type="submit" class="btn primary">Save</button></div>
     </div>
   </div>
 </form>

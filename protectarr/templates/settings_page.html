@@ -6,3 +6,7 @@
 {% block content %}
 {% for section in sections %}{% include "settings/_" ~ section ~ ".html" %}{% endfor %}
 {% endblock %}
+{% block scripts %}
+{#- Loaded here, not in base.html: only Settings has cards that can be dirty. -#}
+<script src="{{ url_for('static', filename='settings.js') }}"></script>
+{% endblock %}

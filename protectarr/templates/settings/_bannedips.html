@@ -4,9 +4,10 @@
     the backend does: `save_section()` calls `apply_banned_ips()` on every save
     of this section, button or not. Naming it Save would describe something
     other than what happens. -#}
-<form method="post" action="{{ url_for('save_section', section='bannedips') }}">
+<form method="post" action="{{ url_for('save_section', section='bannedips') }}"
+      data-save-label="Save &amp; Apply">
   <div class="card" id="section-bannedips">
-    <h2>Manual IP Bans</h2>
+    <h2>Manual IP Bans {% if summaries.bannedips %}<span class="chip {{ summaries.bannedips.tone }}">{{ summaries.bannedips.text }}</span>{% endif %}</h2>
     <div class="body">
       <label class="check"><input type="checkbox" name="bip_enabled" {% if cfg.banned_ips.enabled %}checked{% endif %}> Manage qBittorrent's banned IPs</label>
       <p class="hint">A small hand-curated list pushed to qBittorrent's <em>banned IPs</em> through its API. No file or shared volume required.</p>
@@ -36,7 +37,7 @@
           {% else %}Not applied yet{% endif %}
         </span>
       </div>
-      <button type="submit" class="btn primary" style="margin-top:14px">Save &amp; Apply</button>
+      <div class="card-actions"><button type="submit" class="btn primary">Save &amp; Apply</button></div>
       <p class="hint" style="margin-top:8px">Saving pushes the list above to qBittorrent immediately.</p>
     </div>
   </div>

@@ -6,7 +6,7 @@
     invalid HTML anyway. -#}
 <form method="post" action="{{ url_for('save_section', section='security') }}">
   <div class="card" id="section-security">
-    <h2>Security</h2>
+    <h2>Security {% if summaries.security %}<span class="chip {{ summaries.security.tone }}">{{ summaries.security.text }}</span>{% endif %}</h2>
     <div class="body">
       <div class="row">
         <div>
@@ -33,7 +33,7 @@
       </div>
       <label>Trusted proxies <span class="hint">(CIDRs whose X-Forwarded-For is trusted; comma or newline separated)</span></label>
       <textarea name="trusted_proxies" placeholder="e.g. 172.18.0.0/16">{{ cfg.web.auth.trusted_proxies | join(', ') }}</textarea>
-      <button type="submit" class="btn primary">Save</button>
+      <div class="card-actions"><button type="submit" class="btn primary">Save</button></div>
     </div>
   </div>
 </form>

@@ -11,7 +11,7 @@
     sake. -#}
 <form method="post" action="{{ url_for('save_section', section='blocklist') }}">
   <div class="card" id="section-blocklist">
-    <h2>Peer IP Blocklist</h2>
+    <h2>Peer IP Blocklist {% if summaries.blocklist %}<span class="chip {{ summaries.blocklist.tone }}">{{ summaries.blocklist.text }}</span>{% endif %}</h2>
     <div class="body">
       <label class="check"><input type="checkbox" name="bl_enabled" {% if cfg.ip_blocklist.enabled %}checked{% endif %}> Enable IP blocklist</label>
       <p class="hint">Downloads a peer blocklist and points qBittorrent's IP filter at it.</p>
@@ -50,9 +50,14 @@
         </div>
       </details>
 
-      <div style="margin-top:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-        <button type="submit" class="btn primary">Save</button>
+      <div class="card-actions"><button type="submit" class="btn primary">Save</button></div>
+      {#- Not part of the unsaved-changes controls. Refreshing the list is
+          useful when nothing has been edited, so it has to stay reachable on a
+          clean card. Clicking it with edits pending saves them first, which is
+          what it has always done. -#}
+      <div class="card-ops">
         <button type="submit" name="do_update" value="1" class="btn">Save &amp; Update now</button>
+        <span class="hint">Fetches the list again now, whether or not anything changed.</span>
       </div>
       <p class="hint" style="margin-top:8px">
         {% set b = state.blocklist %}
