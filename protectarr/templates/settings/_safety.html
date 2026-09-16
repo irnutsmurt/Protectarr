@@ -2,32 +2,32 @@
 
     Reaping Rules and Ownership & Orphan Handling were two cards over one POST.
     They are subsections now, for the same reason as File Detection: a Save
-    that only carried half of this section would clear the other half. -#}
+    that only carried half of this section would clear the other half.
+
+    Core policy stays exposed: dry run, scope, the allowlist, requeue, and the
+    orphan dwell value. Only the air-date grace is Advanced Tuning, and only
+    the long-form explanations are collapsed. -#}
 <form method="post" action="{{ url_for('save_section', section='safety') }}">
   <div class="card" id="section-safety">
     <h2>Remediation Policy</h2>
     <div class="body">
       <h3 class="sub">Reaping Rules</h3>
+      {#- The most consequential switch in the product. Never collapsed, and
+          the current state is stated in words underneath rather than left to
+          be read off a checkbox. -#}
       <label class="check"><input type="checkbox" name="dry_run" {% if cfg.dry_run %}checked{% endif %}>
-        Dry run - scan and log only, never remove anything <span class="hint">(uncheck to go Live)</span></label>
+        Dry run - scan and log only, never remove anything</label>
       <p class="hint" style="margin:-4px 0 14px">Currently: {% if cfg.dry_run %}<b>Dry run</b> - nothing will be reaped.{% else %}<b style="color:var(--danger)">Live</b> - fakes will be removed for real.{% endif %}</p>
-      <label>Which torrents may be reaped?</label>
-      <select name="safety_mode" id="safety_mode">
+
+      <label for="s_mode">Which torrents may be reaped?</label>
+      <select name="safety_mode" id="s_mode">
         <option value="arr_tracked" {% if cfg.safety.mode=='arr_tracked' %}selected{% endif %}>arr_tracked - only torrents an application is tracking (protects hand-added downloads)</option>
         <option value="either" {% if cfg.safety.mode=='either' %}selected{% endif %}>either - tracked OR in the allowlist (catches orphans an application gave up on)</option>
         <option value="both" {% if cfg.safety.mode=='both' %}selected{% endif %}>both - tracked AND in the allowlist</option>
         <option value="allowlist" {% if cfg.safety.mode=='allowlist' %}selected{% endif %}>allowlist - any torrent in an allowed category/tag</option>
       </select>
-      <p class="hint" style="margin-top:6px">
-        <b>either</b> covers a gap the others leave open. When an application fails a
-        release it drops it from its queue but the torrent can keep downloading in
-        qBittorrent, owned by nobody - <code>arr_tracked</code> will not touch it and
-        the payload finishes anyway. In <b>either</b> mode a tracked torrent is still
-        handed back to its application (which blocklists it and decides about
-        requeueing), and an orphan in an allowed category is deleted from
-        qBittorrent directly.
-      </p>
-      <p class="hint" id="allow_note" style="margin-top:12px"></p>
+      <p class="hint" id="allow_note"></p>
+
       <div class="row">
         <div>
           <label>Allowed categories</label>
@@ -50,37 +50,75 @@
           </div>
         </div>
       </div>
+      <p class="hint">A torrent matches the allowlist if its category <b>or</b> any of its tags is selected.</p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">
+            <b>either</b> covers a gap the others leave open. When an application fails a
+            release it drops it from its queue but the torrent can keep downloading in
+            qBittorrent, owned by nobody - <code>arr_tracked</code> will not touch it and
+            the payload finishes anyway. In <b>either</b> mode a tracked torrent is still
+            handed back to its application (which blocklists it and decides about
+            requeueing), and an orphan in an allowed category is deleted from
+            qBittorrent directly.
+          </p>
+          <p class="hint">Handing a download back to its application is always preferred, because
+            that is the path that blocklists the release so the same fake is not grabbed again.
+            Deleting from qBittorrent can only stop this copy.</p>
+        </div>
+      </details>
+
       <label class="check" style="margin-top:14px"><input type="checkbox" name="requeue_after_airdate" {% if cfg.safety.requeue_after_airdate %}checked{% endif %}>
-        Requeue after reaping - but only once the episode/movie has aired/released</label>
-      <label>Air-date grace (hours)</label>
-      <input type="number" name="airdate_grace_hours" min="0" max="8760" value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
+        Search for a replacement after reaping</label>
+      <p class="hint">Only once the episode or movie has actually aired or been released, and only
+        after the removal has been verified. Unchecked means blocklist only, never search.</p>
 
       <h3 class="sub">Ownership &amp; Orphan Handling</h3>
-      <p class="hint" style="margin-top:0">
-        Protectarr remembers which application owned each download. When one
-        disappears from that application's queue it becomes an <b>orphan</b>,
-        and only then can the category fallback act on it.
-      </p>
-      <label>Orphan dwell (minutes)</label>
-      <input type="number" name="orphan_dwell_minutes" min="0" max="1440"
+      <label for="s_dwell">Orphan dwell (minutes)</label>
+      <input type="number" id="s_dwell" name="orphan_dwell_minutes" min="0" max="1440"
              value="{{ cfg.safety.orphan_dwell_minutes }}" style="max-width:120px">
-      <p class="hint" style="margin-top:6px">
+      <p class="hint">
         How long a previously application-owned download must remain
         <b>continuously confirmed absent</b> before category fallback may act
         on it.
       </p>
-      <p class="hint">
-        Confirmed absence means Protectarr successfully read that application's
-        queue and the download was not in it. A queue it could not reach does
-        <b>not</b> count and does not advance the clock - an application that is
-        down or restarting never ages its own downloads into orphans. If the
-        download reappears the clock resets to zero.
-      </p>
-      <p class="hint">
-        A download that has finished is never an orphan either: succeeding also
-        removes it from the queue, which is the application importing it rather
-        than abandoning it.
-      </p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">
+            Protectarr remembers which application owned each download. When one
+            disappears from that application's queue it becomes an <b>orphan</b>,
+            and only then can the category fallback act on it.
+          </p>
+          <p class="hint">
+            Confirmed absence means Protectarr successfully read that application's
+            queue and the download was not in it. A queue it could not reach does
+            <b>not</b> count and does not advance the clock - an application that is
+            down or restarting never ages its own downloads into orphans. If the
+            download reappears the clock resets to zero.
+          </p>
+          <p class="hint">
+            A download that has finished is never an orphan either: succeeding also
+            removes it from the queue, which is the application importing it rather
+            than abandoning it.
+          </p>
+        </div>
+      </details>
+
+      <details class="adv">
+        <summary>Advanced tuning</summary>
+        <div class="disclosure">
+          <label for="s_grace">Air-date grace (hours)</label>
+          <input type="number" id="s_grace" name="airdate_grace_hours" min="0" max="8760"
+                 value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
+          <p class="hint">How long past the air or release time to wait before a replacement search
+            is allowed. Web releases often land a little after the broadcast slot. Has no effect
+            unless the replacement search above is on.</p>
+        </div>
+      </details>
 
       <button type="submit" class="btn primary">Save</button>
     </div>
@@ -120,7 +158,7 @@ function renderBoxes(elId, field, noun, saved, live, err) {
 }
 
 function updateAllowNote() {
-  var mode = document.getElementById('safety_mode').value;
+  var mode = document.getElementById('s_mode').value;
   var el = document.getElementById('allow_note');
   if (mode === 'arr_tracked') {
     el.innerHTML = 'The allowlist is <b>not used</b> in <code>arr_tracked</code> mode - ownership by an application decides everything. Your selection is kept for when you switch modes.';
@@ -132,7 +170,7 @@ function updateAllowNote() {
     el.innerHTML = 'Only torrents matching one of these may be reaped. Nothing outside the allowlist is ever touched.';
   }
 }
-document.getElementById('safety_mode').addEventListener('change', updateAllowNote);
+document.getElementById('s_mode').addEventListener('change', updateAllowNote);
 updateAllowNote();
 
 fetch('{{ url_for("qbit_taxonomy") }}').then(function(r){ return r.json(); }).then(function(r){

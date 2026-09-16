@@ -1,42 +1,47 @@
 {#- Content Probe: one card, one form, one save boundary.
 
     Content Probe, Path Mapping and Budget were three cards over one POST. They
-    are subsections now. Budget is the one part of this section that is genuine
-    engine tuning rather than policy, and it is the obvious candidate for the
-    Advanced Tuning disclosure in the next step. -#}
+    are subsections now.
+
+    Budget is the whole of this section's Advanced Tuning: steering limits,
+    timeouts and ceilings, none of which an operator has to touch to use the
+    probe. Path Mapping stays exposed, because without it the probe silently
+    finds nothing, which is the opposite of an advanced concern. -#}
 {% set pr = cfg.detection.probe %}
 <form method="post" action="{{ url_for('save_section', section='probe') }}">
   <div class="card" id="section-probe">
     <h2>Content Probe <span class="hint" style="font-weight:400">- advanced, opt-in</span></h2>
     <div class="body">
-      <p class="hint" style="margin-bottom:12px">
-        Everything else Protectarr does reads the torrent's <i>file list</i>, which is why it
-        costs no bandwidth and answers in seconds. That cannot catch a payload wearing a real
-        <code>.mkv</code> or <code>.mp4</code> extension, because nothing in the metadata is lying.
-        The probe downloads the <b>first piece of one file</b> - a few MB out of many GB - and checks
-        the bytes really are the format the name claims.
-      </p>
-      <p class="hint" style="margin-bottom:12px">
-        It only runs on torrents the fast checks had nothing to say about, and only on torrents your
-        reaping rules would let Protectarr act on. A file that cannot be read, cannot be recognised,
-        or runs out of budget produces <b>no finding</b> - never a removal.
-      </p>
       <label class="check"><input type="checkbox" name="probe_enabled" {% if pr.enabled %}checked{% endif %}>
         Enable the content probe</label>
+      {#- Kept out of the disclosure: it is the sentence that tells an operator
+          switching this on that it cannot cause a false removal. -#}
+      <p class="hint">Catches a payload wearing a real <code>.mkv</code> or <code>.mp4</code> extension by
+        reading the first piece of one file. A file that cannot be read, cannot be recognised, or
+        runs out of budget produces <b>no finding</b> - never a removal.</p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">
+            Everything else Protectarr does reads the torrent's <i>file list</i>, which is why it
+            costs no bandwidth and answers in seconds. That cannot catch a payload wearing a real
+            <code>.mkv</code> or <code>.mp4</code> extension, because nothing in the metadata is lying.
+            The probe downloads the <b>first piece of one file</b> - a few MB out of many GB - and checks
+            the bytes really are the format the name claims.
+          </p>
+          <p class="hint">
+            It only runs on torrents the fast checks had nothing to say about, and only on torrents your
+            reaping rules would let Protectarr act on.
+          </p>
+          <p class="hint">
+            A scan that has a fake queued for removal reaps it first and probes on the next pass, so
+            probing never delays a removal the fast checks already decided on.
+          </p>
+        </div>
+      </details>
 
       <h3 class="sub">Path Mapping</h3>
-      <p class="hint" style="margin-bottom:12px">
-        Protectarr has to be able to <b>read the files qBittorrent is writing</b>, so mount the
-        download directory into Protectarr as well. If it lands at the same path qBittorrent
-        reports, you are done and need nothing here.
-      </p>
-      <p class="hint" style="margin-bottom:12px">
-        Add a mapping only when the two see the same folder at <b>different paths</b>: it translates
-        one into the other. Note the path to match is the one <b>qBittorrent reports</b>, which on a
-        NAS is often not the host path - a share at <code>/volume2/Media/torrents</code> may be
-        <code>/Media/torrents</code> to qBittorrent. The button below prints both paths for a live
-        download, so you can check rather than guess.
-      </p>
       <div id="map_rows">
         {% for m in mapping_rows %}
         <div class="row maprow">
@@ -52,57 +57,79 @@
         No mappings, which is correct if Protectarr already sees the downloads at the same path
         qBittorrent reports. Add one only if the two differ.
       </p>
-      <button type="button" class="btn" style="margin-top:10px" onclick="addMapping()">Add mapping</button>
-      <button type="button" class="btn" style="margin-top:10px" onclick="checkPaths()">Test against current downloads</button>
+      <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap">
+        <button type="button" class="btn" onclick="addMapping()">Add mapping</button>
+        <button type="button" class="btn" onclick="checkPaths()">Test against current downloads</button>
+      </div>
       <p id="probe_msg" class="hint" style="margin-top:8px"></p>
       <div id="probe_rows"></div>
 
-      <h3 class="sub">Budget</h3>
-      <p class="hint" style="margin-bottom:12px">
-        Reading a piece the torrent already happens to have is free, and always allowed. Fetching one
-        on purpose means briefly raising one file's priority above the torrent's other files and
-        turning on sequential download - always restored afterwards, and restored on the next start
-        if Protectarr is killed mid-probe. Nothing is switched off, so the torrent's size and
-        progress never change. These limits bound what that is allowed to cost.
-      </p>
-      <label class="check"><input type="checkbox" name="probe_steer" {% if pr.steer %}checked{% endif %}>
-        Allowed to fetch a piece on purpose <span class="hint">(uncheck to only ever read what is already downloaded)</span></label>
-      <div class="row" style="margin-top:12px">
-        <div><label>Torrents steered per scan</label>
-          <input type="number" name="probe_max" min="0" max="20" value="{{ pr.max_torrents_per_scan }}"></div>
-        <div><label>Seconds per torrent</label>
-          <input type="number" name="probe_timeout" min="5" max="900" value="{{ pr.torrent_timeout_seconds }}"></div>
-      </div>
-      <div class="row">
-        <div><label>Seconds per scan, all torrents</label>
-          <input type="number" name="probe_budget" min="5" max="1800" value="{{ pr.scan_budget_seconds }}"></div>
-        <div><label>Minutes before re-probing a torrent</label>
-          <input type="number" name="probe_recheck" min="1" max="1440" value="{{ pr.recheck_minutes }}"></div>
-      </div>
-      <label>Give up after no progress for (seconds)</label>
-      <input type="number" name="probe_noprogress" min="0" max="900"
-             value="{{ pr.no_progress_seconds }}" style="max-width:160px">
-      <p class="hint" style="margin-top:6px">
-        Stop steering early when Protectarr sees no progress toward the target
-        file's <b>opening piece</b> for this long, and put the settings back.
-        This watches that one piece, not the file's overall progress: a torrent
-        can be pulling bytes for the file at full speed while the piece we
-        actually need is never requested, which is measured behaviour rather
-        than a hypothetical. Without this the probe would hold the boost for
-        its whole budget while accomplishing nothing.
-      </p>
-      <label>Minimum download speed to bother steering (KiB/s)</label>
-      <input type="number" name="probe_minspeed" min="0" value="{{ pr.min_speed_kib }}" style="max-width:160px">
-      <p class="hint" style="margin-top:6px">
-        Steering only influences which piece qBittorrent picks <b>next</b>; it cannot recall one
-        already in flight. On a torrent crawling from one seed the piece may be twenty minutes away,
-        so the budget is better not spent. Fakes are heavily seeded by design - the attacker wants
-        downloads - so the torrents that matter are the ones this works best on.
-      </p>
-      <p class="hint" style="margin-top:10px">
-        A scan that has a fake queued for removal reaps it first and probes on the next pass, so
-        probing never delays a removal the fast checks already decided on.
-      </p>
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">
+            Protectarr has to be able to <b>read the files qBittorrent is writing</b>, so mount the
+            download directory into Protectarr as well. If it lands at the same path qBittorrent
+            reports, you are done and need nothing here.
+          </p>
+          <p class="hint">
+            Add a mapping only when the two see the same folder at <b>different paths</b>: it translates
+            one into the other. Note the path to match is the one <b>qBittorrent reports</b>, which on a
+            NAS is often not the host path - a share at <code>/volume2/Media/torrents</code> may be
+            <code>/Media/torrents</code> to qBittorrent. The Test button prints both paths for a live
+            download, so you can check rather than guess.
+          </p>
+        </div>
+      </details>
+
+      <details class="adv">
+        <summary>Advanced tuning</summary>
+        <div class="disclosure">
+          <p class="hint">
+            Reading a piece the torrent already happens to have is free, and always allowed. Fetching one
+            on purpose means briefly raising one file's priority above the torrent's other files and
+            turning on sequential download - always restored afterwards, and restored on the next start
+            if Protectarr is killed mid-probe. Nothing is switched off, so the torrent's size and
+            progress never change. These limits bound what that is allowed to cost.
+          </p>
+          <label class="check"><input type="checkbox" name="probe_steer" {% if pr.steer %}checked{% endif %}>
+            Allowed to fetch a piece on purpose</label>
+          <p class="hint">Uncheck to only ever read what is already downloaded. Everything below only
+            bounds the steered half, so it does nothing while this is off.</p>
+          <div class="row" style="margin-top:12px">
+            <div><label>Torrents steered per scan</label>
+              <input type="number" name="probe_max" min="0" max="20" value="{{ pr.max_torrents_per_scan }}"></div>
+            <div><label>Seconds per torrent</label>
+              <input type="number" name="probe_timeout" min="5" max="900" value="{{ pr.torrent_timeout_seconds }}"></div>
+          </div>
+          <div class="row">
+            <div><label>Seconds per scan, all torrents</label>
+              <input type="number" name="probe_budget" min="5" max="1800" value="{{ pr.scan_budget_seconds }}"></div>
+            <div><label>Minutes before re-probing a torrent</label>
+              <input type="number" name="probe_recheck" min="1" max="1440" value="{{ pr.recheck_minutes }}"></div>
+          </div>
+          <label>Give up after no progress for (seconds)</label>
+          <input type="number" name="probe_noprogress" min="0" max="900"
+                 value="{{ pr.no_progress_seconds }}" style="max-width:160px">
+          <p class="hint">
+            Stop steering early when Protectarr sees no progress toward the target
+            file's <b>opening piece</b> for this long, and put the settings back.
+            This watches that one piece, not the file's overall progress: a torrent
+            can be pulling bytes for the file at full speed while the piece we
+            actually need is never requested, which is measured behaviour rather
+            than a hypothetical. Without this the probe would hold the boost for
+            its whole budget while accomplishing nothing.
+          </p>
+          <label>Minimum download speed to bother steering (KiB/s)</label>
+          <input type="number" name="probe_minspeed" min="0" value="{{ pr.min_speed_kib }}" style="max-width:160px">
+          <p class="hint">
+            Steering only influences which piece qBittorrent picks <b>next</b>; it cannot recall one
+            already in flight. On a torrent crawling from one seed the piece may be twenty minutes away,
+            so the budget is better not spent. Fakes are heavily seeded by design - the attacker wants
+            downloads - so the torrents that matter are the ones this works best on.
+          </p>
+        </div>
+      </details>
 
       <button type="submit" class="btn primary">Save</button>
     </div>

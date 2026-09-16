@@ -359,8 +359,11 @@ class TestRestingState(SystemPageCase):
         for i in range(logs.RING_SIZE + 50):
             log.info("Scan pass %d complete: 18 torrents inspected, 0 flagged", i)
         page = self.client.get("/system").data.decode()
+        sheet = read(CSS_PATH)
+        # A function replacement: a string one would treat the stylesheet's CSS
+        # escapes (`\25B8`) as regex group references.
         page = re.sub(r'<link rel="stylesheet"[^>]*>',
-                      "<style>%s</style>" % read(CSS_PATH), page)
+                      lambda m: "<style>%s</style>" % sheet, page)
         path = os.path.join(self.dir, "resting.html")
         with open(path, "w") as fh:
             fh.write(page.replace("</body>", RESTING + "</body>"))
@@ -409,8 +412,11 @@ class TestViewerBehaviour(SystemPageCase):
         for i in range(120):
             log.info("startup line %d", i)
         page = self.client.get("/system").data.decode()
+        sheet = read(CSS_PATH)
+        # A function replacement: a string one would treat the stylesheet's CSS
+        # escapes (`\25B8`) as regex group references.
         page = re.sub(r'<link rel="stylesheet"[^>]*>',
-                      "<style>%s</style>" % read(CSS_PATH), page)
+                      lambda m: "<style>%s</style>" % sheet, page)
         page = page.replace("</body>", "<script>var RING = %d;</script>%s</body>"
                             % (logs.RING_SIZE, DRIVER))
         path = os.path.join(self.dir, "system.html")

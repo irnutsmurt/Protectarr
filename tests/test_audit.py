@@ -424,7 +424,10 @@ class TestNewSettingsAreSaved(WebCase):
         """"Could not observe" must not read as "confirmed absent"."""
         html = self.page("safety")
         self.assertIn("continuously confirmed absent", html)
-        self.assertIn("does\n        <b>not</b> count", html)
+        # Whitespace-insensitive: the sentence is the thing being pinned, and
+        # it has already survived one move (into the How this works
+        # disclosure) that re-indented it without changing a word.
+        self.assertRegex(html, r"does\s+<b>not</b>\s+count")
 
     def test_orphan_dwell_saves(self):
         self.save("safety", orphan_dwell_minutes="25", **self.SAFETY)

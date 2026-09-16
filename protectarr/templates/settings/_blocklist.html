@@ -3,31 +3,63 @@
     Two submit buttons on purpose. "Save & Update now" is a distinct operational
     action (it saves, then forces a refresh of the list) and stays useful when
     nothing has been edited, so it is not folded into the dirty-state controls.
-    The plain Save is the ordinary one. -#}
+    The plain Save is the ordinary one.
+
+    No Advanced Tuning here. Six controls, all of them ordinary policy: what to
+    fetch, where to put it, how often, and whether qBittorrent is pointed at
+    it. Folding half of them away would be shortening the page for its own
+    sake. -#}
 <form method="post" action="{{ url_for('save_section', section='blocklist') }}">
   <div class="card" id="section-blocklist">
     <h2>Peer IP Blocklist</h2>
     <div class="body">
-      <p class="hint" style="margin-top:0">Downloads a peer blocklist (default: Naunter/BT_BlockLists) and points qBittorrent's IP filter at it. The file path must be readable by qBittorrent - in Docker, a volume shared by both containers.</p>
       <label class="check"><input type="checkbox" name="bl_enabled" {% if cfg.ip_blocklist.enabled %}checked{% endif %}> Enable IP blocklist</label>
-      <label>Blocklist URL</label>
-      <input type="url" name="bl_url" value="{{ cfg.ip_blocklist.url }}">
+      <p class="hint">Downloads a peer blocklist and points qBittorrent's IP filter at it.</p>
+
+      <label for="bl_url">Blocklist URL</label>
+      <input type="url" id="bl_url" name="bl_url" value="{{ cfg.ip_blocklist.url }}">
+      <p class="hint">Defaults to Naunter/BT_BlockLists. Any gzipped p2p-format list works.</p>
+
       <div class="row">
-        <div><label>File path <span class="hint">(as qBittorrent sees it)</span></label><input type="text" name="bl_path" value="{{ cfg.ip_blocklist.path }}"></div>
-        <div><label>Update every (hours)</label><input type="number" name="bl_interval" min="1" max="8760" value="{{ cfg.ip_blocklist.update_interval_hours }}"></div>
+        <div>
+          <label for="bl_path">File path</label>
+          <input type="text" id="bl_path" name="bl_path" value="{{ cfg.ip_blocklist.path }}">
+          <p class="hint">As <b>qBittorrent</b> sees it, not as Protectarr does.</p>
+        </div>
+        <div>
+          <label for="bl_int">Update every (hours)</label>
+          <input type="number" id="bl_int" name="bl_interval" min="1" max="8760" value="{{ cfg.ip_blocklist.update_interval_hours }}">
+          <p class="hint">The list changes slowly; daily is plenty.</p>
+        </div>
       </div>
+
       <label class="check"><input type="checkbox" name="bl_apply" {% if cfg.ip_blocklist.apply_to_qbit %}checked{% endif %}> Apply to qBittorrent IP filter automatically</label>
+      <p class="hint">With this off the file is still downloaded, but qBittorrent is never told about it.</p>
       <label class="check"><input type="checkbox" name="bl_trackers" {% if cfg.ip_blocklist.block_trackers %}checked{% endif %}> Also filter tracker connections</label>
-      <div style="margin-top:14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-        <button type="submit" name="do_update" value="1" class="btn small">Save &amp; Update now</button>
-        <span class="hint">
-          {% set b = state.blocklist %}
-          {% if b.error %}<span style="color:var(--danger)">Last error: {{ b.error }}</span>
-          {% elif b.last %}Last update: {{ b.last }} · {{ b.entries }} entries · {{ (b.bytes/1024)|round|int }} KiB · applied: {{ 'yes' if b.applied else 'no' }}
-          {% else %}Never updated{% endif %}
-        </span>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">Protectarr downloads the list and writes it to the path above.
+            <b>qBittorrent</b> is the process that reads it, so the path has to be one qBittorrent
+            can open. In Docker that means a volume mounted into both containers, at the same path
+            in both.</p>
+          <p class="hint">This is a bulk filter of addresses other people have reported, applied
+            before a connection is made. It is unrelated to the swarm observations Protectarr
+            records on its own, and it never bans anything by itself.</p>
+        </div>
+      </details>
+
+      <div style="margin-top:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <button type="submit" class="btn primary">Save</button>
+        <button type="submit" name="do_update" value="1" class="btn">Save &amp; Update now</button>
       </div>
-      <button type="submit" class="btn primary" style="margin-top:14px">Save</button>
+      <p class="hint" style="margin-top:8px">
+        {% set b = state.blocklist %}
+        {% if b.error %}<span style="color:var(--danger)">Last error: {{ b.error }}</span>
+        {% elif b.last %}Last update: {{ b.last }} · {{ b.entries }} entries · {{ (b.bytes/1024)|round|int }} KiB · applied: {{ 'yes' if b.applied else 'no' }}
+        {% else %}Never updated{% endif %}
+      </p>
     </div>
   </div>
 </form>

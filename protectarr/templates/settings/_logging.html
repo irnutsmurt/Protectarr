@@ -24,26 +24,38 @@
           </select>
         </div>
       </div>
-      <p class="hint" style="margin-top:0">
-        <b>Debug</b> records every step of every scan: which torrents were inspected or
-        skipped and why, what each detector saw, how the profile judged it, and the
-        air-date decision behind a requeue. Useful while something is behaving oddly,
-        noisy the rest of the time.
-      </p>
+      <p class="hint">Debug is the level to reach for while something is behaving oddly.</p>
 
-      <label>Timezone <span class="hint">(applies to every timestamp Protectarr writes, not just logs)</span></label>
-      <select name="timezone">
+      <label for="lg_tz">Timezone <span class="hint">(applies to every timestamp Protectarr writes, not just logs)</span></label>
+      <select name="timezone" id="lg_tz">
         <option value="" {% if not cfg.timezone %}selected{% endif %}>System default / TZ environment variable</option>
         {% for z in timezones %}
         <option value="{{ z }}" {% if cfg.timezone == z %}selected{% endif %}>{{ z }}</option>
         {% endfor %}
       </select>
-      <p class="hint">
-        Currently <b>{{ current_tz }}</b>. A container with no timezone set runs on UTC,
-        so its logs read hours away from your own clock with nothing in the file saying
-        which is which. You can set this here, or with <code>TZ=America/Los_Angeles</code>
-        in docker-compose. Every timestamp carries its UTC offset either way.
-      </p>
+      <p class="hint">Currently <b>{{ current_tz }}</b>.</p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">
+            <b>Debug</b> records every step of every scan: which torrents were inspected or
+            skipped and why, what each detector saw, how the profile judged it, and the
+            air-date decision behind a requeue. Useful while something is behaving oddly,
+            noisy the rest of the time.
+          </p>
+          <p class="hint">
+            A container with no timezone set runs on UTC, so its logs read hours away from
+            your own clock with nothing in the file saying which is which. You can set it
+            here, or with <code>TZ=America/Los_Angeles</code> in docker-compose. Every
+            timestamp carries its UTC offset either way.
+          </p>
+          <p class="hint">
+            The file rolls over at midnight, gets renamed with the date and gzipped, and is
+            deleted once it is older than the retention below.
+          </p>
+        </div>
+      </details>
 
       <label class="check"><input type="checkbox" name="log_file_enabled" {% if cfg.logging.file_enabled %}checked{% endif %}> Write a log file</label>
       <div class="row">
@@ -56,12 +68,8 @@
           <input type="number" name="log_retention" min="0" max="365" value="{{ cfg.logging.retention_days }}">
         </div>
       </div>
-      <p class="hint">
-        The file rolls over at midnight, gets renamed with the date and gzipped, and is
-        deleted once it is older than the retention above.
-        <b>Credentials are redacted from every log</b>, so a file here is safe to attach
-        to a GitHub issue.
-      </p>
+      <p class="hint"><b>Credentials are redacted from every log</b>, so a file here is safe
+        to attach to a GitHub issue.</p>
       <button type="submit" class="btn primary">Save</button>
     </div>
   </div>

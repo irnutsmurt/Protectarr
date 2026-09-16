@@ -8,11 +8,26 @@
   <div class="card" id="section-bannedips">
     <h2>Manual IP Bans</h2>
     <div class="body">
-      <p class="hint" style="margin-top:0">A small hand-curated list of individual IPs pushed to qBittorrent's <em>banned IPs</em> via the API - no file or shared volume required.</p>
       <label class="check"><input type="checkbox" name="bip_enabled" {% if cfg.banned_ips.enabled %}checked{% endif %}> Manage qBittorrent's banned IPs</label>
-      <label>Banned IPs <span class="hint">(one per line, or comma separated)</span></label>
-      <textarea name="bip_ips" placeholder="203.0.113.7&#10;198.51.100.42">{{ cfg.banned_ips.ips | join('\n') }}</textarea>
-      <label class="check"><input type="checkbox" name="bip_merge" {% if cfg.banned_ips.merge_existing %}checked{% endif %}> Merge with qBittorrent's existing banned IPs (don't overwrite)</label>
+      <p class="hint">A small hand-curated list pushed to qBittorrent's <em>banned IPs</em> through its API. No file or shared volume required.</p>
+
+      <label for="bip_list">Banned IPs</label>
+      <textarea id="bip_list" name="bip_ips" placeholder="203.0.113.7&#10;198.51.100.42">{{ cfg.banned_ips.ips | join('\n') }}</textarea>
+      <p class="hint">One per line, or comma separated.</p>
+
+      <label class="check"><input type="checkbox" name="bip_merge" {% if cfg.banned_ips.merge_existing %}checked{% endif %}> Merge with qBittorrent's existing banned IPs</label>
+      <p class="hint">With this off, saving <b>replaces</b> qBittorrent's whole banned list with the one above.</p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">This is the short, deliberate list, separate from the bulk blocklist above:
+            addresses you decided on, applied through qBittorrent's API rather than through a file.</p>
+          <p class="hint">Protectarr never adds to it on its own. Swarm Observations records the peers
+            it saw on torrents it acted on, and that is evidence, not a judgement. Anything here got
+            here because you put it here.</p>
+        </div>
+      </details>
       <div style="margin-top:14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
         <span class="hint">
           {% set n = state.banned %}

@@ -271,7 +271,11 @@ class TestHistoryGeometry(unittest.TestCase):
             sheet = fh.read()
         # file:// has no server behind /static, so the stylesheet is inlined.
         page = re.sub(r'<link rel="stylesheet"[^>]*>',
-                      "<style>%s</style>" % sheet, page)
+                      # A function replacement, not a string: `re.sub` processes
+                      # backslash escapes in a string replacement, and the
+                      # stylesheet carries CSS escapes like `\25B8`, which it
+                      # reads as a group reference and refuses.
+                      lambda m: "<style>%s</style>" % sheet, page)
         assert "histcards" in page, "the history table did not render"
         cls.page = page
 

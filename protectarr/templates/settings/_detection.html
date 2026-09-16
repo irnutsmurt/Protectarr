@@ -5,27 +5,56 @@
     single POST that overwrites all of them together. A card that looks like it
     persists on its own, over a boundary that does not, is how a partial form
     erases the fields it did not carry. They are subsections now.
-    See tests/test_save_boundaries.py for what this section owns. -#}
+    See tests/test_save_boundaries.py for what this section owns.
+
+    Nothing here is Advanced Tuning. Archive detection is opt-in and risky, but
+    "risky" is a reason to keep a control visible, not to fold it away. -#}
 <form method="post" action="{{ url_for('save_section', section='detection') }}">
   <div class="card" id="section-detection">
     <h2>File Detection</h2>
     <div class="body">
       <h3 class="sub">Monitored Extensions</h3>
-      <p class="hint" style="margin-bottom:12px">A download is flagged for removal when its file list contains any of these
-        extensions. Public trackers seed video-sized decoys named like <code>Show.S01E01.1080p….exe</code>.</p>
-      <label>Monitored extensions <span class="hint">(comma or newline separated)</span></label>
-      <textarea name="blocked_extensions">{{ cfg.detection.blocked_extensions | join(', ') }}</textarea>
+      <label for="d_ext">Monitored extensions</label>
+      <textarea id="d_ext" name="blocked_extensions">{{ cfg.detection.blocked_extensions | join(', ') }}</textarea>
+      <p class="hint">A download is flagged for removal when its file list contains any of these.
+        Separate with commas or newlines; a leading dot is added if you leave it off.</p>
       <label class="check"><input type="checkbox" name="only_active" {% if cfg.detection.only_active %}checked{% endif %}>
-        Only scan downloading torrents <span class="hint">(recommended - much faster on large libraries)</span></label>
+        Only scan downloading torrents</label>
+      <p class="hint">Recommended. Much faster on large libraries, and a fake that has already finished is past the point of catching.</p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">Public trackers seed video-sized decoys named like
+            <code>Show.S01E01.1080p….exe</code>. qBittorrent learns a torrent's file list from its
+            metadata within seconds of adding it, long before any content arrives, so an extension
+            match costs no bandwidth and answers almost immediately.</p>
+          <p class="hint">Skipping finished torrents leaves Sonarr/Radarr's own "Fail Downloads" as
+            the backstop for anything that completes between two scans.</p>
+        </div>
+      </details>
 
       <h3 class="sub">Lure Filenames</h3>
-      <p class="hint" style="margin-bottom:12px">Flag a download when a text-like companion file (readme / nfo / url)
-        is <i>named</i> like a fake's instructions - e.g. <code>password.txt</code> or <code>how to download.html</code>.
-        Only these note-style files are checked, so a real release titled <code>Password.mkv</code> is never flagged.</p>
-      <label>Lure keywords <span class="hint">(matched as substrings of the filename; comma or newline separated)</span></label>
-      <textarea name="blocked_name_keywords">{{ cfg.detection.blocked_name_keywords | join(', ') }}</textarea>
+      <label for="d_lure">Lure keywords</label>
+      <textarea id="d_lure" name="blocked_name_keywords">{{ cfg.detection.blocked_name_keywords | join(', ') }}</textarea>
+      <p class="hint">Matched as substrings of the filename. Separate with commas or newlines.</p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">Flags a download when a text-like companion file (readme / nfo / url) is
+            <i>named</i> like a fake's instructions, for example <code>password.txt</code> or
+            <code>how to download.html</code>.</p>
+          <p class="hint">Only those note-style files are checked, which is what stops a false
+            positive: a real release titled <code>Password.mkv</code> is never flagged, because a
+            video file is not a note.</p>
+        </div>
+      </details>
 
       <h3 class="sub">Archive Detection <span class="hint" style="font-weight:400">- advanced, opt-in</span></h3>
+      {#- Prominent and outside the disclosure on purpose. This is the one
+          detector that can act on a legitimate release, and an operator
+          switching it on has to meet that sentence before the checkbox. -#}
       <p class="hint" style="margin-bottom:12px">Flags a download that contains <b>only archives</b> (RAR/ZIP/…) with <b>no real media file</b>.
         Legit releases are sometimes packed in RARs - especially on private trackers - so this is
         <b>off by default</b> and only applies to the indexers you list below. Leave the list empty to disable.</p>
@@ -33,7 +62,18 @@
         Enable archive-with-no-media detection</label>
       <label style="margin-top:12px">Apply only to these indexers</label>
       <div id="indexer_boxes" class="checklist"><p class="hint">Loading indexers from your apps…</p></div>
-      <p class="hint" style="margin-top:8px">Only <b>*arr-tracked</b> downloads are eligible (that's where the indexer name comes from). Hand-added torrents are never touched by this rule.</p>
+      <p class="hint">With none selected this rule never fires, whatever the checkbox above says.</p>
+
+      <details class="howto">
+        <summary>How this works</summary>
+        <div class="disclosure">
+          <p class="hint">Only <b>*arr-tracked</b> downloads are eligible, because that is where the
+            indexer name comes from and where "what counts as media" is knowable. Hand-added
+            torrents are never touched by this rule.</p>
+          <p class="hint">A torrent is only archives-only if Protectarr finds no media file at all in
+            the list. One real video alongside the RARs and the rule does not fire.</p>
+        </div>
+      </details>
 
       <button type="submit" class="btn primary">Save</button>
     </div>

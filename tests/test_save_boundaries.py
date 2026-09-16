@@ -642,11 +642,15 @@ class TestThePagesComposeTheBoundaries(BoundaryCase):
         that looks like a card looks like a Save."""
         html = self.page("detection-remediation")
         for heading in ("Archive Detection", "Lure Filenames",
-                        "Ownership &amp; Orphan Handling", "Path Mapping",
-                        "Budget"):
+                        "Ownership &amp; Orphan Handling", "Path Mapping"):
             with self.subTest(heading=heading):
                 self.assertIn(heading, html)
                 self.assertNotIn(f"<h2>{heading}", html)
+        # The old Budget card did not become a subsection at all: its contents
+        # are the whole of Content Probe's Advanced Tuning, so the heading is
+        # gone rather than demoted.
+        self.assertNotIn("Budget", html)
+        self.assertIn("Advanced tuning", html)
 
     def test_the_cards_that_are_not_forms_are_not_pretending_to_be(self):
         """Log files and the API key are separate cards on purpose: their

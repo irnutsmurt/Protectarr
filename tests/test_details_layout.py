@@ -287,8 +287,11 @@ class TestDetailGridGeometry(unittest.TestCase):
             s["user"] = "admin"
         page = client.get("/history?show=live").data.decode()
         # Inline the stylesheet: file:// has no server behind /static.
+        sheet = read(CSS_PATH)
+        # A function replacement: a string one would treat the stylesheet's CSS
+        # escapes (`\25B8`) as regex group references.
         page = re.sub(r'<link rel="stylesheet"[^>]*>',
-                      "<style>%s</style>" % read(CSS_PATH), page)
+                      lambda m: "<style>%s</style>" % sheet, page)
         # One stress record, injected where the real page puts its rows.
         page = re.sub(r"var ROWS = .*?;\n",
                       "var ROWS = [%s];\n" % json.dumps(STRESS), page, count=1)
