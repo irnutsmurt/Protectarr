@@ -423,6 +423,122 @@ class TestDiscardIsPerCardToo(DirtyCase):
         self.assertTrue(r["dirty"], "the restored container is not being watched")
 
 
+class TestAnInactiveSectionIsStillSubmitted(DirtyCase):
+    """`inert`, never `disabled`.
+
+    A disabled control is not submitted, and against `save_section()`'s
+    overwrite semantics a field that stops being posted is a field that gets
+    cleared. Muting the probe's settings with `disabled` would erase the path
+    mappings the next time anyone saved that card. This is the regression test
+    for the property the whole approach rests on.
+    """
+
+    def test_turning_a_feature_off_mutes_its_settings(self):
+        r = self.run_script("""
+          var box = q('[data-active-when=probe_enabled]');
+          REPORT.activeBefore = box.inert;
+          click(q('[name=probe_enabled]'));
+          REPORT.inertAfter = box.inert;
+          REPORT.aria = box.getAttribute('aria-disabled');
+          REPORT.muted = box.classList.contains('inactive');
+          REPORT.opacity = getComputedStyle(box).opacity;
+        """)
+        self.assertFalse(r["activeBefore"])
+        self.assertTrue(r["inertAfter"])
+        self.assertEqual(r["aria"], "true")
+        self.assertTrue(r["muted"])
+        self.assertLess(float(r["opacity"]), 1.0)
+
+    def test_a_muted_control_is_still_a_successful_form_control(self):
+        """The measurement the design rests on, taken through the real form."""
+        r = self.run_script("""
+          click(q('[name=probe_enabled]'));
+          var box = q('[data-active-when=probe_enabled]');
+          REPORT.inert = box.inert;
+          var names = [];
+          new FormData(form('probe')).forEach(function (v, k) { names.push(k); });
+          REPORT.posted = names;
+          REPORT.disabledAttrs =
+            qa('[data-active-when] [disabled]').length;
+          REPORT.stillDefault = q('[name=map_from]').value;
+        """)
+        self.assertTrue(r["inert"])
+        for name in ("map_from", "map_to", "probe_budget", "probe_minspeed"):
+            self.assertIn(name, r["posted"],
+                          "%s would be cleared on the next save" % name)
+        self.assertEqual(r["disabledAttrs"], 0)
+        self.assertEqual(r["stillDefault"], "/one")
+
+    def test_a_muted_checkbox_still_reports_being_checked(self):
+        """The one that fails silently: an absent checkbox is indistinguishable
+        from an unchecked one, so muting that dropped it would read as the
+        operator turning steering off."""
+        r = self.run_script("""
+          click(q('[name=probe_enabled]'));
+          var names = [];
+          new FormData(form('probe')).forEach(function (v, k) { names.push(k); });
+          REPORT.posted = names;
+        """)
+        self.assertIn("probe_steer", r["posted"])
+
+    def test_turning_it_back_on_restores_interaction(self):
+        r = self.run_script("""
+          var cb = q('[name=probe_enabled]'), box = q('[data-active-when=probe_enabled]');
+          click(cb);
+          REPORT.off = box.inert;
+          click(cb);
+          REPORT.on = box.inert;
+          REPORT.aria = box.getAttribute('aria-disabled');
+        """)
+        self.assertTrue(r["off"])
+        self.assertFalse(r["on"])
+        self.assertIsNone(r["aria"])
+
+    def test_the_master_switch_is_never_inside_what_it_mutes(self):
+        """A switch that mutes itself cannot be switched back.
+
+        Checked on every page, not just this class's default: the muted
+        sections are spread across all three, and a test that looked at one of
+        them would miss a trapped switch on either of the others.
+        """
+        total = 0
+        for page in ("detection-remediation", "network", "administration"):
+            r = self.run_script("""
+              REPORT.trapped = qa('[data-active-when]').filter(function (box) {
+                var name = (box.dataset.activeWhen || '').split(/[!=]/)[0];
+                return !!box.querySelector('[name="' + name + '"]');
+              }).map(function (box) { return box.dataset.activeWhen; });
+              REPORT.boxes = qa('[data-active-when]').length;
+            """, page=page)
+            with self.subTest(page=page):
+                self.assertEqual(r["trapped"], [])
+            total += r["boxes"]
+        self.assertGreaterEqual(total, 5, "the muted sections are not declared")
+
+    def test_discard_restores_the_muting_too(self):
+        r = self.run_script("""
+          var box = q('[data-active-when=probe_enabled]');
+          click(q('[name=probe_enabled]'));
+          REPORT.afterEdit = box.inert;
+          discard('probe');
+          REPORT.afterDiscard = q('[data-active-when=probe_enabled]').inert;
+        """)
+        self.assertTrue(r["afterEdit"])
+        self.assertFalse(r["afterDiscard"])
+
+    def test_nothing_is_muted_without_javascript(self):
+        """`inert` is applied by script only, so the no-script page stays fully
+        editable rather than fully frozen."""
+        seen = 0
+        for page in ("detection-remediation", "network", "administration"):
+            html = self.client.get("/settings/" + page).get_data(as_text=True)
+            with self.subTest(page=page):
+                self.assertNotIn(" inert", html)
+                self.assertNotIn("aria-disabled", html)
+            seen += html.count("data-active-when")
+        self.assertGreaterEqual(seen, 5, "the muted sections are not declared")
+
+
 class TestSecretsStayOutOfIt(DirtyCase):
     PAGE = "administration"
 

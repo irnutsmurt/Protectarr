@@ -16,6 +16,7 @@
       <label class="check"><input type="checkbox" name="bl_enabled" {% if cfg.ip_blocklist.enabled %}checked{% endif %}> Enable IP blocklist</label>
       <p class="hint">Downloads a peer blocklist and points qBittorrent's IP filter at it.</p>
 
+      <div data-active-when="bl_enabled">
       <label for="bl_url">Blocklist URL</label>
       <input type="url" id="bl_url" name="bl_url" value="{{ cfg.ip_blocklist.url }}">
       <p class="hint">Defaults to Naunter/BT_BlockLists. Any gzipped p2p-format list works.</p>
@@ -36,6 +37,7 @@
       <label class="check"><input type="checkbox" name="bl_apply" {% if cfg.ip_blocklist.apply_to_qbit %}checked{% endif %}> Apply to qBittorrent IP filter automatically</label>
       <p class="hint">With this off the file is still downloaded, but qBittorrent is never told about it.</p>
       <label class="check"><input type="checkbox" name="bl_trackers" {% if cfg.ip_blocklist.block_trackers %}checked{% endif %}> Also filter tracker connections</label>
+      </div>
 
       <details class="howto">
         <summary>How this works</summary>

@@ -27,12 +27,14 @@
           <p class="hint" style="margin-top:6px">Behind a reverse proxy, "Disabled for Local Addresses" needs the trusted proxies below, or every request looks remote.</p>
         </div>
       </div>
+      <div data-active-when="auth_method!=none">
       <div class="row">
         <div><label>Username</label><input type="text" name="auth_username" value="{{ cfg.web.auth.username }}" autocomplete="off"></div>
         <div><label>Password</label><input type="password" name="auth_password" placeholder="{{ '(unchanged)' if cfg.web.auth.password_hash else 'set a password' }}" autocomplete="new-password"></div>
       </div>
       <label>Trusted proxies <span class="hint">(CIDRs whose X-Forwarded-For is trusted; comma or newline separated)</span></label>
       <textarea name="trusted_proxies" placeholder="e.g. 172.18.0.0/16">{{ cfg.web.auth.trusted_proxies | join(', ') }}</textarea>
+      </div>
       <div class="card-actions"><button type="submit" class="btn primary">Save</button></div>
     </div>
   </div>

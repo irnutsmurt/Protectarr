@@ -302,6 +302,12 @@ details.adv > summary { color: var(--text); }
 .has-dirty-ui .card-actions { display: none; }
 .card-ops { margin-top: 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
+/* A sub-section a master switch has made irrelevant. Readable, not hidden:
+   the values are still there, still submitted, and still worth seeing when
+   deciding whether to switch the feature back on. */
+.inactive { opacity: .45; }
+.inactive, .inactive * { cursor: default; }
+
 /* ---- saved-state chips ----
    What the config on disk says right now, rendered by the server and never
    touched by the dirty-state code. A chip that followed an unsaved edit would

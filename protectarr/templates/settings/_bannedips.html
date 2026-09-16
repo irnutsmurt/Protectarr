@@ -12,12 +12,14 @@
       <label class="check"><input type="checkbox" name="bip_enabled" {% if cfg.banned_ips.enabled %}checked{% endif %}> Manage qBittorrent's banned IPs</label>
       <p class="hint">A small hand-curated list pushed to qBittorrent's <em>banned IPs</em> through its API. No file or shared volume required.</p>
 
+      <div data-active-when="bip_enabled">
       <label for="bip_list">Banned IPs</label>
       <textarea id="bip_list" name="bip_ips" placeholder="203.0.113.7&#10;198.51.100.42">{{ cfg.banned_ips.ips | join('\n') }}</textarea>
       <p class="hint">One per line, or comma separated.</p>
 
       <label class="check"><input type="checkbox" name="bip_merge" {% if cfg.banned_ips.merge_existing %}checked{% endif %}> Merge with qBittorrent's existing banned IPs</label>
       <p class="hint">With this off, saving <b>replaces</b> qBittorrent's whole banned list with the one above.</p>
+      </div>
 
       <details class="howto">
         <summary>How this works</summary>

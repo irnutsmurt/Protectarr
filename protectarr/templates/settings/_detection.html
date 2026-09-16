@@ -61,9 +61,11 @@
         <b>off by default</b> and only applies to the indexers you list below. Leave the list empty to disable.</p>
       <label class="check"><input type="checkbox" name="archive_enabled" {% if cfg.detection.archive_detection.enabled %}checked{% endif %}>
         Enable archive-with-no-media detection</label>
-      <label style="margin-top:12px">Apply only to these indexers</label>
-      <div id="indexer_boxes" class="checklist"><p class="hint">Loading indexers from your apps…</p></div>
-      <p class="hint">With none selected this rule never fires, whatever the checkbox above says.</p>
+      <div data-active-when="archive_enabled">
+        <label style="margin-top:12px">Apply only to these indexers</label>
+        <div id="indexer_boxes" class="checklist"><p class="hint">Loading indexers from your apps…</p></div>
+        <p class="hint">With none selected this rule never fires, whatever the checkbox above says.</p>
+      </div>
 
       <details class="howto">
         <summary>How this works</summary>

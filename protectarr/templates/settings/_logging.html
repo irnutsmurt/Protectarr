@@ -58,7 +58,7 @@
       </details>
 
       <label class="check"><input type="checkbox" name="log_file_enabled" {% if cfg.logging.file_enabled %}checked{% endif %}> Write a log file</label>
-      <div class="row">
+      <div class="row" data-active-when="log_file_enabled">
         <div>
           <label>Log directory <span class="hint">(blank = alongside your config)</span></label>
           <input type="text" name="log_path" value="{{ cfg.logging.path }}" placeholder="/config/logs">

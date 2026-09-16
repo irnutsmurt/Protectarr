@@ -93,6 +93,39 @@
     return {bar: bar, discard: discard};
   }
 
+  // ---- sub-controls a master switch has made irrelevant ------------------
+  //
+  // `inert` rather than `disabled`, and the difference is not cosmetic: a
+  // disabled control is not submitted, and against `save_section()`'s
+  // overwrite semantics a field that stops being posted is a field that gets
+  // cleared. Turning the probe off would quietly erase its path mappings.
+  // Chromium was measured on this before it was relied on: controls inside
+  // `inert` still serialise, are not focusable, and keep their defaults, so
+  // dirty state still works through them. tests/test_settings_disclosure.py
+  // pins that.
+  //
+  // Applied from JavaScript only. With scripting off nothing is inert and
+  // every control stays editable, which is the safe way for this to fail.
+  function activeWhen(form, box) {
+    var m = /^([^!=]+?)(?:(!?=)(.*))?$/.exec(box.dataset.activeWhen || '');
+    if (!m) return true;
+    var el = form.elements[m[1]];
+    if (!el) return true;
+    if (!m[2]) return el.type === 'checkbox' ? el.checked : !!el.value;
+    return m[2] === '=' ? el.value === m[3] : el.value !== m[3];
+  }
+
+  function paintInactive(form) {
+    Array.prototype.forEach.call(
+      form.querySelectorAll('[data-active-when]'), function (box) {
+        var on = activeWhen(form, box);
+        box.classList.toggle('inactive', !on);
+        box.inert = !on;
+        if (on) box.removeAttribute('aria-disabled');
+        else box.setAttribute('aria-disabled', 'true');
+      });
+  }
+
   forms.forEach(function (form) {
     var card = form.querySelector('.card');
     if (!card) return;
@@ -106,6 +139,7 @@
       });
 
     function paint() {
+      paintInactive(form);
       var dirty = !submitting && isDirty(form);
       card.classList.toggle('dirty', dirty);
       form.classList.toggle('is-dirty', dirty);
