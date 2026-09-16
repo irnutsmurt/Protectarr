@@ -16,15 +16,16 @@ from flask import (Flask, render_template, request, redirect, url_for,
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from . import config as cfg_mod
+from . import dashboard as dash
 from . import events
 from . import evidence
+from . import intents
 from . import logs
 from . import __version__
 from .netauth import resolve_client_ip, is_local
 from . import probe
 from .qbit import QbitClient, QbitError
 from .arr import ArrClient, ARR_TYPES, build_clients
-from .core import DOWNLOADING_STATES
 
 # Endpoints reachable without a session (login form + static assets + health).
 PUBLIC_ENDPOINTS = {"login", "static", "ping"}
@@ -404,6 +405,124 @@ def _history_status(row):
             "milestone": milestone, "source": rem.get("source")}
 
 
+def _relative(ts, now=None):
+    """A stored timestamp as "3 hours ago", or None if it is unreadable.
+
+    The Dashboard's question is "was this recent", and an absolute timestamp
+    makes the reader do the subtraction. The absolute value is still rendered
+    beside it, because "2 days ago" is the wrong thing to quote in a bug
+    report.
+
+    Deliberately coarse. Nothing here is precise enough to justify "3 hours 12
+    minutes", and rounding down is the honest direction: something that
+    happened 119 minutes ago is reported as an hour ago, never as two.
+    """
+    at = dash.parse_ts(ts)
+    if at is None:
+        return None
+    delta = (time.time() if now is None else now) - at
+    if delta < 0:
+        # A clock change, or a container whose timezone moved under a file
+        # written by the previous one. "In the future" is not a thing this can
+        # usefully say, so it declines rather than printing a negative age.
+        return None
+    if delta < 90:
+        return "just now"
+    # (upper bound, seconds per unit, name). The bound and the divisor are
+    # stated separately because deriving one from the other is how this went
+    # wrong the first time: a day is not sixty times an hour.
+    for bound, per, unit in ((3600, 60, "minute"),
+                             (86400, 3600, "hour"),
+                             (2592000, 86400, "day")):
+        if delta < bound:
+            n = int(delta // per)
+            return f"{n} {unit}{'' if n == 1 else 's'} ago"
+    # Past a month the age has stopped being the interesting part and the date
+    # is what someone would actually use. The caller still has the absolute
+    # timestamp, so this declines rather than printing "63 days ago".
+    return None
+
+
+def _when(ts):
+    """`{"abs": ..., "rel": ...}` for a timestamp, or None if there isn't one."""
+    if not ts:
+        return None
+    return {"abs": ts, "rel": _relative(ts)}
+
+
+def _triage(records):
+    """Remediations a human has to look at, oldest first.
+
+    Only `failed_unverified`. It is the one milestone the code itself treats as
+    terminal-and-wrong: Protectarr could not prove the release was blocklisted,
+    so it stopped, and it will not retry on its own or let the same torrent be
+    remediated again. Everything else resolves without anyone being told.
+
+    `pending` and `removed` are deliberately not here. They are transient by
+    design - a reconcile finishes them on the next scan - and listing them
+    would turn the normal few seconds between a reap and its verification into
+    a queue of things that look broken.
+
+    Oldest first because this is a work queue, not a feed. The one that has
+    been waiting longest is the one to deal with.
+    """
+    rows = [r for r in (records or {}).values()
+            if r.get("milestone") == intents.FAILED_UNVERIFIED]
+    rows.sort(key=lambda r: r.get("opened") or 0)
+    out = []
+    for r in rows:
+        ev = r.get("evidence") or {}
+        out.append({
+            "when": logs.stamp(r.get("opened")),
+            "rel": _relative(logs.stamp(r.get("opened"))),
+            "release": r.get("release_title") or r.get("hash"),
+            "app": r.get("arr"),
+            # The verification narrative if there is one, the exception if the
+            # attempt threw, and a plain statement of the milestone if neither
+            # was recorded. Never blank: a triage row with no issue named is a
+            # row nobody can act on.
+            "issue": (ev.get("why") or r.get("error")
+                      or "Removal could not be verified"),
+            "remediation_id": r.get("remediation_id"),
+        })
+    return out
+
+
+def _attention(state, triage, evidence_health, intents_broken):
+    """Current problems that need an operator, counted and named.
+
+    Two classes, kept apart on purpose. A remediation problem is one release
+    that needs a decision and belongs in the Triage Queue. A system problem is
+    Protectarr itself being unable to work and belongs on the System page.
+    Merging them would either invent History rows for a broken database or
+    bury a failed remediation in a list of connection errors.
+
+    Connectivity is not here. It is established by `/api/dashboard`, which the
+    browser calls after this page is rendered, and the count is topped up
+    there. Blocking the page on N network round trips to render a number would
+    cost more than the number is worth.
+    """
+    system = []
+    if state.get("last_error"):
+        system.append({"what": "Last scan failed", "detail": state["last_error"]})
+    if evidence_health.get("broken"):
+        system.append({"what": "Evidence store unusable",
+                       "detail": evidence_health["broken"]})
+    elif evidence_health.get("failures"):
+        # Not "broken", but writes are being lost, so the swarm evidence is
+        # quietly incomplete. Worth saying; not worth the same alarm.
+        system.append({"what": "Evidence writes lost",
+                       "detail": f"{evidence_health['failures']} since start"})
+    if intents_broken:
+        system.append({"what": "Remediation intents unusable",
+                       "detail": intents_broken})
+    # `problems`, not `items`. Jinja resolves `attention.items` to the dict's
+    # own `.items` method and renders a bound builtin, so the list silently
+    # never appears - it fails as a TypeError at `{% for %}`, not as a blank.
+    return {"remediation": len(triage), "system": len(system),
+            "total": len(triage) + len(system), "problems": system}
+
+
 def _mapping_rows(raw):
     """Stored mappings -> rows for the form, tolerating the hand-edited YAML
     forms (`{from, to}` or `"a = b"`) that config.example.yaml documents."""
@@ -603,7 +722,49 @@ def create_app(service):
 
     @app.route("/dashboard")
     def dashboard():
-        return page("dashboard.html", active="dashboard")
+        """Four questions, in order: healthy, anything to do, what happened,
+        what patterns.
+
+        Everything derived from history comes out of one bounded walk. The
+        cards are not allowed to ask the file separately - see
+        `protectarr/dashboard.py` for why, and for what the bound is.
+        """
+        agg = dash.collect(fold=_history_rows)
+        rows = agg["rows"]
+        health = evidence.health()
+        triage = _triage(intents.records())
+
+        # The Triage Queue reuses History's Details dialog, which needs a
+        # folded row, not an intent. They are matched on `remediation_id`,
+        # which both sides mint from the same place. A `failed_unverified`
+        # older than the fold - or one whose detection event has rotated out -
+        # simply has no Details button rather than a dialog full of blanks.
+        by_rid = {}
+        for i, r in enumerate(rows):
+            rid = (r["latest"].get("remediation_id")
+                   or r["ev"].get("remediation_id"))
+            if rid and rid not in by_rid:
+                by_rid[rid] = i
+        for t in triage:
+            t["detail"] = by_rid.get(t.get("remediation_id"))
+
+        return page(
+            "dashboard.html", active="dashboard",
+            remediations_24h=agg["remediations_24h"],
+            truncated=agg["truncated"], scanned=agg["scanned"],
+            findings=agg["findings"], indexers=agg["indexers"],
+            last_remediation=_when(
+                (service.state.get("stats") or {}).get("last_reap")),
+            last_scan=_when(service.state.get("last_scan")),
+            triage=triage[:dash.RECENT_ROWS],
+            triage_total=len(triage),
+            recent=rows[:dash.RECENT_ROWS],
+            attention=_attention(service.state, triage, health,
+                                 intents.broken()),
+            evidence_health=health,
+            # Every folded row, not just the five shown: a Triage row's dialog
+            # can point past the end of Recent Activity.
+            detail_rows=[_detail(r) for r in rows])
 
     @app.route("/system")
     def system():
@@ -871,50 +1032,60 @@ def create_app(service):
             flash(f"Removed {removed.get('name', 'application')}.")
         return redirect(url_for("applications"))
 
-    # ---- dashboard live data (qBittorrent + arr/indexer inventory) ----
+    # ---- dashboard service health ----
     @app.route("/api/dashboard", endpoint="dashboard_data")
     def dashboard_data():
-        cfg = cfg_mod.load()
-        data = {"active_torrents": None, "total_torrents": None,
-                "indexers": [], "apps": [], "errors": []}
-        try:
-            qc = cfg["qbittorrent"]
-            qb = QbitClient(qc["url"], qc.get("username", ""), qc.get("password", ""),
-                            api_key=qc.get("api_key", ""), verify_ssl=qc.get("verify_ssl", True))
-            qb.login()
-            torrents = qb.torrents()
-            data["total_torrents"] = len(torrents)
-            data["active_torrents"] = sum(1 for t in torrents
-                                          if t.get("state") in DOWNLOADING_STATES)
-        except Exception as e:
-            data["errors"].append(f"qBittorrent: {e}")
+        """Can Protectarr reach the things it needs? Nothing else.
 
-        seen = {}
+        This used to be the Dashboard's whole data feed and made roughly 3N+2
+        serialised round trips for it: per *arr a status call, an indexer
+        enumeration and a full library fetch, plus a qBittorrent login and a
+        complete torrent list. Two of those three per-app calls existed only to
+        fill surfaces the Dashboard no longer has, and the library fetch pulled
+        every movie or series an app knows about, with every field, to compute
+        two integers nobody was acting on.
+
+        What is left is one reachability check per service - N+1 calls - each of
+        which is the cheapest question that actually establishes connectivity:
+        `system/status` for an *arr and `app/version` for qBittorrent. Neither
+        is a new request; both are what the existing Test buttons already use.
+
+        Reachability only. Whether a *arr is *correctly configured* is not
+        something a health dot can assert, and the page does not pretend to.
+        """
+        cfg = cfg_mod.load()
+        services, errors = [], []
+
+        qc = cfg.get("qbittorrent") or {}
+        row = {"name": "qBittorrent", "type": "qbittorrent",
+               "ok": False, "detail": ""}
+        if not qc.get("url"):
+            row["ok"], row["detail"] = None, "not configured"
+        else:
+            try:
+                qb = QbitClient(qc["url"], qc.get("username", ""),
+                                qc.get("password", ""),
+                                api_key=qc.get("api_key", ""),
+                                verify_ssl=qc.get("verify_ssl", True))
+                row["ok"], row["detail"] = qb.test()
+            except (QbitError, requests.RequestException, ValueError) as e:
+                row["ok"], row["detail"] = False, str(e)
+        services.append(row)
+        if row["ok"] is False:
+            errors.append(f"qBittorrent: {row['detail']}")
+
         for client in build_clients(cfg):
             row = {"name": client.name, "type": client.type,
-                   "ok": None, "detail": "", "indexers": 0, "library": None}
+                   "ok": False, "detail": ""}
             try:
-                ok, msg = client.test()
-                row["ok"], row["detail"] = ok, msg
-            except Exception as e:
+                row["ok"], row["detail"] = client.test()
+            except (requests.RequestException, ValueError) as e:
                 row["ok"], row["detail"] = False, str(e)
-            try:
-                row["library"] = client.library_stats()
-            except Exception as e:
-                data["errors"].append(f"{client.name} library: {e}")
-            try:
-                for ix in client.indexers():
-                    row["indexers"] += 1
-                    ent = seen.setdefault(ix["name"], {
-                        "name": ix["name"], "protocol": ix.get("protocol", ""),
-                        "enabled": ix.get("enabled", True), "apps": []})
-                    if client.name not in ent["apps"]:
-                        ent["apps"].append(client.name)
-            except Exception as e:
-                data["errors"].append(f"{client.name} indexers: {e}")
-            data["apps"].append(row)
-        data["indexers"] = sorted(seen.values(), key=lambda r: r["name"].lower())
-        return jsonify(ok=True, data=data)
+            services.append(row)
+            if not row["ok"]:
+                errors.append(f"{client.name}: {row['detail']}")
+
+        return jsonify(ok=True, data={"services": services, "errors": errors})
 
     # ---- test / preview / control ----
     @app.route("/test/qbit", methods=["POST"], endpoint="test_qbit")

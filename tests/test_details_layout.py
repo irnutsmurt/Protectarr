@@ -71,15 +71,44 @@ class TestDetailGridStructure(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.html = read(os.path.join(TEMPLATES, "history.html"))
+        # The dialog's markup stayed on the pages that open it; its rendering
+        # moved to the shared partial in 0.6.0, when the Dashboard's Triage
+        # Queue needed the same dossier. `html` is the two together, because
+        # what these tests assert is a property of the dialog, not of whichever
+        # file happens to hold each half this release.
+        cls.pages = {name: read(os.path.join(TEMPLATES, name))
+                     for name in ("history.html", "dashboard.html")}
+        cls.partial = read(os.path.join(TEMPLATES, "_details.html"))
+        cls.html = cls.partial + "".join(cls.pages.values())
         cls.css = read(CSS_PATH)
 
-    def test_history_opts_into_the_wide_modal(self):
-        self.assertIn('<div class="modal wide">', self.html)
+    def test_every_page_that_opens_the_dialog_opts_into_the_wide_modal(self):
+        """Both callers, not just History.
+
+        The Dashboard reuses the dialog by including the same partial, so a
+        page that forgot the `wide` class would render the same dossier into
+        the 560px default and get the 1840px column back.
+        """
+        for name, html in self.pages.items():
+            with self.subTest(page=name):
+                self.assertIn('<div class="modal wide">', html)
 
     def test_the_dialog_body_is_the_grid(self):
-        self.assertIn('class="modal-body detail-grid" id="detail_body"',
-                      self.html)
+        for name, html in self.pages.items():
+            with self.subTest(page=name):
+                self.assertIn('class="modal-body detail-grid" id="detail_body"',
+                              html)
+
+    def test_the_dialog_is_rendered_from_one_place(self):
+        """One implementation, included twice - not two copies.
+
+        Two copies would drift, and the Triage row's Details button exists
+        precisely to open the same record History would.
+        """
+        for name, html in self.pages.items():
+            with self.subTest(page=name):
+                self.assertIn('{% include "_details.html" %}', html)
+                self.assertNotIn("function showDetails", html)
 
     def test_a_section_is_one_grid_item(self):
         """The <section> wrapper, without which the h3 and table split up."""

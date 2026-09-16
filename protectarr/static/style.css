@@ -218,31 +218,158 @@ a.tool-btn { text-decoration: none; }
 .card .body { padding: 18px 20px; }
 .hint { color: var(--text-dim); font-size: 12px; }
 
-/* ---- dashboard stat cards ---- */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 18px; }
-.statcard { background: var(--card-bg); border: 1px solid var(--border); border-radius: 6px; padding: 18px 20px; }
-.statcard.accent { border-color: var(--accent); background: linear-gradient(180deg, #2a2a2a, #263029); }
-.statcard .label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .4px; }
-.statcard .num { font-size: 40px; font-weight: 700; color: var(--text-head); line-height: 1.15; margin: 6px 0 2px; }
-.statcard.accent .num { color: var(--accent); }
-.statcard .sub { font-size: 12px; color: var(--text-dim); }
+/* ---- dashboard ----
+   Removed with the 0.6.0 redesign: `.cards`/`.statcard`, and the `.chart` /
+   `.legend` SVG chart styles with them. The Dashboard was their only consumer
+   and the surfaces they drew are gone - the all-time reaped counter, the
+   library-monitored chart and the all-time by-indexer chart. The bar styles
+   below survived because they were never wired to anything and are now what
+   the two trend cards use.
 
-/* ---- SVG bar charts (Prowlarr Stats style) ---- */
-.chart-wrap { width: 100%; }
-.chart { display: block; width: 100%; height: auto; }
-.chart .grid { stroke: #343434; stroke-width: 1; shape-rendering: crispEdges; }
-.chart .yl, .chart .xl { fill: #8a8d90; font-size: 11px; font-family: var(--font); }
-.legend { display: flex; flex-wrap: wrap; gap: 18px; justify-content: flex-end; margin-bottom: 6px; font-size: 12px; color: var(--text-dim); }
-.legend .leg { display: inline-flex; align-items: center; gap: 6px; }
-.legend .leg i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+   Four vitals, and the breakpoint is measured rather than inherited from the
+   Details dialog's 900px: this grid has different contents and no reason to
+   share a number with it. See the media queries at the end of this block. */
+.vitals { display: grid; gap: 14px; margin-bottom: 18px; }
+.vitals .card { margin-bottom: 0; }
+.vital .body { padding: 16px 18px; }
+/* Vitals sit side by side, so their bodies have to start on the same line
+   whatever each one contains. A grid row rather than a min-height on the body:
+   the row is as tall as its tallest card and every card fills it, which a
+   fixed height would only approximate. */
+.vitals .card { display: flex; flex-direction: column; }
+.vital .body { flex: 1; }
+.vital .num { font-size: 40px; font-weight: 700; color: var(--text-head); line-height: 1.15; }
+/* A date is not a number and does not get a number's weight. Without this the
+   Last Remediation card shouts "3 hours ago" at the same volume the Attention
+   card shouts a fault count. */
+.vital .num.small { font-size: 22px; font-weight: 600; }
+.vital .num.quiet { color: var(--text-dim); font-weight: 500; }
+.vital .num.bad { color: var(--danger); }
+.vital .sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.vital .sub.muted { margin-top: 10px; opacity: .75; }
+/* The one card allowed to colour its own border, and only when it is not zero.
+   Healthy has to be the quiet state or there is no contrast left to spend on
+   an actual problem. */
+.vital.alarm { border-color: var(--danger); }
+.attn-list { margin: 10px 0 8px; padding: 0 0 0 16px; font-size: 12.5px; }
+.attn-list li { margin-bottom: 3px; }
+
+/* Service rows. One line each, pill hard right, and the failure reason on its
+   own line under it rather than beside it: a connection error is a sentence,
+   and letting it share the line sets a floor the narrow vitals column cannot
+   meet. */
+.svc { list-style: none; margin: 0; padding: 0; }
+.svc + .svc { margin-top: 6px; }
+.svc li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; font-size: 13px; }
+.svc li:last-child { margin-bottom: 0; }
+.svc-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc li .pill { margin-left: auto; }
+.svc-detail { flex-basis: 100%; }
+.svc-why { margin: 8px 0 0; }
+
+/* Trends: two half-width cards on desktop, stacked below. */
+.trends { display: grid; gap: 14px; }
+.trends .card { margin-bottom: 0; }
 
 /* ---- horizontal bar breakdown ---- */
 .bars { display: flex; flex-direction: column; gap: 9px; }
 .bar-row { display: flex; align-items: center; gap: 10px; }
 .bar-label { width: 160px; min-width: 160px; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-track { flex: 1; background: #1c1c1c; border-radius: 4px; height: 18px; overflow: hidden; }
+.bar-track { flex: 1; min-width: 0; background: #1c1c1c; border-radius: 4px; height: 18px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--accent); border-radius: 4px; min-width: 2px; }
+/* Volume is not an achievement. Remediation counts and indexer associations
+   are facts about what happened, so they take the neutral grey; the accent
+   green stays reserved for a state that is confirmed good. */
+.bar-fill.neutral { background: #5a6068; }
 .bar-val { width: 40px; text-align: right; font-size: 13px; color: var(--text-head); font-weight: 600; }
+
+/* ---- dashboard breakpoints ----
+   After `.bar-label`, deliberately. These were above it in the first draft and
+   the narrow-label override silently lost on source order, which does not show
+   up as a broken rule - it shows up as a 49px bar at 375px that looks like a
+   layout result rather than a specificity one.
+
+   Three different numbers, because these are three different grids and sharing
+   one breakpoint between them would be a tidiness argument, not a measurement.
+   None of them is 900px: that is the Details dialog's knee and it has no
+   bearing on this page.
+
+   1024 - four vitals. The block is 226px tall at 1920 and flat at 246px all
+   the way from 1600 down to 1024, then starts climbing as content wraps: 265
+   at 980, 309 at 820, 346 at 768. So 1024 is the last width where the fourth
+   column is still free.
+
+   980 - two trend cards. This one is decided by the bar, not by height. Two
+   columns always save about 165px of page height, but the track narrows with
+   it: 181px at 1024, 159px at 980, 119px at 900, 53px at 768. Below ~150px the
+   bar stops showing proportion, and the bar is the card's entire content, so
+   height bought by making the chart unreadable is not a saving. The giveaway
+   was that one column at 600px gave a 274px track while two columns at 768px
+   gave 53px - narrowing the window improved the page, which is always a sign
+   the breakpoint is in the wrong place.
+
+   480 - two vitals. Measured on heading wrap, which is what cramping looks
+   like in these cards: every heading holds one line down to 480px (199px per
+   card), and "Attention Required" takes a second line at 440px (179px). Two
+   columns are worth keeping this low because the alternative is expensive -
+   the block is 421px tall in two columns against 719px in one.
+
+   620 - the bar label. 160px is most of a narrow card's width; at 375px it
+   left the track 49px. */
+@media (min-width: 480px) { .vitals { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1024px) { .vitals { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 980px) { .trends { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .bar-label { width: 104px; min-width: 104px; } }
+
+/* ---- Triage Queue and Recent Activity as stacked cards ----
+   The action cell's alignment moved off the element and into here so the
+   narrow layout below can reason about it in CSS rather than lose to a style
+   attribute. It is right-aligned at every width - as the last line of a
+   stacked card it reads as that card's action - and renders identically to the
+   inline rule it replaced. */
+.rowcards td.act { text-align: right; }
+
+/* 870 - the width below which these two tables stop fitting. Measured on the
+   stress fixture: Recent Activity will not go under 704px (the Outcome column
+   carries a sentence, not a word), and the card body gives it the viewport
+   less 166px of shell and padding, so 870 is the last width that fits it.
+   Triage's own floor is 507px and it could stay a table down to about 670,
+   but two identical-looking tables on one page changing shape at different
+   widths reads as a rendering fault, so they move together on the wider of the
+   two numbers.
+
+   Scrolling was the old answer and it failed in a specific way worth naming:
+   the columns that went off the right were Issue, Outcome and Details, which
+   are the whole reason to look at either table. Worse, the off-screen cell
+   still set the row height, so at 768 the rows were 251px tall with two lines
+   of visible text in them.
+
+   None of the other dashboard breakpoints applies here. 980 and 1024 are about
+   grids of cards, 620 is a label width, and 720 is the shell's. This one is
+   the tables'. */
+@media (max-width: 869px) {
+  .rowcards, .rowcards tbody, .rowcards tr, .rowcards td { display: block; }
+  /* The headings survive as the per-field labels below; the row itself has
+     nothing left to align to. */
+  .rowcards thead { display: none; }
+  .rowcards tr {
+    border: 1px solid var(--border); border-radius: 6px;
+    background: #262626; padding: 12px 14px; margin-bottom: 10px;
+  }
+  .rowcards tr:last-child { margin-bottom: 0; }
+  .rowcards td { border: none; padding: 0; text-align: left; }
+  .rowcards td + td { margin-top: 9px; }
+  .rowcards td[data-label]::before {
+    content: attr(data-label); display: block;
+    font-size: 11px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--text-dim); margin-bottom: 3px;
+  }
+  /* A release title is one long unbroken token. `break-word` rather than
+     `break-all`: it only splits a word that cannot fit on a line of its own,
+     so ordinary text still wraps at spaces instead of shredding. */
+  .rowcards code { overflow-wrap: break-word; }
+  .rowcards .btn.small { padding: 7px 14px; font-size: 12.5px; }
+}
 
 /* ---- forms ---- */
 label { display: block; font-size: 12px; color: var(--text-dim); margin: 12px 0 4px; }

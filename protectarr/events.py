@@ -230,6 +230,50 @@ def describe(find):
     return f"{text}: {name}" if name else text
 
 
+# The same reasons as `_REASON_TEXT`, worded for a grouping key rather than a
+# sentence. Separate because the two jobs conflict: `describe` names one file
+# ("Monitored extension .exe: Setup.exe"), which is exactly what a category
+# must not do, or every release becomes its own category.
+_REASON_CATEGORY = {
+    "extension_match": "Monitored extension",
+    "blocked_extension": "Monitored extension",
+    "lure_filename": "Lure filename",
+    "archive_no_media": "Archive with no media",
+    "content_type_mismatch": "Content type mismatch",
+}
+
+
+def category(find):
+    """A finding's category, for counting like findings together.
+
+    The reason code is the category, not the extension. Grouping by extension
+    alone would answer "which file types turn up", which the detection settings
+    already decide; grouping by reason answers "which detector is doing the
+    work", which is the thing that changes when a lane is switched on.
+
+    The extension is still appended for `extension_match`, because there it is
+    the whole content of the finding - the reason code on its own would be one
+    undifferentiated bar covering every extension the user monitors. Nothing
+    else gets a qualifier: a lure filename and a mismatched content type are
+    already specific, and their evidence is per-release.
+    """
+    if not find:
+        return "Unknown"
+    reason = find.get("reason")
+    label = _REASON_CATEGORY.get(reason)
+    if label is None:
+        # A detector this build has never heard of. Show the raw code rather
+        # than dropping the row or calling it "Other": a finding Protectarr
+        # acted on has to be nameable, and a reason added by a newer version is
+        # a reason to update, not evidence of nothing.
+        return (reason or "Unknown").replace("_", " ").capitalize()
+    if reason in ("extension_match", "blocked_extension"):
+        ext = (find.get("evidence") or {}).get("extension")
+        if ext:
+            return f"{label} {ext}"
+    return label
+
+
 def describe_requeue(rd):
     """One line of English for the requeue decision, with the held-until date."""
     if not rd:

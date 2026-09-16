@@ -1,188 +1,328 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div class="toolbar">
-  {% if cfg.dry_run %}<button class="tool-btn" type="button" onclick="preview()">Dry-run preview</button>{% endif %}
-  <button class="tool-btn" type="button" onclick="loadDashboard()">Refresh</button>
+{#- Shared by Recent Activity and, where a match exists, the Triage Queue. The
+    wording and the pill classes are History's, taken from the same `r.status`
+    the History table renders, so the two pages cannot drift into describing the
+    same remediation differently. -#}
+{%- macro status_cell(r) -%}
+  {% set act = r.ev.action or {} %}
+  {% if act.result == 'reaped' %}<span class="pill live">reaped</span>
+  {% elif act.result == 'would_reap' %}<span class="pill dry">dry run</span>
+  {% elif act.result == 'partial' %}<span class="pill dry">partial</span>
+  {% elif act.result == 'warned' %}<span class="pill off">flagged</span>
+  {% elif act %}<span class="pill off">failed</span>{% endif %}
+  {% if r.status %}<span class="pill {{ r.status.cls }}">{{ r.status.label }}</span>{% endif %}
+{%- endmacro -%}
+
+{#- A CSS-only proportional bar. `total` is the largest count in the list, not
+    the sum: these are rankings, and scaling to the sum would make every bar
+    unreadably short as soon as the list got long. -#}
+{%- macro bar(label, count, top) -%}
+<div class="bar-row">
+  <div class="bar-label" title="{{ label }}">{{ label }}</div>
+  <div class="bar-track"><div class="bar-fill neutral"
+       style="width: {{ (100 * count / top) | round(1) }}%"></div></div>
+  <div class="bar-val">{{ count }}</div>
+</div>
+{%- endmacro -%}
+
+<div class="vitals">
+
+  <div class="card vital">
+    <h2>System Health</h2>
+    <div class="body">
+      {# Populated after load by /api/dashboard. Reachability costs a network
+         round trip per service, and blocking the page on those to render four
+         dots would make the slowest *arr the speed of the Dashboard. #}
+      <ul class="svc" id="svc_list"><li class="hint">Checking…</li></ul>
+      <ul class="svc">
+        <li>
+          <span class="svc-name">Evidence store</span>
+          {% if evidence_health.broken %}<span class="pill bad">Error</span>
+          {% elif evidence_health.failures %}<span class="pill dry">Degraded</span>
+          {% else %}<span class="pill on">OK</span>{% endif %}
+        </li>
+      </ul>
+      {% if evidence_health.broken %}
+      <p class="hint svc-why">{{ evidence_health.broken }}</p>
+      {% elif evidence_health.failures %}
+      <p class="hint svc-why">{{ evidence_health.failures }} write(s) lost since start</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# `>0` is the only state that gets colour. A dashboard that lights up when
+     everything is fine has no way left to say that something is not. #}
+  {%- set parts = [] -%}
+  {%- if attention.remediation %}{% set _ = parts.append(attention.remediation ~ ' remediation') %}{% endif -%}
+  {%- if attention.system %}{% set _ = parts.append(attention.system ~ ' system') %}{% endif -%}
+  <div class="card vital attn {{ 'alarm' if attention.total }}">
+    <h2>Attention Required</h2>
+    <div class="body">
+      <div class="num {{ 'bad' if attention.total }}" id="attn_num">{{ attention.total }}</div>
+      {# The breakdown is kept in a data attribute as well as in the text so the
+         health check can append "N unreachable" to it without having to parse
+         the sentence it is adding to back out of the DOM. #}
+      <div class="sub" id="attn_sub" data-parts="{{ parts | join(' · ') }}">
+        {% if attention.total %}{{ parts | join(' · ') }}
+        {% else %}Nothing needs you{% endif %}
+      </div>
+      {% if attention.problems %}
+      <ul class="attn-list">
+        {% for it in attention.problems %}
+        <li><b>{{ it.what }}</b><span class="hint"> {{ it.detail }}</span></li>
+        {% endfor %}
+      </ul>
+      <p class="hint"><a href="{{ url_for('system') }}">System</a> has the detail.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card vital">
+    <h2>24h Remediations</h2>
+    <div class="body">
+      {# The count is what was actually counted. When the scan hit its cap it
+         becomes a lower bound and gets a "+", which is why the cap is never
+         printed here: "2000+" can only appear if 2,000 really were counted. #}
+      <div class="num">{{ remediations_24h }}{% if truncated %}+{% endif %}</div>
+      <div class="sub">
+        {% if truncated %}at least this many; scan capped
+        {% elif remediations_24h %}removed in the last 24 hours
+        {% else %}none in the last 24 hours{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card vital">
+    <h2>Last Remediation</h2>
+    <div class="body">
+      {% if last_remediation %}
+      <div class="num small">{{ last_remediation.rel or last_remediation.abs }}</div>
+      {% if last_remediation.rel %}<div class="sub">{{ last_remediation.abs }}</div>{% endif %}
+      {% else %}
+      {# Not a fault. A Protectarr that has never had to remove anything is a
+         Protectarr that is working. #}
+      <div class="num small quiet">None yet</div>
+      <div class="sub">nothing has needed removing</div>
+      {% endif %}
+      {% if last_scan %}
+      <div class="sub muted">Last scan {{ last_scan.rel or last_scan.abs }}</div>
+      {% endif %}
+    </div>
+  </div>
+
 </div>
 
-<div class="cards">
-  <div class="statcard">
-    <div class="label">Applications</div>
-    <div class="num">{{ cfg.arrs | length }}</div>
-    <div class="sub" id="apps_health">-</div>
+{% if triage %}
+<div class="card">
+  <h2>Triage Queue <span class="hint" style="font-weight:400">- remediations Protectarr stopped on, oldest first</span></h2>
+  <div class="body">
+    <p class="hint" style="margin-top:0">
+      Protectarr removed these but could not prove the release was blocklisted, so it
+      stopped rather than searching for a replacement. It will not retry on its own,
+      and it will not remediate the same torrent again until one of these is resolved.
+    </p>
+    <div style="overflow-x:auto">
+      {#- `rowcards` is the narrow-width behaviour: below the width where the
+          Issue column stops fitting, these rows become stacked cards rather
+          than a table the reader has to drag sideways. The `data-label`s are
+          the column headings, reprinted per field once the header row is gone.
+          Desktop is untouched - see the media query in style.css. -#}
+      <table class="applist rowcards">
+        <thead><tr><th>Date</th><th>Item</th><th>Issue</th><th></th></tr></thead>
+        <tbody>
+          {% for t in triage %}
+          <tr>
+            <td class="hint">{{ t.rel or t.when }}</td>
+            <td>
+              <div><code>{{ t.release }}</code></div>
+              {% if t.app %}<div class="hint">{{ t.app }}</div>{% endif %}
+            </td>
+            <td class="hint" data-label="Issue">{{ t.issue }}</td>
+            <td class="act">
+              {% if t.detail is not none %}
+              <button type="button" class="btn small" onclick="showDetails({{ t.detail }})">Details</button>
+              {% else %}
+              {# The detection event has rotated out of events.jsonl, so there
+                 is no dossier to open. Saying so beats a button that opens
+                 a dialog of blanks. #}
+              <span class="hint">not retained</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if triage_total > triage | length %}
+    <p class="hint" style="margin-top:12px">
+      Showing {{ triage | length }} of {{ triage_total }}.
+      <a href="{{ url_for('history') }}">View all in History</a>.
+    </p>
+    {% endif %}
   </div>
-  <div class="statcard">
-    <div class="label">Indexers seen</div>
-    <div class="num" id="stat_indexers">…</div>
-    <div class="sub">across all apps</div>
-  </div>
-  <div class="statcard">
-    <div class="label">Torrents</div>
-    <div class="num" id="stat_torrents">…</div>
-    <div class="sub" id="stat_downloading">in qBittorrent</div>
-  </div>
-  <div class="statcard accent">
-    <div class="label">Malicious reaped</div>
-    <div class="num">{{ state.stats.reaped_total }}</div>
-    <div class="sub">{% if state.stats.first_seen %}since {{ state.stats.first_seen }}{% else %}all time{% endif %}</div>
-  </div>
-  {% if cfg.ip_blocklist.enabled %}
-  <div class="statcard">
-    <div class="label">IPs blocked</div>
-    <div class="num">{% if state.blocklist.entries %}{{ '{:,}'.format(state.blocklist.entries) }}{% else %}-{% endif %}</div>
-    <div class="sub">{% if state.blocklist.last %}updated {{ state.blocklist.last }}{% else %}not updated yet{% endif %}</div>
-  </div>
-  {% endif %}
 </div>
-
-<div id="preview"></div>
+{% endif %}
 
 <div class="card">
-  <h2>Library monitored <span class="hint" style="font-weight:400">- per application</span></h2>
+  <h2>Recent Activity</h2>
   <div class="body">
-    <div class="legend" id="library_legend"></div>
-    <div class="chart-wrap" id="library_chart"><p class="hint">Loading…</p></div>
-  </div>
-</div>
-
-<div class="card">
-  <h2>Malicious reaped by indexer</h2>
-  <div class="body">
-    <div class="chart-wrap" id="reaped_chart"></div>
-    <p class="hint" id="reaped_empty" hidden>No reaps recorded yet. Once Protectarr fails a fake via one of your apps, the indexer it came from shows up here.</p>
-    <p class="hint" style="margin-top:12px"><a href="{{ url_for('history') }}">History</a> has the detail behind each of these: the release, the app that owned it, and whether a replacement was searched for.</p>
-    {% if state.stats.by_app %}
-    <p class="hint" style="margin-top:12px">By app:
-      {% for app, c in state.stats.by_app | dictsort(by='value', reverse=true) %}<b>{{ app }}</b> {{ c }}{% if not loop.last %} · {% endif %}{% endfor %}
+    {% if recent %}
+    <div style="overflow-x:auto">
+      <table class="applist rowcards">
+        <thead><tr><th>Date</th><th>Release</th><th>Finding</th><th>Outcome</th><th></th></tr></thead>
+        <tbody>
+          {% for r in recent %}
+          <tr>
+            <td class="hint">{{ r.ev.timestamp }}</td>
+            <td>
+              <div><code>{{ r.ev.torrent.name }}</code></div>
+              <div class="hint">
+                {%- if r.ev.owner and r.ev.owner.instance %}{{ r.ev.owner.instance }}{% endif -%}
+                {%- if r.ev.torrent.indexer %} · {{ r.ev.torrent.indexer }}{% endif -%}
+              </div>
+            </td>
+            <td data-label="Finding">
+              {% if r.base_missing %}<span class="hint">Detection event no longer retained</span>
+              {% else %}{{ r.why }}{% endif %}
+            </td>
+            <td data-label="Outcome">
+              {{ status_cell(r) }}
+              {% if r.status %}<div class="hint" style="margin-top:4px">{{ r.status.why }}</div>{% endif %}
+            </td>
+            <td class="act">
+              <button type="button" class="btn small" onclick="showDetails({{ loop.index0 }})">Details</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="hint" style="margin-top:12px">
+      <a href="{{ url_for('history') }}">History</a> has every entry, and the detail behind each one.
+    </p>
+    {% else %}
+    <p class="hint" style="margin:0">
+      Nothing recorded yet. Releases Protectarr flags or removes appear here as they happen.
     </p>
     {% endif %}
   </div>
 </div>
 
-<div class="card">
-  <h2>Indexers <span class="hint" style="font-weight:400">- what your apps can pull from</span></h2>
-  <div class="body" style="overflow-x:auto">
-    <table>
-      <thead><tr><th>Indexer</th><th>Protocol</th><th>Seen by</th><th>Reaped</th></tr></thead>
-      <tbody id="indexers_tbody"><tr><td colspan="4" class="hint">Loading…</td></tr></tbody>
-    </table>
+<div class="trends">
+
+  <div class="card">
+    <h2>Recent Findings <span class="hint" style="font-weight:400">- 7 days</span></h2>
+    <div class="body">
+      {% if findings %}
+      {% set top = findings[0].count %}
+      <div class="bars">
+        {% for f in findings %}{{ bar(f.label, f.count, top) }}{% endfor %}
+      </div>
+      {% if truncated %}
+      <p class="hint" style="margin-top:14px">Event scan capped to preserve performance; this is a recent sample, not the full week.</p>
+      {% endif %}
+      {% else %}
+      <p class="hint" style="margin:0">Nothing found in the last 7 days.</p>
+      {% endif %}
+    </div>
   </div>
+
+  <div class="card">
+    <h2>Recent Associated Indexers <span class="hint" style="font-weight:400">- 7 days</span></h2>
+    <div class="body">
+      {% if indexers %}
+      {% set top = indexers[0].count %}
+      <div class="bars">
+        {% for ix in indexers %}{{ bar(ix.label, ix.count, top) }}{% endfor %}
+      </div>
+      <p class="hint" style="margin-top:14px">
+        {# Said plainly because the chart shape invites the opposite reading.
+           An indexer is here because a release Protectarr removed came through
+           it, which is not evidence about the indexer itself. #}
+        These indexers carried releases Protectarr removed. That does not mean the
+        indexer is malicious.{% if truncated %} Event scan capped to preserve performance;
+        this is a recent sample, not the full week.{% endif %}
+      </p>
+      {% else %}
+      <p class="hint" style="margin:0">No removals in the last 7 days.</p>
+      {% endif %}
+    </div>
+  </div>
+
 </div>
 
-<div class="card">
-  <h2>Application health</h2>
-  <div class="body" style="overflow-x:auto">
-    <table>
-      <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Indexers</th></tr></thead>
-      <tbody id="apps_tbody"><tr><td colspan="4" class="hint">Loading…</td></tr></tbody>
-    </table>
-    <p class="hint" id="dash_errors" style="color:var(--danger)"></p>
+<div class="modal-overlay" id="detailModal" hidden>
+  {# The same dossier dialog History uses, down to the grid class: one
+     remediation should not look like two different things depending on which
+     page opened it. #}
+  <div class="modal wide">
+    <div class="modal-head"><span>Details</span>
+      <button type="button" class="modal-x" onclick="closeDetails()">&times;</button></div>
+    <div class="modal-body detail-grid" id="detail_body"></div>
+    <div class="modal-foot">
+      <button type="button" class="btn" onclick="closeDetails()">Close</button>
+    </div>
   </div>
 </div>
 
 {% endblock %}
 {% block scripts %}
-{% include "_js.html" %}
 <script>
-window.REAPED_BY_INDEXER = {{ state.stats.by_indexer | tojson }};
-var LAST_APPS = [];
-function esc(s){ return (s==null?'':String(s)).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-function trunc(s, n){ s = String(s); return s.length > n ? s.slice(0, n-1) + '…' : s; }
+var ROWS = {{ detail_rows | tojson }};
+var ATTN_LOCAL = {{ attention.total }};
+</script>
+{% include "_details.html" %}
+<script>
+// ---- service health ----
+// The only thing this page fetches. It establishes reachability and nothing
+// else: one status call per *arr and one version call for qBittorrent.
+(function () {
+  var list = document.getElementById('svc_list');
 
-// ---- self-contained SVG bar chart (axis + gridlines + stacked series) ----
-function niceNum(range, round){
-  const exp = Math.floor(Math.log10(range || 1));
-  const f = (range || 1) / Math.pow(10, exp);
-  let nf;
-  if (round) nf = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
-  else       nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
-  return nf * Math.pow(10, exp);
-}
-function axis(maxVal){
-  maxVal = Math.max(1, maxVal);
-  const step = niceNum(niceNum(maxVal, false) / 4, true);
-  return { step: step, max: Math.ceil(maxVal / step) * step };
-}
-function barChart(el, opts){
-  const cats = opts.categories, series = opts.series, H = opts.height || 280;
-  const W = Math.max(320, el.clientWidth || 760);
-  const padL = 46, padR = 14, padT = 10, padB = 48;
-  const totals = cats.map((_, i) => series.reduce((s, se) => s + (+se.data[i] || 0), 0));
-  const ax = axis(Math.max.apply(null, [1].concat(totals)));
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const band = plotW / (cats.length || 1), bw = Math.min(46, band * 0.5);
-  let grid = '', bars = '', xl = '';
-  for (let v = 0; v <= ax.max + 1e-9; v += ax.step){
-    const y = padT + plotH - plotH * (v / ax.max);
-    grid += `<line class="grid" x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}"/>`;
-    grid += `<text class="yl" x="${padL-8}" y="${(y+4).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+  function row(s) {
+    // `ok === null` is "not configured", which is neither healthy nor broken
+    // and must not be counted as a problem. A Protectarr with no qBittorrent
+    // URL yet is being set up, not failing.
+    var pill = s.ok === null ? '<span class="pill off">Not set up</span>'
+             : s.ok ? '<span class="pill on">OK</span>'
+                    : '<span class="pill bad">Error</span>';
+    return '<li><span class="svc-name">' + esc(s.name) + '</span>' + pill
+         + (s.ok === false ? '<span class="svc-detail hint">' + esc(s.detail) + '</span>' : '')
+         + '</li>';
   }
-  cats.forEach((c, i) => {
-    const cx = padL + band * i + band / 2; let acc = 0;
-    series.forEach(se => {
-      const val = +se.data[i] || 0; if (val <= 0) return;
-      const h = plotH * (val / ax.max), y = padT + plotH - plotH * (acc / ax.max) - h;
-      bars += `<rect x="${(cx-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${se.color}"><title>${esc(c)} · ${esc(se.name)}: ${val}</title></rect>`;
-      acc += val;
+
+  fetch('{{ url_for("dashboard_data") }}', {credentials: 'same-origin'})
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (r) {
+      var svc = (r.data && r.data.services) || [];
+      list.innerHTML = svc.length ? svc.map(row).join('')
+        : '<li class="hint">No applications configured yet.</li>';
+
+      // Connectivity failures are the part of Attention Required that could
+      // not be known at render time. Added to the server's count rather than
+      // replacing it, because the two sets are disjoint: one is remediations
+      // and local stores, the other is reachability.
+      var bad = svc.filter(function (s) { return s.ok === false; }).length;
+      if (!bad) return;
+      var total = ATTN_LOCAL + bad;
+      var num = document.getElementById('attn_num');
+      num.textContent = total;
+      num.classList.add('bad');
+      document.querySelector('.vital.attn').classList.add('alarm');
+      var sub = document.getElementById('attn_sub');
+      sub.textContent = (sub.dataset.parts ? sub.dataset.parts + ' · ' : '')
+                      + bad + ' unreachable';
+    })
+    .catch(function () {
+      // A failed health check is not evidence that the services are down, so
+      // it does not colour anything or touch the Attention count.
+      list.innerHTML = '<li class="hint">Could not check service health.</li>';
     });
-    xl += `<text class="xl" x="${cx.toFixed(1)}" y="${padT+plotH+18}" text-anchor="middle">${esc(trunc(c, 16))}</text>`;
-  });
-  el.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" width="100%" height="${H}">${grid}${bars}${xl}</svg>`;
-}
-function legend(el, series){
-  el.innerHTML = series.map(s => `<span class="leg"><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('');
-}
-
-const C_MON = '#35c46b', C_UNMON = '#3f4753', C_REAP = '#e5484d';
-function renderCharts(){
-  const apps = LAST_APPS.filter(a => a.library);
-  const libEl = document.getElementById('library_chart'), libLeg = document.getElementById('library_legend');
-  if (apps.length){
-    const series = [
-      {name:'Monitored',   color:C_MON,   data: apps.map(a => a.library.monitored)},
-      {name:'Unmonitored', color:C_UNMON, data: apps.map(a => Math.max(0, a.library.total - a.library.monitored))}
-    ];
-    legend(libLeg, series);
-    barChart(libEl, {categories: apps.map(a => a.name + ' · ' + a.library.noun), series: series});
-  } else { libLeg.innerHTML = ''; libEl.innerHTML = '<p class="hint">No library data (apps unreachable or empty).</p>'; }
-
-  const rb = window.REAPED_BY_INDEXER || {}, keys = Object.keys(rb);
-  const rEl = document.getElementById('reaped_chart'), rEmpty = document.getElementById('reaped_empty');
-  if (keys.length){
-    rEmpty.hidden = true;
-    barChart(rEl, {categories: keys, series: [{name:'Reaped', color:C_REAP, data: keys.map(k => rb[k])}]});
-  } else { rEl.innerHTML = ''; rEmpty.hidden = false; }
-}
-
-function loadDashboard() {
-  fetch('{{ url_for("dashboard_data") }}').then(r=>r.json()).then(r=>{
-    if (!r.ok) return;
-    const d = r.data; LAST_APPS = d.apps || [];
-    document.getElementById('stat_torrents').textContent = d.total_torrents == null ? '-' : d.total_torrents;
-    document.getElementById('stat_downloading').textContent = d.active_torrents == null ? 'in qBittorrent' : (d.active_torrents + ' downloading');
-    document.getElementById('stat_indexers').textContent = d.indexers.length;
-
-    const ok = d.apps.filter(a=>a.ok).length;
-    document.getElementById('apps_health').textContent = d.apps.length ? (ok + ' of ' + d.apps.length + ' online') : 'none configured';
-
-    const reap = window.REAPED_BY_INDEXER || {};
-    document.getElementById('indexers_tbody').innerHTML = d.indexers.length
-      ? d.indexers.map(ix=>`<tr><td>${esc(ix.name)}${ix.enabled?'':' <span class="hint">(disabled)</span>'}</td><td>${esc(ix.protocol)}</td><td>${esc(ix.apps.join(', '))}</td><td>${reap[ix.name]||0}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="hint">No indexers found on your apps.</td></tr>';
-
-    document.getElementById('apps_tbody').innerHTML = d.apps.length
-      ? d.apps.map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(a.type)}</td><td>${a.ok?'<span class="pill on">OK</span>':'<span class="pill off">Error</span>'} <span class="hint">${esc(a.detail)}</span></td><td>${a.indexers}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="hint">No applications configured yet - add one on the Applications page.</td></tr>';
-
-    document.getElementById('dash_errors').textContent = (d.errors||[]).join(' · ');
-    renderCharts();
-  }).catch(e=>{ document.getElementById('dash_errors').textContent = String(e); });
-}
-
-let _rz;
-window.addEventListener('resize', function(){ clearTimeout(_rz); _rz = setTimeout(renderCharts, 150); });
-renderCharts();   // draw reaped chart immediately from server data
-loadDashboard();  // then fill live data + library chart
+})();
 </script>
 {% endblock %}

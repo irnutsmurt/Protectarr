@@ -29,11 +29,12 @@ searches again.
 
 ## What it looks like
 
-The dashboard: what's connected, what's been caught, and which indexers the
-fakes are coming from.
+The dashboard answers four questions in order: is Protectarr healthy, does
+anything need you, what has it done recently, and what has been turning up.
+A quiet dashboard means nothing needs doing.
 
 <p align="center">
-  <img src="screenshots/dashboard.png" alt="Protectarr dashboard" width="820">
+  <img src="screenshots/dashboard.png" alt="Protectarr dashboard showing service health, one remediation needing attention, recent activity and the findings and indexers seen in the last seven days" width="820">
 </p>
 
 History is the detail behind every reap: which release it was, which app owned
