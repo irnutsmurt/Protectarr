@@ -344,13 +344,95 @@ h3.sub { display: flex; align-items: center; gap: 9px; }
 }
 .policy dd { margin: 0; font-size: 13.5px; color: var(--text); }
 .policy-row.muted dd { color: var(--text-dim); font-style: italic; }
-@media (max-width: 620px) {
-  .policy-row { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 9px 14px; }
-}
 
 .disclosure { padding: 4px 14px 14px; border-top: 1px solid var(--border); }
 .disclosure > *:first-child { margin-top: 12px; }
 .disclosure p.hint:last-child { margin-bottom: 0; }
+
+/* ---- Settings, narrow ----
+   Every number here was measured against this content rather than picked. */
+
+/* The path-mapping row. `.row`'s generic 160px minimum was measured to be too
+   small for the thing this field holds: `/General Storage/torrents`, the
+   example in our own documentation, needs 188px of input, and a realistic
+   unRAID path like `/mnt/user/data/torrents/complete` needs 233. At 768px the
+   generic rule gave these 179px each, so the documented example did not fit in
+   the field it documents. 236 is that 233 plus slack.
+
+   The Remove button is taken out of the sharing entirely: `flex: 1` was
+   stretching a 79px button to 321px and then wrapping its label. */
+.maprow > div { min-width: 236px; }
+.maprow > button { flex: 0 0 auto; min-width: 0; align-self: end; }
+
+/* The API key. `.secret-field` is one flex line: Copy and Show take 136px of
+   it, which left the field 133px at 375 for a 64-character key. Wrapping is
+   driven by the input's own minimum rather than a breakpoint, so the buttons
+   drop to their own line exactly when they stop fitting beside it. */
+.secret-field { flex-wrap: wrap; }
+.secret-field input { min-width: 200px; }
+
+/* Touch targets. Width alone is the wrong signal for a tablet held in two
+   hands, so a coarse pointer opts in at any width. 0.6.1 sized the History
+   Details button to 44px for the same reason and by the same number. */
+/* Scoped to Settings cards by the anchor id the old per-section URLs redirect
+   to, which nothing outside Settings carries. Applications, Dashboard, History
+   and System are out of scope for 0.7.0 and their controls are left alone. */
+@media (max-width: 720px), (pointer: coarse) {
+  .card[id^="section-"] label.check { min-height: 44px; align-items: center; }
+  .card[id^="section-"] .body .btn,
+  .card[id^="section-"] .body button[type=submit],
+  .dirtybar .btn { min-height: 44px; }
+  details.howto > summary, details.adv > summary { min-height: 44px; }
+  /* A scroll region inside a scrolling page is a trap on a touch screen: the
+     inner one swallows the gesture and the page appears stuck. The list is
+     short in practice, so down here it simply becomes part of the page. */
+  .card[id^="section-"] .checklist { max-height: none; overflow-y: visible; }
+}
+
+/* The log-file table, stacked into records below the width where it stops
+   fitting. Measured: four columns (File / Size / Modified / Download) have a
+   min-content width of 433px against a card that is the viewport less 106, so
+   539 is the last width where the whole row is on screen. It scrolled sideways
+   inside its wrapper below that, which is the same defect History had before
+   0.6.1 and the same fix.
+
+   Its own breakpoint rather than `.rowcards`' 869: this table is narrower than
+   History's and stacking it at 869 would cost density on a tablet for nothing. */
+@media (max-width: 538px) {
+  .logcards, .logcards tbody { display: block; }
+  .logcards thead { display: none; }
+  .logcards tr {
+    display: block; border: 1px solid var(--border); border-radius: 6px;
+    background: #262626; padding: 12px 14px; margin-bottom: 10px;
+  }
+  .logcards tr:last-child { margin-bottom: 0; }
+  .logcards td { display: block; border: none; padding: 0; text-align: left; }
+  .logcards td + td { margin-top: 8px; }
+  .logcards td[data-label]::before {
+    content: attr(data-label); display: block;
+    font-size: 11px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--text-dim); margin-bottom: 3px;
+  }
+  .logcards code { overflow-wrap: break-word; }
+}
+
+/* The one narrow breakpoint Settings has, taken from the tightest thing on
+   the page: a dirty card header holding a title, a saved-state chip and three
+   controls. Measured on each of the seven, the widest need is Remediation
+   Policy at 587px of card, which is 653px of viewport. Below that the strip
+   takes its own line.
+
+   The Current Policy rows stack here too rather than at a number of their own.
+   Their label column is a fixed 180px, so they are under the same pressure
+   from the same direction, and one breakpoint for the page is easier to keep
+   honest than two that drift apart. */
+@media (max-width: 652px) {
+  .card > h2 { flex-wrap: wrap; }
+  .chip { margin-left: auto; }
+  .dirtybar { margin-left: 0; width: 100%; justify-content: flex-end; }
+  .card.dirty > h2 { padding-bottom: 12px; }
+  .policy-row { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 9px 14px; }
+}
 /* Right-aligned numeric columns, without an inline style per cell. */
 .applist th.num, .applist td.num { text-align: right; }
 

@@ -80,14 +80,14 @@
   <div class="body">
     {% if log_files %}
     <div style="overflow-x:auto">
-      <table class="applist">
+      <table class="applist logcards">
         <thead><tr><th>File</th><th class="num">Size</th><th>Modified</th><th></th></tr></thead>
         <tbody>
           {% for f in log_files %}
           <tr>
-            <td><code>{{ f.name }}</code>{% if f.name.endswith('.gz') %} <span class="hint">(compressed)</span>{% endif %}</td>
-            <td class="num">{{ f.size_h }}</td>
-            <td class="hint">{{ f.modified_h }}</td>
+            <td data-label="File"><code>{{ f.name }}</code>{% if f.name.endswith('.gz') %} <span class="hint">(compressed)</span>{% endif %}</td>
+            <td class="num" data-label="Size">{{ f.size_h }}</td>
+            <td class="hint" data-label="Modified">{{ f.modified_h }}</td>
             <td><a class="btn small" href="{{ url_for('download_log', name=f.name) }}">Download</a></td>
           </tr>
           {% endfor %}

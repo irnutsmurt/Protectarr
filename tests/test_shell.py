@@ -63,9 +63,19 @@ def block(selector, source=None):
 
 
 def media(query):
-    """Everything inside the first @media block with this condition."""
+    """Everything inside the first @media block whose condition is exactly this.
+
+    Matched on the whole condition rather than a prefix. `@media (max-width:
+    720px)` and `@media (max-width: 720px), (pointer: coarse)` are different
+    blocks that begin with the same characters, and a prefix match silently
+    returns whichever happens to come first in the file.
+    """
     src = css()
-    i = src.find("@media " + query)
+    i = -1
+    for m in re.finditer(r"@media\s*([^{]*?)\s*\{", src):
+        if m.group(1) == query:
+            i = m.start()
+            break
     if i < 0:
         return None
     depth, j = 0, src.index("{", i)
