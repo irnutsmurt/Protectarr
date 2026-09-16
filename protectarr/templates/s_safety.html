@@ -49,7 +49,7 @@
       <label class="check" style="margin-top:14px"><input type="checkbox" name="requeue_after_airdate" {% if cfg.safety.requeue_after_airdate %}checked{% endif %}>
         Requeue after reaping - but only once the episode/movie has aired/released</label>
       <label>Air-date grace (hours)</label>
-      <input type="number" name="airdate_grace_hours" min="0" value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
+      <input type="number" name="airdate_grace_hours" min="0" max="8760" value="{{ cfg.safety.airdate_grace_hours }}" style="max-width:120px">
     </div>
   </div>
 

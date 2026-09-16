@@ -867,7 +867,16 @@ def create_app(service):
             s["allowed_tags"] = [t.strip() for t in
                                  f.getlist("allowed_tags") if t.strip()]
             s["requeue_after_airdate"] = f.get("requeue_after_airdate") == "on"
-            s["airdate_grace_hours"] = max(0, int(f.get("airdate_grace_hours", 0) or 0))
+            # Parsed through float() and guarded, like every other numeric
+            # setting here. `int("1e9")` raises, and an `<input type=number>`
+            # considers `1e9` a valid value and submits it, so the unguarded
+            # version was a 500 anybody could reach by typing. The ceiling is a
+            # year: a grace period past that is a typo, not a policy.
+            try:
+                s["airdate_grace_hours"] = min(8760, max(0, int(float(
+                    f.get("airdate_grace_hours") or 0))))
+            except (TypeError, ValueError):
+                pass
             # Clamped like every other numeric setting. 0 is allowed and means
             # "act as soon as absence is confirmed", which is a legitimate
             # choice; the upper bound just stops a typo turning the fallback
@@ -904,7 +913,12 @@ def create_app(service):
             bl["enabled"] = f.get("bl_enabled") == "on"
             bl["url"] = f.get("bl_url", "").strip()
             bl["path"] = f.get("bl_path", "").strip()
-            bl["update_interval_hours"] = max(1, int(f.get("bl_interval", 24) or 24))
+            # Guarded like the rest; blank still means the 24-hour default.
+            try:
+                bl["update_interval_hours"] = min(8760, max(1, int(float(
+                    f.get("bl_interval") or 24))))
+            except (TypeError, ValueError):
+                pass
             bl["apply_to_qbit"] = f.get("bl_apply") == "on"
             bl["block_trackers"] = f.get("bl_trackers") == "on"
 
@@ -924,7 +938,14 @@ def create_app(service):
                     lg[key] = val
             lg["file_enabled"] = f.get("log_file_enabled") == "on"
             lg["path"] = f.get("log_path", "").strip()
-            lg["retention_days"] = max(0, int(f.get("log_retention", 14) or 0))
+            # Guarded like the rest. The ceiling is the one the form has always
+            # declared (max="365"); blank still means 0, which is "keep
+            # everything" rather than the 14-day default.
+            try:
+                lg["retention_days"] = min(365, max(0, int(float(
+                    f.get("log_retention") or 0))))
+            except (TypeError, ValueError):
+                pass
             tz = (f.get("timezone") or "").strip()
             if tz and tz not in logs.available_timezones():
                 flash(f"Unknown timezone {tz!r}, leaving it unchanged.")
@@ -933,7 +954,36 @@ def create_app(service):
 
         elif section == "security":
             auth = cfg["web"].setdefault("auth", {})
-            auth["method"] = f.get("auth_method", "none")
+            # A save that would leave nobody able to log in is refused outright
+            # rather than half-applied. Choosing Forms with both fields empty
+            # was three clicks from here and cost the operator their instance:
+            # `check_password` needs a truthy `password_hash`, so no credential
+            # could ever succeed, and the only way back was editing the YAML by
+            # hand.
+            #
+            # This asks whether a hash would EXIST afterwards, not whether one
+            # was typed, so blank-means-unchanged is untouched: an existing
+            # setup can still save a username change without retyping the
+            # password. `method = none` is never checked, so turning
+            # authentication off is always available.
+            #
+            # `local_disabled` is deliberately not an exemption. It only
+            # bypasses auth for addresses that look local, that judgement
+            # depends on `trusted_proxies` being right, and one proxy change
+            # later the instance would be unreachable with no way back.
+            method = f.get("auth_method", "none")
+            if method in ("basic", "forms"):
+                username = f.get("auth_username", "").strip()
+                has_password = bool(f.get("auth_password")
+                                    or auth.get("password_hash"))
+                if not username or not has_password:
+                    missing = ("a username and a password"
+                               if not username and not has_password
+                               else "a username" if not username else "a password")
+                    flash(f"{method.capitalize()} authentication needs "
+                          f"{missing}. Nothing was saved.")
+                    return redirect(url_for("settings_page", section=section))
+            auth["method"] = method
             auth["required"] = f.get("auth_required", "enabled")
             auth["username"] = f.get("auth_username", "").strip()
             if f.get("auth_password", ""):

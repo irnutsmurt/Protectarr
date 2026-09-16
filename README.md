@@ -257,6 +257,12 @@ Secrets can come from env vars instead: `PROTECTARR_QBIT_API_KEY`,
 `PROTECTARR_QBIT_PASSWORD`, `PROTECTARR_QBIT_URL`, `PROTECTARR_QBIT_USERNAME`,
 `PROTECTARR_WEB_API_KEY`, `PROTECTARR_DRY_RUN`.
 
+A variable that is set wins over the file, and one that is empty counts as not
+set, so `PROTECTARR_QBIT_PASSWORD=${QBIT_PASSWORD:-}` in `docker-compose.yml`
+leaves a password you set in the WebUI alone. Saving a Settings page never
+copies an env-provided value into `config.yaml`; it stays in the environment
+where you put it.
+
 ### WebUI authentication
 
 Modelled on the *arr apps (Settings → Security):

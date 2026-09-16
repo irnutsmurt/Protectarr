@@ -10,7 +10,7 @@
       <input type="url" name="bl_url" value="{{ cfg.ip_blocklist.url }}">
       <div class="row">
         <div><label>File path <span class="hint">(as qBittorrent sees it)</span></label><input type="text" name="bl_path" value="{{ cfg.ip_blocklist.path }}"></div>
-        <div><label>Update every (hours)</label><input type="number" name="bl_interval" min="1" value="{{ cfg.ip_blocklist.update_interval_hours }}"></div>
+        <div><label>Update every (hours)</label><input type="number" name="bl_interval" min="1" max="8760" value="{{ cfg.ip_blocklist.update_interval_hours }}"></div>
       </div>
       <label class="check"><input type="checkbox" name="bl_apply" {% if cfg.ip_blocklist.apply_to_qbit %}checked{% endif %}> Apply to qBittorrent IP filter automatically</label>
       <label class="check"><input type="checkbox" name="bl_trackers" {% if cfg.ip_blocklist.block_trackers %}checked{% endif %}> Also filter tracker connections</label>

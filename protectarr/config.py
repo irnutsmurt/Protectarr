@@ -222,6 +222,49 @@ _ENV_OVERRIDES = {
 _lock = threading.Lock()
 
 
+def _env_value(name):
+    """What this override actually supplies, or None when it supplies nothing.
+
+    An empty or whitespace-only variable means "not provided", not "set to
+    blank". `docker-compose.yml` ships
+
+        - PROTECTARR_QBIT_PASSWORD=${QBIT_PASSWORD:-}
+
+    and `${VAR:-}` *defines* the variable as empty rather than leaving it out,
+    so an `name in os.environ` test made the stock compose file blank a
+    password that had been set through the WebUI, on every single load, with
+    the file on disk still holding the right value. Nothing can set one of
+    these to a deliberate empty string that the UI could not set more
+    directly, so there is no case being lost here.
+    """
+    val = os.environ.get(name)
+    if val is None or not val.strip():
+        return None
+    return val
+
+
+def _env_pairs():
+    """(path, value) for every override currently supplying something."""
+    out = []
+    for env, path in _ENV_OVERRIDES.items():
+        val = _env_value(env)
+        if val is None:
+            continue
+        if path[-1] == "dry_run":
+            val = val.strip().lower() in ("1", "true", "yes", "on")
+        out.append((path, val))
+    return out
+
+
+def _dig(node, path):
+    """Walk `path` through nested dicts. (containing dict, key) or (None, key)."""
+    for key in path[:-1]:
+        node = node.get(key) if isinstance(node, dict) else None
+        if node is None:
+            return None, path[-1]
+    return (node if isinstance(node, dict) else None), path[-1]
+
+
 def _deep_merge(base, override):
     out = copy.deepcopy(base)
     for k, v in (override or {}).items():
@@ -233,16 +276,39 @@ def _deep_merge(base, override):
 
 
 def _apply_env(cfg):
-    for env, path in _ENV_OVERRIDES.items():
-        if env not in os.environ:
-            continue
-        val = os.environ[env]
-        if path[-1] == "dry_run":
-            val = val.strip().lower() in ("1", "true", "yes", "on")
+    for path, val in _env_pairs():
         node = cfg
         for key in path[:-1]:
             node = node.setdefault(key, {})
         node[path[-1]] = val
+    return cfg
+
+
+def _strip_env(cfg, file_cfg):
+    """Undo `_apply_env` for anything nobody edited, in place.
+
+    `save()` is handed the dict `load()` produced, which has the environment
+    already merged into it. Persisting that verbatim copies an env-provided
+    secret onto disk because some unrelated page was saved, which is precisely
+    what `save()` has always promised it does not do.
+
+    A value is only taken back out when it still equals what the environment
+    supplied, so an operator who deliberately changed the field still gets it
+    written - shadowed by the variable until that variable goes away, which is
+    the same outcome as before this function existed. Restoring what the file
+    itself said (and deleting the key when it said nothing, so `_persist`'s
+    merge supplies the default) is what keeps a save from being a quiet way to
+    lose a stored credential.
+    """
+    for path, val in _env_pairs():
+        node, key = _dig(cfg, path)
+        if node is None or key not in node or node[key] != val:
+            continue
+        stored, _ = _dig(file_cfg, path)
+        if stored is not None and key in stored:
+            node[key] = stored[key]
+        else:
+            node.pop(key, None)
     return cfg
 
 
@@ -292,7 +358,7 @@ def ensure_api_key():
     """Return a stable web API key, generating + persisting one on first run so
     the HTTP API is usable out of the box (like the *arr apps). Skips generation
     when the key is supplied via the PROTECTARR_WEB_API_KEY env override."""
-    env = os.environ.get("PROTECTARR_WEB_API_KEY")
+    env = _env_value("PROTECTARR_WEB_API_KEY")
     if env:
         return env
     with _lock:
@@ -306,7 +372,7 @@ def ensure_api_key():
 
 
 def api_key_is_from_env():
-    return bool(os.environ.get("PROTECTARR_WEB_API_KEY"))
+    return _env_value("PROTECTARR_WEB_API_KEY") is not None
 
 
 def regenerate_api_key():
@@ -329,7 +395,11 @@ def regenerate_api_key():
 
 
 def save(cfg):
-    """Persist config to disk (env overrides are NOT written back)."""
+    """Persist config to disk (env overrides are NOT written back).
+
+    The copy matters: `_strip_env` edits what it is given, and the caller is
+    holding the same dict it is about to keep using.
+    """
     with _lock:
         # Only store keys we know about, in a stable order.
-        return _persist(cfg)
+        return _persist(_strip_env(copy.deepcopy(cfg), _read_file()))
