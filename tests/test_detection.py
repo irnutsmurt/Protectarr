@@ -73,7 +73,7 @@ def legacy_is_reapable(fl, arr_type, tracked, indexer):
         e = posixpath.splitext(f["name"])[1].lower()
         if e in media:
             return False
-        if first_archive is None and _util.is_archive(e, archive_exts):
+        if first_archive is None and _util.is_archive(f["name"], fl, archive_exts):
             first_archive = f["name"]
     if first_archive and indexer and indexer in set(ad["indexers"]):
         return True
@@ -164,6 +164,93 @@ class TestDetectors(unittest.TestCase):
             self.assertTrue(run(files("a.exe")))
         finally:
             detectors.DETECTORS = original
+
+
+class TestAThreeDigitSuffixNeedsAVolumeFamily(unittest.TestCase):
+    """A number on the end of a name is not evidence of a split archive.
+
+    `H.264` and `H.265` are the commonest tokens in a scene video name and both
+    are three digits. Until this was measured they read as archive volumes, and
+    `archive_no_media` is a blocking finding, so an ordinary episode could be
+    deleted on the stated evidence that it was an archive.
+    """
+
+    EXTS = {".rar", ".zip", ".7z"}
+
+    # (title, file list, {filename: is it an archive})
+    CASES = [
+        ("a lone H.264 release is not an archive",
+         ["Yellowjackets.S03E02.1080p.WEB-DL.DDP5.1.H.264"],
+         {"Yellowjackets.S03E02.1080p.WEB-DL.DDP5.1.H.264": False}),
+        ("a lone H.265 release is not an archive",
+         ["The.Last.of.Us.S02E03.2160p.WEB-DL.DV.HDR.H.265"],
+         {"The.Last.of.Us.S02E03.2160p.WEB-DL.DV.HDR.H.265": False}),
+        ("a .001 beside its .rar is a volume",
+         ["archive.rar", "archive.001"],
+         {"archive.001": True}),
+        ("a contiguous set is a volume even with no .rar present",
+         ["payload.001", "payload.002", "payload.003"],
+         {"payload.001": True, "payload.002": True, "payload.003": True}),
+        ("a zero-based set is a volume",
+         ["payload.000", "payload.001", "payload.002"],
+         {"payload.000": True, "payload.001": True}),
+        ("numeric suffixes that form no sequence are not volumes",
+         ["Show.S01E01.1080p.WEB.H.264", "Movie.2024.2160p.HDR.H.265"],
+         {"Show.S01E01.1080p.WEB.H.264": False,
+          "Movie.2024.2160p.HDR.H.265": False}),
+        ("one release in two codecs is not a volume set",
+         ["Interstellar.2014.2160p.UHD.BluRay.H.264",
+          "Interstellar.2014.2160p.UHD.BluRay.H.265"],
+         {"Interstellar.2014.2160p.UHD.BluRay.H.264": False,
+          "Interstellar.2014.2160p.UHD.BluRay.H.265": False}),
+        ("a stem that already claims an archive is a volume",
+         ["release.7z.001", "release.7z.002"],
+         {"release.7z.001": True, "release.7z.002": True}),
+        ("a single 7z volume with no siblings is still a volume",
+         ["release.7z.001"], {"release.7z.001": True}),
+        ("a lone .001 with nothing to be part of is not a volume",
+         # The conservative reading of "family". One member is not a set, and
+         # `is_archive` returning True is the answer that can get a torrent
+         # deleted, so it is not the answer to guess at.
+         ["payload.001"], {"payload.001": False}),
+        ("a same-stem sidecar is not an archive sibling",
+         ["payload.001", "payload.nfo"], {"payload.001": False}),
+        ("two-digit suffixes are not volume numbers",
+         # Split sets are `.001`-style or `.rNN`. `.00`/`.01` is neither, and
+         # two-digit tails do occur in release names - `...1080p.60` is a
+         # framerate.
+         ["payload.00", "payload.01"],
+         {"payload.00": False, "payload.01": False}),
+        ("a set with a gap in it is not a set",
+         ["broken.001", "broken.003"],
+         {"broken.001": False, "broken.003": False}),
+        ("an episode pack ending in H.264 holds no archives",
+         ["Fallout.S01E0%d.1080p.AMZN.WEB-DL.DDP5.1.H.264" % n
+          for n in range(1, 5)],
+         {"Fallout.S01E01.1080p.AMZN.WEB-DL.DDP5.1.H.264": False,
+          "Fallout.S01E04.1080p.AMZN.WEB-DL.DDP5.1.H.264": False}),
+        ("an unrelated archive in the torrent does not adopt a .264 file",
+         ["scene.rar", "Bonus.Feature.1080p.WEB.H.264"],
+         {"scene.rar": True, "Bonus.Feature.1080p.WEB.H.264": False}),
+        ("rar part files keep working",
+         ["show.rar", "show.r00", "show.r01"],
+         {"show.r00": True, "show.r01": True}),
+    ]
+
+    def test_every_case(self):
+        for title, names, expected in self.CASES:
+            fl = files(*names)
+            for name, want in expected.items():
+                with self.subTest(case=title, file=name):
+                    self.assertEqual(
+                        _util.is_archive(name, fl, self.EXTS), want, title)
+
+    def test_an_episode_named_h264_earns_no_archive_finding(self):
+        self.assertFalse(run(files("Yellowjackets.S03E02.1080p.WEB-DL.H.264")))
+
+    def test_a_real_volume_set_still_earns_one(self):
+        found = run(files("payload.001", "payload.002", "payload.003"))
+        self.assertEqual([f["reason"] for f in found], ["archive_no_media"])
 
 
 class TestPolicy(unittest.TestCase):

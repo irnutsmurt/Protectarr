@@ -20,11 +20,11 @@ def detect(files, det, ctx):
     media = media_exts(ctx.get("arr_type"))
     first_archive = None
     for f in files:
-        e = ext(f.get("name") or "")
-        if e in media:
+        name = f.get("name") or ""
+        if ext(name) in media:
             return []  # real media is present, so this is not that kind of fake
-        if first_archive is None and is_archive(e, archive_exts):
-            first_archive = f.get("name") or ""
+        if first_archive is None and is_archive(name, files, archive_exts):
+            first_archive = name
     if not first_archive:
         return []
 
