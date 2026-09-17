@@ -174,7 +174,9 @@ venv/bin/python -m unittest tests.test_active_page -v
 Mutation harnesses live in the session scratchpad, not the repo. If they are
 gone, the tests still stand on their own; the harnesses only prove the tests
 bite. Convention: every patch must change the file, and a **named** test must
-fail. A patch matching nothing is reported as a hole, not a pass.
+fail. A patch matching nothing is reported as a hole, not a pass. A harness
+must also purge `__pycache__` and run with `-B`, for the reason recorded under
+"Non-obvious implementation discoveries" - without it the results are noise.
 
 ## Non-obvious implementation discoveries
 
@@ -208,6 +210,23 @@ Things that cost real time to find and are not visible in the code.
   files. Running two at once left a mutant in `web.py` during this session; it
   survived a full 1090-test run because nothing asserted the clause it
   disabled. Run them sequentially and verify anchors afterwards.
+- **A mutation harness must purge `__pycache__` and run its tests with `-B`.**
+  CPython validates a `.pyc` against the source's mtime *in whole seconds*
+  plus its size. A harness patches and restores a file far faster than that, so
+  a restore landing in the same second as the mutant's compile leaves the
+  mutant's bytecode looking valid for the original source - and the next mutant
+  runs against the previous mutant's code. Found during 0.8.1: the first run of
+  the Phase A harness reported eight survivors, every one of them false. After
+  adding `PYTHONDONTWRITEBYTECODE=1`, `python -B` and a `__pycache__` purge
+  before each subprocess, the same twenty mutants all died.
+
+  **This affects the six historical harnesses too.** Their recorded
+  "0 survived" results were produced without that protection and should be
+  treated as unverified rather than as evidence. Nothing is known to be wrong
+  as a result - a stale mutant makes a harness lie in both directions, so the
+  errors are not biased toward false confidence - but the numbers no longer
+  mean what they say. Re-running them is cheap and was deliberately not done as
+  part of 0.8.1, which was scoped to two safety fixes.
 
 ## Next tasks, in priority order
 
