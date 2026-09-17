@@ -17,7 +17,7 @@
       The most recent one failed, so this is what was true
       {{ age_text }} ago, not what is true now.
       {% else %}
-      Projected from the scan that finished {{ age_text }} ago.
+      Snapshot from the scan that finished {{ age_text }} ago.
       {% endif %}
       {% if snap.dry_run %}Protectarr is in <b>dry run</b>, so nothing here would be removed even if it were flagged.{% endif %}
     </p>
@@ -30,11 +30,16 @@
         they are. With a queue unread Protectarr cannot tell an unowned
         download from one whose owner is down, so it declines to delete
         anything directly, and several rows below will say so. -#}
+    {#- Both halves have to read naturally for one application and for three.
+        "the queue of Sonarr" and "the queues of Radarr, Sonarr" is the only
+        pluralisation here; the second sentence avoids the problem entirely by
+        saying "affected applications" rather than pointing back at the list. -#}
     <p class="warnbox">
-      Could not read the queue of {{ snap.unreadable | join(', ') }}.
+      Could not read the queue{{ 's' if snap.unreadable | length > 1 }} of
+      {{ snap.unreadable | join(', ') }}.
       Ownership is uncertain for this pass, so Protectarr held back from acting
-      on anything it could not attribute. Torrents those applications own are
-      still shown with their last known owner.
+      on anything it could not attribute. Torrents owned by affected
+      applications are still shown with their last known owner.
     </p>
     {%- endif %}
     {% endif %}

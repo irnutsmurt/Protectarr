@@ -421,6 +421,95 @@ class TestAnOutageNeverWritesAnObservation(OwnershipCase):
         self.assertEqual(self.stored()["owner_type"], "radarr")
 
 
+class TestAnOutageReportsNoDwellAtAll(OwnershipCase):
+    """A pass that could not look has no measurement to report.
+
+    This was already true, but only by accident: the branch read
+    `prior.get("absent_for")` back from the stored record, and that was always
+    None because `_persist` happens never to write the key. The safety of the
+    whole branch therefore rested on the absence of a field somewhere else in
+    the file, and `absent_since` is already stored right next to where
+    `absent_for` would go, so adding it is an obvious thing for someone to do.
+
+    These tests seed the store with the key present and non-zero. Every one of
+    them passes trivially against the old code for the wrong reason, and every
+    one of them fails against it once the store carries the field.
+    """
+
+    STALE = 99 * 60          # well past any plausible dwell
+
+    def seed(self, state=ownership.OWNED, **extra):
+        rec = {"state": state, "owner": "Sonarr", "owner_type": "sonarr",
+               "first_seen": 10.0, "last_claimed": 20.0,
+               "absent_since": 30.0, "absent_for": self.STALE}
+        rec.update(extra)
+        ownership._store.save(
+            {"version": ownership.VERSION, "owners": {A: rec}})
+
+    def outage(self, now=9999.0):
+        return self.pass_([FakeArr("Sonarr", broken=True)], now=now)[A]
+
+    def test_a_stored_dwell_is_not_reported_during_an_outage(self):
+        self.seed()
+        self.assertIsNone(self.outage().absent_for)
+
+    def test_that_holds_when_the_carried_state_is_orphaned(self):
+        """The dangerous case: the record already says ORPHANED, so the only
+        thing standing between it and an action is the dwell."""
+        self.seed(state=ownership.ORPHANED)
+        own = self.outage()
+        self.assertEqual(own.state, ownership.ORPHANED)
+        self.assertIsNone(own.absent_for)
+
+    def test_a_stale_dwell_cannot_make_an_orphan_actionable(self):
+        """The consequence, stated against the function that decides.
+
+        99 minutes is past any dwell an operator would configure, so if the
+        stored value ever reached `actionable_orphan` the answer would be yes.
+        """
+        self.seed(state=ownership.ORPHANED)
+        own = self.outage()
+        self.assertFalse(ownership.actionable_orphan(own, 10))
+        self.assertFalse(ownership.actionable_orphan(own, 1))
+
+    def test_nor_can_it_reach_the_policy_decision(self):
+        self.seed(state=ownership.ORPHANED)
+        own = self.outage()
+        safety = {"mode": "either", "allowed_categories": ["tv"],
+                  "orphan_dwell_minutes": 10}
+        self.assertIsNone(core.evaluate({"category": "tv", "tags": ""}, "",
+                                        None, safety, True, own=own))
+
+    def test_the_view_is_told_the_dwell_is_unmeasurable(self):
+        """The page renders `measurable: False` as "not being measured", and
+        a stale number arriving here would be drawn as a countdown instead."""
+        self.seed(state=ownership.ORPHANED)
+        own = self.outage()
+        safety = {"mode": "either", "allowed_categories": ["tv"],
+                  "orphan_dwell_minutes": 10}
+        j = core.explain({"category": "tv", "tags": ""}, None, safety, True,
+                         own=own)
+        self.assertEqual(j.state, core.WAITING)
+        self.assertFalse(j.detail["measurable"])
+        self.assertIsNone(j.detail["absent_for"])
+
+    def test_a_readable_queue_still_measures_the_dwell_from_the_store(self):
+        """The fix must not have made the dwell unmeasurable in general: a
+        pass that CAN see the queue still computes it from `absent_since`."""
+        self.seed(state=ownership.ORPHANED)
+        own = self.pass_([FakeArr("Sonarr")], now=30.0 + 600)[A]
+        self.assertEqual(own.state, ownership.ORPHANED)
+        self.assertEqual(own.absent_for, 600)
+
+    def test_the_stored_record_never_grows_the_field_by_itself(self):
+        """Belt and braces on the other side: nothing in `_persist` writes it,
+        so an ordinary install never has one to go stale."""
+        live = FakeArr("Sonarr", [A])
+        self.pass_([live], now=1000.0)
+        self.pass_([FakeArr("Sonarr")], now=2000.0)      # becomes an orphan
+        self.assertNotIn("absent_for", ownership.records()[A])
+
+
 class TestEvaluateHonoursOwnership(OwnershipCase):
     """The states have to actually change what Protectarr does."""
 

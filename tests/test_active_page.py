@@ -27,6 +27,17 @@ TEMPLATES = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "protectarr", "templates")
 
 
+def flat(html):
+    """Markup with its whitespace normalised, for asserting on prose.
+
+    A sentence in a template is wrapped for the source, not for the reader, so
+    asserting on it literally pins the indentation rather than the words. That
+    cost a false failure during the 0.7.0 work when a paragraph moved into a
+    disclosure and re-indented.
+    """
+    return re.sub(r"\s+", " ", html)
+
+
 class Arr:
     def __init__(self, name, arr_type="sonarr"):
         self.name, self.type = name, arr_type
@@ -104,7 +115,7 @@ class TestTheThreeStatesArePutInWords(PageCase):
 
     def test_a_current_snapshot_states_its_own_age(self):
         self.publish([torrent(A)])
-        self.assertIn("Projected from the scan that finished", self.get())
+        self.assertIn("Snapshot from the scan that finished", self.get())
 
     def test_a_stale_snapshot_says_the_last_scan_failed(self):
         self.publish([torrent(A)])
@@ -127,7 +138,8 @@ class TestTheThreeStatesArePutInWords(PageCase):
         self.publish([torrent(A)], ownership_known=False,
                      unreadable=["Radarr", "Sonarr"])
         html = self.get()
-        self.assertIn("Could not read the queue of Radarr, Sonarr", html)
+        self.assertIn("Could not read the queues of Radarr, Sonarr",
+                      flat(html))
         self.assertIn("warnbox", html)
 
     def test_no_banner_when_every_queue_answered(self):
@@ -138,8 +150,27 @@ class TestTheThreeStatesArePutInWords(PageCase):
         """Both can be true at once and they say different things."""
         self.publish([torrent(A)], ownership_known=False, unreadable=["Sonarr"])
         html = self.get()
-        self.assertIn("Could not read the queue of Sonarr", html)
+        self.assertIn("Could not read the queue of Sonarr", flat(html))
         self.assertNotIn("Showing the last successful scan", html)
+
+    def test_the_banner_reads_naturally_for_one_and_for_several(self):
+        """One application and three produce the same sentence shape.
+
+        `queue`/`queues` is the only thing that inflects. The sentence about
+        what is still shown says "affected applications" rather than pointing
+        back at the list, so it does not have to agree with a count at all.
+        """
+        for names, want in ((["Sonarr"], "queue of Sonarr"),
+                            (["Radarr", "Sonarr"], "queues of Radarr, Sonarr"),
+                            (["Lidarr", "Radarr", "Sonarr"],
+                             "queues of Lidarr, Radarr, Sonarr")):
+            with self.subTest(applications=len(names)):
+                self.publish([torrent(A)], ownership_known=False,
+                             unreadable=names)
+                text = flat(self.get())
+                self.assertIn(f"Could not read the {want}.", text)
+                self.assertIn("Torrents owned by affected applications are "
+                              "still shown with their last known owner.", text)
 
     def test_the_age_is_coarse_rather_than_a_stopwatch(self):
         self.publish([torrent(A)], taken_at=time.time() - 3600)

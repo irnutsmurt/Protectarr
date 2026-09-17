@@ -170,8 +170,17 @@ def _unclaimed(thash, prior, readable, is_acquiring, now):
         # Could not look. Not evidence, and specifically not the start of an
         # orphan clock - a dwell that advances while we are blind measures our
         # outage rather than the torrent's absence.
-        return Ownership(prior.get("state", OWNED), owner, None, None,
-                         prior.get("absent_for"),
+        #
+        # `absent_for` is None, stated rather than read back. This used to be
+        # `prior.get("absent_for")`, which was always None only because
+        # `_persist` happens never to write that key: the safety of the whole
+        # branch rested on the absence of a field somewhere else in the file,
+        # so anyone adding `absent_for` to the stored record - an obvious thing
+        # to do, since `absent_since` is already there - would have silently
+        # turned this into a dwell carried across an outage. A pass that could
+        # not look has no measurement to report, and that is a fact about this
+        # branch, not about the schema.
+        return Ownership(prior.get("state", OWNED), owner, None, None, None,
                          f"{owner}'s queue could not be read, so its previous "
                          f"state stands")
 
