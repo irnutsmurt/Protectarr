@@ -164,12 +164,22 @@ function renderBoxes(elId, field, noun, saved, live, err) {
   // short list look like the full picture. `err` arrives as a finished
   // sentence: see `reason()` for why the underlying exception is not in it.
   var head = err ? '<p class="hint">' + esc(err) + '</p>' : '';
+  var offline = !!err && !liveNames.length;
   el.innerHTML = head + names.sort(function(a,b){ return a.toLowerCase() < b.toLowerCase() ? -1 : 1; })
     .map(function(n){
       var checked = saved.indexOf(n) !== -1 ? ' checked' : '';
-      var note = liveNames.indexOf(n) === -1
-        ? ' <span class="hint">not in qBittorrent - saved selection kept</span>'
-        : (meta[n] ? ' <span class="hint">' + esc(meta[n]) + '</span>' : '');
+      // "not in qBittorrent" is worth saying when qBittorrent answered and this
+      // one name was not in the reply: that is a category that has genuinely
+      // gone. It is worth nothing when the lookup never produced a list, where
+      // it would be true of every row and the container has already said so
+      // once. `offline` is the second case, and it is deliberately "no live
+      // data" rather than "an error happened": a partial failure still leaves
+      // live names to compare against, and a name missing from those really is
+      // missing.
+      var note = offline ? ''
+        : (liveNames.indexOf(n) === -1
+            ? ' <span class="hint">not in qBittorrent - saved selection kept</span>'
+            : (meta[n] ? ' <span class="hint">' + esc(meta[n]) + '</span>' : ''));
       return '<label class="check"><input type="checkbox" name="' + field + '" value="' + esc(n) + '"' + checked + '> ' + esc(n) + note + '</label>';
     }).join('');
 }

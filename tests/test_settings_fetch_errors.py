@@ -337,6 +337,107 @@ class TestTheSavedSelectionSurvivesEveryFailure(PickerCase):
                 self.assertEqual(r["savedIdx"], ["Meridian Tracker (Prowlarr)"])
 
 
+# qBittorrent answering normally, but one saved category and one saved tag are
+# no longer among the names it reports. `radarr` and `protectarr` are saved;
+# only `tv-sonarr` and `public` come back.
+STALE_ITEM = """
+window.fetch = function (url) {
+  var payload = String(url).indexOf('taxonomy') !== -1
+    ? {ok: true, data: {categories: [{name: 'tv-sonarr', meta: '/downloads/tv'},
+                                     {name: 'music', meta: '/downloads/music'}],
+                        tags: [{name: 'public', meta: ''}]}}
+    : {ok: true, data: {indexers: [{name: 'Orchard Public (Prowlarr)',
+                                    protocol: 'torrent', apps: ['Sonarr']}],
+                        errors: []}};
+  var text = JSON.stringify(payload);
+  return Promise.resolve({status: 200, ok: true,
+    text: function () { return Promise.resolve(text); },
+    json: function () { return Promise.resolve(JSON.parse(text)); }});
+};"""
+
+# One application unreachable while another answers. A partial failure still
+# produces a live list, so a name missing from it is really missing.
+PARTIAL_APPS = """
+window.fetch = function (url) {
+  var payload = String(url).indexOf('taxonomy') !== -1
+    ? {ok: true, data: {categories: [], tags: []}}
+    : {ok: true, data: {errors: ['Radarr: connection refused'],
+                        indexers: [{name: 'Orchard Public (Prowlarr)',
+                                    protocol: 'torrent', apps: ['Sonarr']}]}};
+  var text = JSON.stringify(payload);
+  return Promise.resolve({status: 200, ok: true,
+    text: function () { return Promise.resolve(text); },
+    json: function () { return Promise.resolve(JSON.parse(text)); }});
+};"""
+
+STALE_NOTE = "not in qBittorrent - saved selection kept"
+IDX_STALE_NOTE = "not currently reachable - saved selection kept"
+
+
+class TestTheTwoStaleStatesStayDistinct(PickerCase):
+    """"The whole service is unavailable" and "this one name has gone" are
+    different facts, and only the second is per item.
+
+    When the lookup produced no list at all, the per-row note would be true of
+    every row and the container has already said it once. Repeating it turns a
+    useful signal into decoration and buries the one line that explains what to
+    do.
+    """
+
+    def test_an_unavailable_taxonomy_says_it_once_not_once_per_row(self):
+        for name, stub in (("qbit down", self.QBIT_DOWN),
+                           ("session", self.UNAUTHORIZED),
+                           ("proxy", self.PROXY_HTML),
+                           ("offline", self.NO_SERVER)):
+            r = self.drive(stub)
+            with self.subTest(failure=name):
+                self.assertNotIn(STALE_NOTE, r["cats"])
+                self.assertNotIn(STALE_NOTE, r["tags"])
+                self.assertNotIn(IDX_STALE_NOTE, r["indexers"])
+
+    def test_the_container_still_carries_exactly_one_warning(self):
+        r = self.drive(self.QBIT_DOWN)
+        self.assertEqual(r["cats"].count("Could not reach qBittorrent"), 1)
+        self.assertEqual(r["tags"].count("Could not reach qBittorrent"), 1)
+
+    def test_the_saved_rows_are_still_there_and_still_checked(self):
+        """Removing the suffix must not remove the selection it described."""
+        r = self.drive(self.QBIT_DOWN)
+        self.assertEqual(sorted(r["savedCats"]), ["radarr", "tv-sonarr"])
+        self.assertTrue(r["savedChecked"])
+        self.assertIn("radarr", r["cats"])
+        self.assertIn("protectarr", r["tags"])
+
+    def test_a_reachable_qbittorrent_still_flags_a_name_that_has_gone(self):
+        """The case the suffix exists for. qBittorrent answered; `radarr` was
+        not in the answer; that is worth saying."""
+        r = self.drive(STALE_ITEM)
+        self.assertIn(STALE_NOTE, r["cats"])
+        self.assertIn(STALE_NOTE, r["tags"])
+
+    def test_it_flags_only_the_name_that_has_gone(self):
+        r = self.drive(STALE_ITEM)
+        self.assertEqual(r["cats"].count(STALE_NOTE), 1)
+        self.assertEqual(r["tags"].count(STALE_NOTE), 1)
+        # `tv-sonarr` came back from qBittorrent, so it shows its save path
+        # rather than a warning.
+        self.assertIn("/downloads/tv", r["cats"])
+
+    def test_a_reachable_qbittorrent_shows_no_container_warning(self):
+        r = self.drive(STALE_ITEM)
+        self.assertNotIn("Could not reach", r["cats"])
+        self.assertNotIn("Could not reach", r["tags"])
+
+    def test_one_application_failing_still_flags_a_missing_indexer(self):
+        """A partial failure is not the whole service being unavailable: there
+        is still a live list to compare against, so a saved indexer missing
+        from it really is missing."""
+        r = self.drive(PARTIAL_APPS)
+        self.assertIn("Could not reach your applications", r["indexers"])
+        self.assertIn(IDX_STALE_NOTE, r["indexers"])
+        self.assertIn("Meridian Tracker (Prowlarr)", r["indexers"])
+
+
 class TestTheDetailIsKeptWhereItIsUseful(PickerCase):
     """Concise in the card, complete in the console. A bug report still has the
     thing that identifies the failure."""

@@ -107,13 +107,17 @@ function renderIndexerBoxes(indexers, err) {
   // the only clue, which says a name is missing but not that the whole list is
   // stale or what to do about it.
   var head = err ? '<p class="hint">' + esc(err) + '</p>' : '';
+  // See the note in _safety.html. One application failing while others answer
+  // still leaves a live list, so a name missing from it is really missing.
+  var offline = !!err && !(indexers || []).length;
   el.innerHTML = head + names.sort(function(a,b){ return a.toLowerCase() < b.toLowerCase() ? -1 : 1; })
     .map(function(n){
       var ix = byName[n];
       var checked = saved.indexOf(n) !== -1 ? ' checked' : '';
       var meta = ix
         ? '<span class="hint">' + esc(ix.protocol || '') + (ix.apps && ix.apps.length ? ' · ' + esc(ix.apps.join(', ')) : '') + (ix.enabled === false ? ' · disabled' : '') + '</span>'
-        : '<span class="hint">not currently reachable - saved selection kept</span>';
+        : (offline ? ''
+                   : '<span class="hint">not currently reachable - saved selection kept</span>');
       return '<label class="check"><input type="checkbox" name="archive_indexers" value="' + esc(n) + '"' + checked + '> ' + esc(n) + ' ' + meta + '</label>';
     }).join('');
 }
