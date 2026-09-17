@@ -74,6 +74,11 @@ def _remediation(intent):
         "opened": intent.get("opened"),
         "arr": intent.get("arr"),
         "error": intent.get("error"),
+        # The *arr's own command id for the replacement search, which is what
+        # makes it followable in that application's UI. Not the same thing as
+        # `remediation_id`, which is Protectarr's join key and means nothing
+        # outside this process.
+        "search_command": search.get("command_id"),
         "search_state": search.get("state"),
         "search_result": search.get("result"),
         "search_message": search.get("message"),

@@ -361,6 +361,15 @@ class TestRemediationReporting(unittest.TestCase):
         self.assertEqual(rem["search_state"], "completed")
         self.assertEqual(rem["search_message"], "0 reports")
 
+    def test_the_search_command_is_the_arrs_id_not_protectarrs(self):
+        """These were conflated, and the dossier printed Protectarr's internal
+        join key under "Command ID" - a number an operator would then go
+        looking for in Sonarr and never find."""
+        rem = self.row()["remediation"]
+        self.assertEqual(rem["search_command"], 12)
+        self.assertEqual(rem["remediation_id"], "r1")
+        self.assertNotEqual(rem["search_command"], rem["remediation_id"])
+
     def test_recovery_state_is_not_leaked_onto_the_page(self):
         """Queue ids, watermarks and attempt counters are how a remediation is
         resumed. They age into noise and belong nowhere near an operator."""

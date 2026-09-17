@@ -2,13 +2,14 @@
 
 The brief for this page was "do not repeat the History-table problem", so the
 numbers here are the point rather than decoration. History's desktop table has
-a 1366px floor because a release name is one unbreakable token and nothing caps
-the cell it lives in. This table caps it, and these tests are what stop the cap
-being removed by someone who does not know what it was for.
+a 1366px floor because a release name is one unbreakable token and nothing lets
+the cell it lives in give way. This table lets it, and these tests are what stop
+that being undone by someone who does not know what it was for.
 
-The measured floor is 688px, which is a 854px viewport. The stacked layout
-still starts at 999px, matching History, so there is 145px of deliberate
-headroom - see the stylesheet for why that is a choice rather than a constraint.
+The measured floor is 688px, which is a 854px viewport, and it comes entirely
+from `overflow-wrap: anywhere` on the release cell. The stacked layout still
+starts at 999px, matching History, so there is 145px of deliberate headroom -
+see the stylesheet for why that is a choice rather than a constraint.
 """
 
 import json
@@ -150,15 +151,26 @@ class TestTheStackedRulesAreDeclared(unittest.TestCase):
             self.assertIn(f'data-label="{h}"', self.page,
                           f"the {h} column has no stacked label")
 
-    def test_the_release_cell_is_capped(self):
-        """The one rule the whole floor depends on."""
-        self.assertIn(".dlcards td.dl-name { max-width: 260px; }", self.css)
-        self.assertIn("overflow-wrap: anywhere", self.css)
+    def test_the_release_cell_breaks_anywhere(self):
+        """The one declaration the whole floor depends on.
 
-    def test_the_cap_is_lifted_once_the_rows_are_cards(self):
-        """A 260px block in a full-width card would waste most of the line."""
-        blk = self.block(".dlcards, .dlcards tbody, .dlcards td")
-        self.assertIn(".dlcards td.dl-name { max-width: none; }", blk)
+        `break-word` would not do: it permits a break during layout without
+        reducing the cell's min-content contribution, so the column still
+        demands the whole unbreakable token. Measured on History, where
+        swapping it in moves the floor by 0px.
+        """
+        self.assertIn(".dlcards td.dl-name code { overflow-wrap: anywhere; }",
+                      self.css)
+
+    def test_the_release_cell_is_not_capped(self):
+        """There was a `max-width: 260px` here on the assumption it was what
+        gave `anywhere` something to reduce to. Measured across caps from
+        260px to none the floor is 688px in every case, and the table's width
+        at a given viewport is identical in every case, so all the cap did was
+        make the column narrower and the row taller."""
+        for m in re.finditer(r"\.dlcards td\.dl-name[^{]*\{([^}]*)\}",
+                             self.css):
+            self.assertNotIn("max-width", m.group(1))
 
     def test_no_nowrap_was_added_to_the_state_cell(self):
         """History learned this one the hard way: an unwrappable sentence sets
@@ -240,8 +252,9 @@ class TestActiveGeometry(unittest.TestCase):
         self.assertEqual(d["floor"], TABLE_FLOOR)
 
     def test_a_pathological_release_name_does_not_move_the_floor(self):
-        """The entire reason for the cap. History's floor moves to 1366px
-        under this exact test; this one must not move at all."""
+        """The entire reason for `overflow-wrap: anywhere`. History's floor
+        moves to 1366px under this exact test; this one must not move at
+        all."""
         ordinary = self.probe(1600, probe=self.FLOOR_PROBE, name="floor")
         long_ = self.probe(1600, probe=self.FLOOR_PROBE, page=self.long_page,
                            name="floorlong")

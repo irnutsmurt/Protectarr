@@ -420,6 +420,26 @@ class TestTheDetailsDossierIsTheSharedOne(PageCase):
         pairs = dict((k, v) for k, v in section["rows"])
         self.assertEqual(pairs["Orphan dwell"], "not being measured on this pass")
 
+    def test_the_dossier_does_not_repeat_the_profile_under_why(self):
+        """`Why` is the finding section. On a torrent with no finding it used
+        to render as a heading over a single Profile row, which answers a
+        question nobody asked; Policy shows the profile with its source."""
+        self.publish([torrent(A)])
+        detail = web._active_detail(
+            snapshot.published(self.service.state)["rows"][0])
+        self.assertIsNone(detail.get("profile"))
+        self.assertIsNone(detail["why"])
+        policy = [s for s in detail["extra"] if s["title"] == "Policy"][0]
+        self.assertIn("media", [v for _, v in policy["rows"]])
+
+    def test_the_command_id_in_the_dossier_is_the_arrs(self):
+        self.publish([torrent(A)], intents_by_hash={
+            A: {"milestone": "pending", "remediation_id": "r1",
+                "search": {"command_id": 99, "state": "started"}}})
+        detail = web._active_detail(
+            snapshot.published(self.service.state)["rows"][0])
+        self.assertEqual(detail["search_command"], 99)
+
     def test_empty_rows_are_dropped_rather_than_rendered_blank(self):
         """The shared dialog's own rule; asserted here because half these
         sections are empty for an ordinary untracked torrent."""

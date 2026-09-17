@@ -732,28 +732,29 @@ h3.sub { display: flex; align-items: center; gap: 9px; }
 
 .dlcards td.act, .dlcards td.num, .dlcards th.num { text-align: right; }
 
-/* The cap that decides this table's floor, and the whole reason it is not
-   History.
+/* One declaration decides this table's floor, and it is the whole reason this
+   page is not History.
 
-   Measured on the rendered page, not a mock of it: these eight columns come to
-   688px of min-content, which is a 854px viewport once the card has taken its
-   166px. With the cap removed a 106-character release name takes the same
-   table to 1204px, or a 1370px viewport, and 1370 means sideways scrolling on
-   an ordinary 1440 desktop. That is what History does today and what this page
-   was told not to repeat.
+   `anywhere`, not `break-word`. A release name is a single unbreakable token.
+   `break-word` permits a break during layout but does not reduce the cell's
+   min-content contribution, so the column still demands the whole word and the
+   table cannot shrink past it - measured on History, where a 106-character
+   name raises the floor to 1366px and `break-word` moves it by 0px.
+   `anywhere` does reduce min-content, which is what lets the column give way.
 
-   The check that matters is that name length stops mattering at all. Measured
-   with a 124-character release name in the first column: floor 688px, release
-   column 75px, identical to ordinary names to the pixel. History's floor moves
-   to 1366 under the same test.
+   Measured on the rendered page: these eight columns come to 688px of
+   min-content, a 854px viewport once the card has taken its 166px. The check
+   that matters is that name length stops mattering - a 124-character name
+   gives the same 688px, to the pixel.
 
-   `anywhere` rather than `break-word`, and a `max-width` rather than a
-   `width`. A release name is one unbreakable token: `break-word` permits a
-   break during layout but does not reduce the cell's min-content
-   contribution, so the column still demands the whole word and the floor does
-   not move. Measured - it changed it by 0px. `anywhere` does reduce it, and
-   the max-width is what gives it something to reduce to. */
-.dlcards td.dl-name { max-width: 260px; }
+   There was a `max-width: 260px` here too, on the assumption that the cap was
+   what gave `anywhere` something to reduce to. It was not. Measured across
+   caps from 260px to none, the floor is 688px in every case including none,
+   and the table's own width at a given viewport is identical in every case:
+   table layout was already distributing the space. All the cap did was make
+   the release column narrower and therefore taller. With a 124-character name
+   at 1440 it cost nine lines and a 249px row where uncapped is four lines and
+   131px. So it is gone, and nothing about the floor changed. */
 .dlcards td.dl-name code { overflow-wrap: anywhere; }
 
 /* Same 999px as History, but not for the same reason, and the difference is
@@ -792,10 +793,6 @@ h3.sub { display: flex; align-items: center; gap: 9px; }
      the column lines up; in a card it is a heading over a dash, and four of
      those is most of the card. */
   .dlcards td.dl-empty { display: none; }
-  /* The cap is a desktop column constraint. Down here the cell is a block in
-     a card that is already as wide as the viewport, so holding it to 260px
-     would waste most of the line. */
-  .dlcards td.dl-name { max-width: none; }
   .dlcards td[data-label]::before {
     content: attr(data-label); display: block;
     font-size: 11px; font-weight: 600; letter-spacing: .4px;

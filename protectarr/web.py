@@ -1003,12 +1003,18 @@ def _active_detail(row):
         "hash": row["hash"],
         "why": row.get("finding", {}).get("reason") if row.get("finding") else None,
         "severity": row.get("finding", {}).get("severity") if row.get("finding") else None,
-        "profile": row.get("profile"),
+        # Deliberately not `profile` here. The built-in Why section renders it,
+        # and the Policy section below renders it with its source alongside; on
+        # a torrent with no finding that left a section headed "Why" whose only
+        # row was the profile, which answers a question nobody asked.
         "status": ({"label": _MILESTONES[rem["milestone"]][0],
                     "milestone": rem["milestone"]}
                    if rem.get("milestone") in _MILESTONES else None),
         "error": rem.get("error"),
-        "search_command": rem.get("remediation_id"),
+        # The *arr's command id, not Protectarr's remediation id. The second
+        # one is an internal join key and labelling it "Command ID" invited
+        # someone to go looking for it in Sonarr.
+        "search_command": rem.get("search_command"),
         "search_state": rem.get("search_state"),
         "search_result": rem.get("search_result"),
         "search_message": rem.get("search_message"),
