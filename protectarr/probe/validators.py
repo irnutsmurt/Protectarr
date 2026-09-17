@@ -87,15 +87,24 @@ for _exts, _fam in ((".mkv .webm .mp4 .m4v .mov .avi", "video"),
 # Types we are willing to call a lie on. A guess that rests on two or three
 # ambiguous bytes stays out of this set: being sure enough to accuse is a higher
 # bar than being able to guess.
+#
+# `dos_mz` is deliberately absent. Two bytes of "MZ" with no reachable PE
+# signature is a file that *starts* like a Windows program, and starting like
+# one is not being one. Only `windows_pe`, which has been followed through the
+# DOS stub to a real signature, is confirmation. Ambiguity must never be the
+# thing that deletes somebody's download.
 CONFIDENT = {"matroska", "iso_bmff", "avi", "wav", "flac", "ogg", "pdf", "mp3",
-             "windows_pe", "dos_mz", "elf", "script", "zip", "rar", "7z",
+             "windows_pe", "elf", "script", "zip", "rar", "7z",
              "ole_compound", "jpeg", "png", "gzip"}
 
 
 # How to say a detected type out loud. Evidence stores the machine-readable
 # name so history stays filterable; this is only for the sentence a human reads.
 LABELS = {
-    "windows_pe": "a Windows program", "dos_mz": "a Windows program",
+    "windows_pe": "a Windows program",
+    # Not "a Windows program": this one is unconfirmed, and the sentence a user
+    # reads must not claim more than the bytes proved.
+    "dos_mz": "something that opens like a Windows program",
     "elf": "a Linux program", "script": "a shell script",
     "ole_compound": "a Windows installer or Office document",
     "zip": "a ZIP archive", "rar": "a RAR archive", "7z": "a 7-Zip archive",
@@ -119,12 +128,33 @@ def ext_of(name):
 
 
 def _has_pe_header(head):
-    """Follow the DOS stub's e_lfanew to the PE signature, when we have the
-    bytes to do it. Failing this downgrades the answer to `dos_mz`; it does not
-    clear the file, because no media container may begin with "MZ" either."""
-    if len(head) < 0x40:
-        return False
+    """Is this structurally a PE, not merely a file that opens with "MZ"?
+
+    Two things have to hold, and both are checked against bytes we actually
+    read rather than assumed:
+
+    * an `e_lfanew` that points somewhere a PE header may legally live, and
+      inside the bytes we hold. The DOS header itself occupies the first 0x40
+      bytes, so a value below that would overlap it - and a crafted file with
+      "PE\\0\\0" sitting at offset 4 is exactly the sort of thing that would
+      otherwise confirm itself,
+    * `PE\\0\\0` actually present at that offset.
+
+    Failing any of them means *unconfirmed*, not cleared and not accused: the
+    answer downgrades to `dos_mz`, which is outside `CONFIDENT` and therefore
+    cannot produce a finding on its own.
+
+    A pointer beyond the header window fails here too. That is honest - we did
+    not see a signature - and it is why the header budget is worth reporting on
+    before structural parsers start depending on it.
+
+    A read too short to hold a DOS header needs no separate guard: the slice
+    below is then empty or partial, and whatever it yields either falls under
+    0x40 or points past the end, so both checks reject it anyway.
+    """
     off = int.from_bytes(head[0x3c:0x40], "little")
+    if off < 0x40 or off + 4 > len(head):
+        return False
     return head[off:off + 4] == b"PE\x00\x00"
 
 
@@ -169,6 +199,13 @@ def validate(filename, head, ready=True):
     if detected in FAMILY.get(_EXT_FAMILY.get(e, ""), ()):
         return UNKNOWN, detected, (f"{detected} behind {e} looks like a "
                                    f"mislabelled release, not a fake")
+    if detected == "dos_mz":
+        # Said in full rather than left to the generic line below, because this
+        # is the one case where we are refusing to accuse something that looks
+        # bad, and an operator reading the log deserves to know we looked.
+        return UNKNOWN, detected, ("begins with MZ but no PE signature is "
+                                   "reachable, so it is not confirmed to be a "
+                                   "program")
     if detected not in CONFIDENT:
         return UNKNOWN, detected, f"header is not conclusive ({detected})"
     return INVALID, detected, f"claims {e} but the bytes are {detected}"

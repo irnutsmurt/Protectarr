@@ -185,12 +185,14 @@ class TestSniffNeedsNoExtension(unittest.TestCase):
     def test_an_mz_with_no_pe_signature_is_downgraded_not_cleared(self):
         """Pins the structural check the lane performs on an MZ.
 
-        `dos_mz` is the taxonomy's `ambiguous_format` in all but name, and it
-        is currently inside `CONFIDENT`, which is what lets it accuse. That is
-        the conflict the report names; this test records the starting point.
+        `dos_mz` is the taxonomy's `ambiguous_format` in all but name. This
+        test originally recorded it as a conflict - it was inside `CONFIDENT`,
+        which let two bytes accuse - and Phase A moved it out. What remains
+        true either way is that it is neither confirmed nor cleared.
         """
         self.assertEqual(validators.sniff(MZ_ONLY), "dos_mz")
-        self.assertIn("dos_mz", validators.CONFIDENT)
+        self.assertNotIn("dos_mz", validators.CONFIDENT)
+        self.assertIn("windows_pe", validators.CONFIDENT)
 
 
 # ---------------------------------------------------------------------------

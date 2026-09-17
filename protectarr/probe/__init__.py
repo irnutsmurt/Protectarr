@@ -8,6 +8,7 @@ qBittorrent settings it then has to restore, so it is off by default, budgeted,
 and only ever runs on a torrent the fast lane had nothing to say about.
 
     validators  does this parse as what its extension claims? (tri-state)
+    pieces      which pieces cover a header, and are they all verified?
     paths       where are the bytes, and are they really the file's bytes?
     ledger      what did we change, written down before we change it
     engine      the two passes, the budget, and the restore

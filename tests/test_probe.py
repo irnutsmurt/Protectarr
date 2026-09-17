@@ -29,7 +29,7 @@ from protectarr import config as cfg_mod  # noqa: E402
 cfg_mod.CONFIG_PATH = os.path.join(tempfile.mkdtemp(), "config.yaml")
 
 from protectarr import core, logs, probe  # noqa: E402
-from protectarr.probe import engine, ledger, paths, validators  # noqa: E402
+from protectarr.probe import engine, ledger, paths, pieces, validators  # noqa: E402
 from protectarr.probe.validators import INVALID, UNKNOWN, VALID  # noqa: E402
 
 logs.configure({"logging": {"level": "critical", "console_level": "critical",
@@ -69,11 +69,53 @@ class TestValidators(unittest.TestCase):
             self.assertEqual(state, INVALID, name)
             self.assertEqual(detected, "windows_pe")
 
-    def test_mz_without_a_reachable_pe_header_still_accuses(self):
-        """A truncated read costs us the PE confirmation, not the verdict: no
-        media container may begin with "MZ" either."""
-        state, detected, _ = validators.validate("x.mkv", b"MZ\x90\x00\x03")
-        self.assertEqual((state, detected), (INVALID, "dos_mz"))
+    def test_mz_without_a_reachable_pe_header_accuses_nobody(self):
+        """Starting like a Windows program is not being one.
+
+        This used to return INVALID on the grounds that no media container may
+        begin with "MZ" either. True, but it makes two bytes enough to delete a
+        download, and the same branch fires when a short read or a header
+        budget smaller than the file's `e_lfanew` costs us the confirmation we
+        would otherwise have had. Only a structurally verified PE accuses now.
+        """
+        state, detected, note = validators.validate("x.mkv", b"MZ\x90\x00\x03")
+        self.assertEqual((state, detected), (UNKNOWN, "dos_mz"))
+        self.assertIn("not confirmed", note)
+        self.assertNotIn("dos_mz", validators.CONFIDENT)
+
+    def test_a_pe_signature_before_the_dos_header_ends_is_not_confirmation(self):
+        """`e_lfanew` pointing inside the 0x40-byte DOS header it lives in is
+        not a layout any linker produces, and accepting it would let a crafted
+        file confirm itself out of bytes it also controls."""
+        head = bytearray(b"\x00" * 0x80)
+        head[0:2] = b"MZ"
+        head[4:8] = b"PE\x00\x00"           # a signature, in the wrong place
+        head[0x3c:0x40] = (4).to_bytes(4, "little")
+        state, detected, _ = validators.validate("x.mkv", bytes(head))
+        self.assertEqual((state, detected), (UNKNOWN, "dos_mz"))
+
+    def test_a_full_dos_header_with_no_signature_at_the_pointer_is_not_a_pe(self):
+        """The bytes are all there, `e_lfanew` is legal, and what it points at
+        is not a PE signature. This is the check itself, with nothing else
+        standing in front of it."""
+        head = bytearray(b"\x00" * 128)
+        head[0:2] = b"MZ"
+        head[0x3c:0x40] = (0x40).to_bytes(4, "little")
+        state, detected, _ = validators.validate("x.mkv", bytes(head))
+        self.assertEqual((state, detected), (UNKNOWN, "dos_mz"))
+
+    def test_an_e_lfanew_past_the_header_budget_is_not_confirmation(self):
+        """The pointer is readable, its target is not. That is an unconfirmed
+        program, not a confirmed one and not a clean file."""
+        head = bytearray(b"\x00" * 128)
+        head[0:2] = b"MZ"
+        head[0x3c:0x40] = (4096).to_bytes(4, "little")
+        self.assertEqual(validators.sniff(bytes(head)), "dos_mz")
+
+    def test_a_verified_pe_is_still_accused(self):
+        """The half of the behaviour that must not move."""
+        state, detected, _ = validators.validate("x.mkv", PE)
+        self.assertEqual((state, detected), (INVALID, "windows_pe"))
 
     def test_sparse_file_is_unknown_not_invalid(self):
         """The bug a naive implementation ships with: every in-flight torrent
@@ -176,6 +218,130 @@ class TestPaths(unittest.TestCase):
 
 # ---- a qBittorrent stand-in ----
 
+class TestPieceCoverage(unittest.TestCase):
+    """Which pieces have to be verified before a header can be read.
+
+    The promise: `covering` never returns fewer pieces than the range really
+    occupies. Returning too many costs a retry; returning too few hands a
+    structural parser a header that is half real bytes and half sparse padding.
+
+    The layout numbers are from a real 460-file capture
+    (`captures/multifile-capture-20260912-125601.json`, 16 MiB pieces): summing
+    the preceding file sizes reproduced qBittorrent's own `piece_range` for all
+    460 files, and the closest any file came to the end of its first piece was
+    12177 bytes. That is the margin a 4096-byte header clears and a 16384-byte
+    one does not, which is why the crossing case is not hypothetical.
+    """
+
+    MIB = 16 * 1024 * 1024
+
+    def _torrent(self, *sizes):
+        """A back-to-back file list with piece ranges qBittorrent would report."""
+        out, offset = [], 0
+        for i, size in enumerate(sizes):
+            out.append({"name": f"f{i}.mkv", "size": size,
+                        "piece_range": [offset // self.MIB,
+                                        (offset + size - 1) // self.MIB]})
+            offset += size
+        return out
+
+    def test_a_header_inside_the_first_piece_needs_only_that_piece(self):
+        files = self._torrent(5 * self.MIB)
+        self.assertEqual(pieces.covering(files, 0, 4096, self.MIB), [0])
+
+    def test_a_header_crossing_a_boundary_needs_both_pieces(self):
+        files = self._torrent(self.MIB - 100, 5 * self.MIB)
+        self.assertEqual(pieces.covering(files, 1, 4096, self.MIB), [0, 1])
+
+    def test_the_measured_worst_case_from_the_capture_stays_inside_one_piece(self):
+        """12177 bytes of slack, the real nearest miss, with the real default.
+
+        The second file begins 12177 bytes before the end of piece 0, so piece
+        0 is its first piece and a 4096-byte header fits with room to spare.
+        """
+        files = self._torrent(self.MIB - 12177, 5 * self.MIB)
+        self.assertEqual(files[1]["piece_range"][0], 0)
+        self.assertEqual(pieces.covering(files, 1, 4096, self.MIB), [0])
+
+    def test_the_same_file_crosses_once_the_header_budget_is_raised(self):
+        """Same layout, `header_bytes` at 16384. The boundary problem is one
+        config change away from real on a torrent we have actually seen."""
+        files = self._torrent(self.MIB - 12177, 5 * self.MIB)
+        self.assertEqual(pieces.covering(files, 1, 16384, self.MIB), [0, 1])
+
+    def test_a_file_inside_a_single_piece_needs_no_arithmetic(self):
+        files = [{"name": "a.mkv", "size": 900, "piece_range": [7, 7]}]
+        self.assertEqual(pieces.covering(files, 0, 4096, self.MIB), [7])
+
+    def test_the_range_never_extends_past_the_file_it_belongs_to(self):
+        """A header budget larger than the file's own pieces must not demand
+        pieces belonging to the next file. Those may be set to "do not
+        download", in which case waiting for them would never end."""
+        files = [{"name": "a.mkv", "size": None, "piece_range": [3, 4]}]
+        self.assertEqual(pieces.covering(files, 0, 4096, 1024), [3, 4])
+
+    def test_a_list_that_contradicts_its_first_piece_degrades_to_the_worst_case(self):
+        """A hidden padding file makes the running offset wrong. Summing the
+        preceding sizes puts this file in piece 1, qBittorrent says piece 0,
+        and a derivation that disagrees with the authority is discarded rather
+        than preferred."""
+        files = [{"name": "a.mkv", "size": self.MIB, "piece_range": [0, 0]},
+                 {"name": "b.mkv", "size": 5 * self.MIB, "piece_range": [0, 5]}]
+        self.assertEqual(pieces.covering(files, 1, 4096, self.MIB), [0, 1])
+
+    def test_a_list_that_contradicts_its_last_piece_degrades_to_the_worst_case(self):
+        """The other half of the same check, and the reason both halves exist:
+        here the derived *first* piece agrees and only the last disagrees, so
+        checking one end would have accepted a layout that is wrong."""
+        files = [{"name": "a.mkv", "size": self.MIB, "piece_range": [0, 0]},
+                 {"name": "b.mkv", "size": 5 * self.MIB, "piece_range": [1, 99]}]
+        self.assertEqual(pieces.covering(files, 1, 4096, self.MIB), [1, 2])
+
+    def test_an_unreadable_size_earlier_in_the_list_degrades_the_same_way(self):
+        files = self._torrent(self.MIB, 5 * self.MIB)
+        files[0]["size"] = None
+        self.assertEqual(pieces.covering(files, 1, 4096, self.MIB), [1, 2])
+
+    def test_coverage_is_unknowable_without_a_piece_size(self):
+        files = self._torrent(5 * self.MIB)
+        for bad in (None, 0, "", -1, "sixteen"):
+            with self.subTest(piece_size=bad):
+                self.assertIsNone(pieces.covering(files, 0, 4096, bad))
+
+    def test_coverage_is_unknowable_without_a_piece_range(self):
+        for entry in ({"name": "a.mkv", "size": 900},
+                      {"name": "a.mkv", "size": 900, "piece_range": []},
+                      {"name": "a.mkv", "size": 900, "piece_range": [3]},
+                      {"name": "a.mkv", "size": 900, "piece_range": [5, 2]},
+                      {"name": "a.mkv", "size": 900, "piece_range": ["a", "b"]}):
+            with self.subTest(entry=entry):
+                self.assertIsNone(pieces.covering([entry], 0, 4096, self.MIB))
+
+    def test_an_empty_file_has_no_header_to_cover(self):
+        files = [{"name": "a.mkv", "size": 0, "piece_range": [0, 0]}]
+        self.assertIsNone(pieces.covering(files, 0, 4096, self.MIB))
+
+    def test_unknown_coverage_is_never_verified(self):
+        """The single most important line in the module: None means no."""
+        self.assertFalse(pieces.verified([2] * 10, None))
+        self.assertFalse(pieces.verified([2] * 10, []))
+
+    def test_every_needed_piece_must_be_verified_not_merely_requested(self):
+        self.assertTrue(pieces.verified([2, 2, 0], [0, 1]))
+        self.assertFalse(pieces.verified([2, 1, 2], [0, 1]))
+        self.assertFalse(pieces.verified([2, 0, 2], [0, 1]))
+
+    def test_a_piece_index_past_the_reported_states_is_not_verified(self):
+        self.assertFalse(pieces.verified([2, 2], [1, 2]))
+        self.assertFalse(pieces.verified([], [0]))
+
+    def test_any_needed_piece_moving_off_zero_counts_as_scheduled(self):
+        self.assertFalse(pieces.scheduled([0, 0], [0, 1]))
+        self.assertTrue(pieces.scheduled([0, 1], [0, 1]))
+        self.assertTrue(pieces.scheduled([2, 0], [0, 1]))
+        self.assertFalse(pieces.scheduled([1, 1], None))
+
+
 class FakeQb:
     """Records every mutation, so a test can assert what was put back."""
 
@@ -189,8 +355,10 @@ class FakeQb:
         self.polls = 0
         self.raise_on_priority = False
         # Small enough that the preflight never rejects the fixture; the tests
-        # that care about the preflight set it themselves.
-        self.props = {"piece_size": 1024}
+        # that care about the preflight set it themselves. It is also what
+        # `probe.pieces` turns a header length into a set of pieces with, so it
+        # has to agree with the file sizes and piece ranges in the fixture.
+        self.props = {"piece_size": PIECE}
 
     def properties(self, h):
         return dict(self.props)
@@ -232,8 +400,18 @@ def write(dirpath, name, data):
     return path
 
 
+PIECE = 16384   # bytes; big enough that a default 4096-byte header fits inside
+
+
 class ProbeCase(unittest.TestCase):
-    """Shared fixture: a two-file torrent on a temp 'download directory'."""
+    """Shared fixture: a two-file torrent on a temp 'download directory'.
+
+    The sizes and piece ranges are consistent with each other and with `PIECE`,
+    which they were not before `probe.pieces` existed: file sizes of 900 and 800
+    bytes spread across five pieces each describe a torrent that cannot exist.
+    Nothing read them until coverage had to be worked out, and then they made
+    every file look like it straddled a boundary.
+    """
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -247,9 +425,14 @@ class ProbeCase(unittest.TestCase):
                         "content_path": self.content, "state": "downloading",
                         "progress": 0.02, "dlspeed": 5 * 1024 * 1024,
                         "num_seeds": 12, "seq_dl": False, "f_l_piece_prio": False}
+        # ep1 occupies pieces 0-5 and ep2 pieces 6-9, back to back, both
+        # starting on a boundary. ep1 stays the larger of the two so the
+        # biggest-first steering order is unchanged.
         self.files = [
-            {"name": "ep1.mkv", "priority": 1, "size": 900, "piece_range": [0, 4]},
-            {"name": "ep2.mkv", "priority": 1, "size": 800, "piece_range": [5, 9]},
+            {"name": "ep1.mkv", "priority": 1, "size": 6 * PIECE,
+             "piece_range": [0, 5]},
+            {"name": "ep2.mkv", "priority": 1, "size": 4 * PIECE,
+             "piece_range": [6, 9]},
         ]
         self.state = {}
 
@@ -313,6 +496,132 @@ class TestFreePass(ProbeCase):
         qb = FakeQb(self.files, [2] * 10, self.torrent)
         self.assertEqual(self.probe(qb), engine.NOTHING)
         self.assertEqual(qb.polls, 0, "should not even ask for piece states")
+
+
+class TestHeadersThatStraddleAPieceBoundary(ProbeCase):
+    """A file rarely starts on a piece boundary, so its header rarely fits in
+    one piece. Every piece the header touches must be verified before a byte of
+    it is read.
+
+    The bytes are written to disk in full in all of these, deliberately. The
+    thing under test is the gate, not the filesystem: if the gate is what stops
+    the read, then a real in-flight torrent - where those bytes would be sparse
+    zeros - is safe too. Asserting on an absent file would pass even with the
+    gate deleted.
+    """
+
+    def _straddling(self, payload):
+        """ep1.mkv beginning 100 bytes before the end of piece 0, so a 4096-byte
+        header runs into piece 1. The leading file is not a probe target."""
+        self.files = [
+            {"name": "art.jpg", "priority": 1, "size": PIECE - 100,
+             "piece_range": [0, 0]},
+            {"name": "ep1.mkv", "priority": 1, "size": 5 * PIECE,
+             "piece_range": [0, 5]},
+        ]
+        write(self.content, "ep1.mkv", payload)
+        return self.files
+
+    def test_a_header_inside_one_verified_piece_is_read(self):
+        write(self.content, "ep1.mkv", PE)
+        qb = FakeQb(self.files, [2] + [0] * 9, self.torrent)
+        res = self.probe(qb, cfg(steer=False))
+        self.assertEqual([f["reason"] for f in res.findings],
+                         ["content_type_mismatch"])
+        self.assertEqual(pieces.covering(self.files, 0, 4096, PIECE), [0])
+
+    def test_a_header_crossing_into_a_second_verified_piece_is_read(self):
+        self._straddling(PE)
+        qb = FakeQb(self.files, [2, 2] + [0] * 8, self.torrent)
+        res = self.probe(qb, cfg(steer=False))
+        self.assertEqual([f["reason"] for f in res.findings],
+                         ["content_type_mismatch"])
+        self.assertEqual(res.findings[0]["evidence"]["detected_type"],
+                         "windows_pe")
+
+    def test_the_second_piece_being_unavailable_stops_the_read(self):
+        """The regression this module exists for. Piece 0 is verified and the
+        old rule would have called that enough, read 4096 bytes, and judged a
+        header whose tail was not downloaded."""
+        self._straddling(PE)
+        qb = FakeQb(self.files, [2] + [0] * 9, self.torrent)
+        res = self.probe(qb, cfg(steer=False))
+        self.assertEqual(res.findings, ())
+        self.assertEqual(pieces.covering(self.files, 1, 4096, PIECE), [0, 1])
+
+    def test_the_same_torrent_resolves_once_the_second_piece_arrives(self):
+        """Proves the refusal above was about availability and nothing else:
+        same bytes, same file, same call, one more verified piece."""
+        self._straddling(PE)
+        self.assertEqual(self.probe(FakeQb(self.files, [2] + [0] * 9,
+                                           self.torrent),
+                                    cfg(steer=False)).findings, ())
+        res = self.probe(FakeQb(self.files, [2, 2] + [0] * 8, self.torrent),
+                         cfg(steer=False))
+        self.assertEqual(len(res.findings), 1)
+
+    def test_a_pe_whose_signature_sits_in_the_next_piece_is_not_confirmed_early(self):
+        """`e_lfanew` points 0x80 bytes in, and the file starts 100 bytes before
+        the boundary, so the PE signature itself lives in piece 1. Reading only
+        piece 1's worth of "MZ" would at best have produced the unconfirmed
+        `dos_mz`, which is a quieter way to be wrong but still wrong."""
+        self._straddling(PE)
+        self.assertEqual(pieces.covering(self.files, 1, 4096, PIECE), [0, 1])
+        self.assertGreater((PIECE - 100) + 0x80, PIECE,
+                           "fixture must actually put the signature over the line")
+        no_second = self.probe(FakeQb(self.files, [2] + [0] * 9, self.torrent),
+                               cfg(steer=False))
+        self.assertEqual(no_second.findings, ())
+        both = self.probe(FakeQb(self.files, [2, 2] + [0] * 8, self.torrent),
+                          cfg(steer=False))
+        self.assertEqual(both.findings[0]["evidence"]["detected_type"],
+                         "windows_pe")
+
+    def test_a_missing_piece_size_stops_the_pass_rather_than_guessing(self):
+        """Without it there is no way to turn a byte range into pieces, and an
+        availability question we cannot answer is answered no.
+
+        The piece states are never even fetched, which is the observable that
+        separates "refused up front" from "carried on and found nothing"."""
+        write(self.content, "ep1.mkv", PE)
+        qb = FakeQb(self.files, [2] * 10, self.torrent)
+        qb.props = {}
+        res = self.probe(qb, cfg(steer=False))
+        self.assertEqual(res.findings, ())
+        self.assertEqual(qb.calls, [])
+        self.assertEqual(qb.polls, 0, "should not ask for piece states either")
+
+    def test_a_file_whose_coverage_cannot_be_worked_out_is_left_alone(self):
+        """Coverage can be unknowable for one file while the torrent is fine:
+        here qBittorrent reports a zero size against a real piece range. The
+        file is skipped rather than falling back to its opening piece, which
+        would be the old rule under a new name."""
+        write(self.content, "ep1.mkv", PE)
+        self.files[0]["size"] = 0
+        qb = FakeQb(self.files, [2] * 10, self.torrent)
+        res = self.probe(qb, cfg(steer=False))
+        self.assertIsNone(pieces.covering(self.files, 0, 4096, PIECE))
+        self.assertEqual(res.findings, ())
+
+    def test_steering_waits_for_every_piece_the_header_touches(self):
+        """Piece 0 arrives immediately, piece 1 only later. The old wait
+        returned as soon as the first piece verified."""
+        self._straddling(PE)
+        qb = FakeQb(self.files, [0] * 10, self.torrent,
+                    arrive_after={0: 1, 1: 4})
+        res = self.probe(qb, cfg(poll_seconds=0, torrent_timeout_seconds=5))
+        self.assertEqual(len(res.findings), 1)
+        self.assertGreater(qb.polls, 4, "must have kept polling for piece 1")
+        self.assertEqual(ledger.entries(), {}, "ledger must be closed")
+
+    def test_steering_that_never_gets_the_second_piece_accuses_nobody(self):
+        self._straddling(PE)
+        qb = FakeQb(self.files, [0] * 10, self.torrent, arrive_after={0: 1})
+        res = self.probe(qb, cfg(poll_seconds=0, torrent_timeout_seconds=1,
+                                 stall_checks=99))
+        self.assertEqual(res.findings, ())
+        self.assertEqual([f["priority"] for f in qb.files_list], [1, 1])
+        self.assertEqual(ledger.entries(), {})
 
 
 class TestSteering(ProbeCase):

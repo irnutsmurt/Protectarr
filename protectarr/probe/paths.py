@@ -7,9 +7,15 @@ Docker is rarely the one Protectarr sees, so the user supplies mappings. Files
 still downloading may also carry qBittorrent's `.!qB` incomplete suffix.
 
 *Are the bytes there?* A sparse file reads back as zeros rather than failing, so
-"I read a header" and "I read the file's header" are different claims. Readiness
-is answered here and nowhere else, so that a validator is never handed padding
-and never gets the chance to call it a lie.
+"I read a header" and "I read the file's header" are different claims.
+
+The authoritative answer to that second question is piece coverage, and it lives
+in `probe.pieces`: a range is available when every piece covering it has hash
+verified. What remains here is the second line of defence, for the gap that
+answer cannot close - a piece can be verified in qBittorrent's accounting before
+its bytes are flushed somewhere another process can read them. So a read that
+comes back empty or entirely zeroed is still refused, and a validator is still
+never handed padding.
 """
 
 import collections

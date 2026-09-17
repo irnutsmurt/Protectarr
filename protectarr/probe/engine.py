@@ -50,7 +50,7 @@ import requests
 
 from .. import logs
 from ..detectors import finding
-from . import ledger, paths, validators
+from . import ledger, paths, pieces, validators
 from .validators import INVALID, UNKNOWN, VALID
 
 log = logs.get("probe")
@@ -131,13 +131,7 @@ def _memo(state, torrent_hash):
 
 
 def _first_piece(file_entry):
-    pr = file_entry.get("piece_range")
-    if isinstance(pr, (list, tuple)) and pr:
-        try:
-            return int(pr[0])
-        except (TypeError, ValueError):
-            return None
-    return None
+    return pieces.piece_range(file_entry)[0]
 
 
 def targets(files):
@@ -272,6 +266,27 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
     single = len(files) == 1
     nbytes = p["header_bytes"]
 
+    # The piece size turns a byte range into a set of pieces, so without it
+    # there is no way to establish that a header is actually downloaded. It is
+    # not on the torrent record, so it costs one call per torrent per scan.
+    # Failing to read it ends the pass: an availability question we cannot
+    # answer is answered "no", never "probably".
+    #
+    # Asked before the piece states, and not merely because it is the smaller
+    # response: a torrent we cannot evaluate should cost one failed call, not
+    # two, and the ordering makes "we did not even look" observable.
+    try:
+        piece_size = (qb.properties(thash) or {}).get("piece_size")
+    except requests.RequestException as e:
+        log.debug("Probe: could not read properties for %s: %s", name, e)
+        return NOTHING
+    if not piece_size:
+        log.warning("Probe: qBittorrent reported no piece_size for %r, so "
+                    "which pieces cover a file's header cannot be worked out. "
+                    "Skipping the torrent rather than reading bytes that may "
+                    "not be downloaded.", name)
+        return NOTHING
+
     try:
         piece_states = qb.piece_states(thash)
     except requests.RequestException as e:
@@ -285,14 +300,20 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
         fname = f.get("name") or ""
         if memo["resolved"].get(fname):
             continue
-        first = _first_piece(f)
-        if first is None:
+        if _first_piece(f) is None:
             log.warning("Probe: qBittorrent did not report piece_range for %r. "
                         "The probe lane needs it to target a file's opening "
                         "piece; qBittorrent 5.x reports it.", name)
             return NOTHING
-        if not (0 <= first < len(piece_states) and piece_states[first] == 2):
-            unresolved.append((idx, f, first))
+        needed = pieces.covering(files, idx, nbytes, piece_size)
+        if needed is None:
+            # Not steerable either: without knowing which pieces to wait for,
+            # steering would spend the budget on an undefined finish line.
+            log.debug("Probe: cannot establish which pieces cover the header "
+                      "of %r in %r; leaving it alone", fname, name)
+            continue
+        if not pieces.verified(piece_states, needed):
+            unresolved.append((idx, f, needed))
             continue
         find, resolved, detail = _judge(torrent, f, single, mappings, nbytes, "free")
         log.debug("Probe free pass %s [%s]: %s", name, fname, detail)
@@ -351,14 +372,8 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
         budget_end = min(budget_end, deadline)
 
     # Preflight. Cheap, and it catches the case the live test found: a slow
-    # torrent where steering is not merely slow but inert. The piece size is
-    # not on the torrent record, so it costs one extra call - once per steer,
-    # not once per poll.
-    try:
-        piece_size = (qb.properties(thash) or {}).get("piece_size")
-    except requests.RequestException as e:
-        log.debug("Probe: could not read properties for %s: %s", name, e)
-        piece_size = None
+    # torrent where steering is not merely slow but inert. The piece size was
+    # already read above, for coverage, so this costs nothing further.
     ok, why = affordable(piece_size, torrent.get("dlspeed"), budget_end - now)
     if not ok:
         # Cooldown, unlike the `steerable` rejection above: this one is a
@@ -407,7 +422,7 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
         # sequential download it can only help.
         qb.set_first_last_prio(thash, True)
 
-        for idx, f, first in order:
+        for idx, f, needed in order:
             if time.time() >= deadline:
                 break
             fname = f.get("name") or ""
@@ -419,10 +434,11 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
             for prio, ids in sorted(_changes(plan, current).items()):
                 qb.set_file_priority(thash, ids, prio)
             current = plan
-            log.info("Probe: steering %r at %r, waiting for piece %d "
-                     "(%.0fs budget)", name, fname, first, deadline - time.time())
+            log.info("Probe: steering %r at %r, waiting for piece(s) %s "
+                     "(%.0fs budget)", name, fname,
+                     ", ".join(str(n) for n in needed), deadline - time.time())
 
-            got, why = _wait_for_piece(qb, thash, first, deadline, p)
+            got, why = _wait_for_pieces(qb, thash, needed, deadline, p)
             if not got:
                 log.info("Probe: no verdict for %r on %r (%s). No verdict never "
                          "means block.", name, fname, why)
@@ -447,8 +463,8 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
     return findings
 
 
-def _wait_for_piece(qb, torrent_hash, piece, deadline, p):
-    """Wait for one piece to verify. Returns (got, why).
+def _wait_for_pieces(qb, torrent_hash, needed, deadline, p):
+    """Wait for every piece covering the header to verify. Returns (got, why).
 
     Gives up early on a torrent that has gone dead, and on a torrent that is
     alive but is never going to pick our piece.
@@ -470,6 +486,11 @@ def _wait_for_piece(qb, torrent_hash, piece, deadline, p):
     that failed sat at 0 for their whole window without one transient 1. A
     non-zero reading latches, so a piece that is requested, dropped and
     re-requested is not mistaken for one that was never wanted.
+
+    `needed` is usually one piece and occasionally two, because a file that
+    begins partway through a piece can push a 4 KiB header over the boundary.
+    All of them have to verify; any one of them moving off 0 counts as the
+    torrent having started on the range.
     """
     stalled = 0
     scheduled = False
@@ -479,9 +500,9 @@ def _wait_for_piece(qb, torrent_hash, piece, deadline, p):
             states = qb.piece_states(torrent_hash)
         except requests.RequestException as e:
             return False, f"could not read piece states ({e})"
-        if 0 <= piece < len(states) and states[piece] == 2:
+        if pieces.verified(states, needed):
             return True, "piece downloaded"
-        if 0 <= piece < len(states) and states[piece]:
+        if pieces.scheduled(states, needed):
             scheduled = True
         elif not scheduled and time.time() >= give_up_at:
             return False, NEVER_SCHEDULED
