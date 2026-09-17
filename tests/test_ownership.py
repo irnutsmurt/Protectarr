@@ -308,6 +308,119 @@ class TestScanFeedsOwnershipCorrectly(OwnershipCase):
                          {"pausedDL", "stoppedDL"})
 
 
+class TestAnOutageNeverWritesAnObservation(OwnershipCase):
+    """The stored record may only ever assert what a pass actually saw.
+
+    `_unclaimed` carries a previous OWNED state forward when the owner's queue
+    could not be read, which is the whole point of the module. But `_persist`
+    then wrote `owner_type`, `last_claimed` and `absent_since` from that
+    carried-forward state as if a claim had been observed. Nothing read those
+    two fields at the time, so it was invisible; the Active Downloads view is
+    the first consumer and would have shown an unknown application type and a
+    claim timestamp that moved every time Sonarr restarted.
+    """
+
+    def stored(self, thash=A):
+        return ownership.records()[thash]
+
+    def claim_then_outage(self, arr_type="sonarr"):
+        live = FakeArr("Sonarr", [A], arr_type=arr_type)
+        self.pass_([live], now=1000.0)
+        before = dict(self.stored())
+        self.pass_([FakeArr("Sonarr", [A], broken=True)], now=2000.0)
+        return before, dict(self.stored())
+
+    def test_an_outage_does_not_erase_a_known_owner_type(self):
+        before, after = self.claim_then_outage()
+        self.assertEqual(before["owner_type"], "sonarr")
+        self.assertEqual(after["owner_type"], "sonarr")
+
+    def test_an_outage_does_not_advance_last_claimed(self):
+        before, after = self.claim_then_outage()
+        self.assertEqual(before["last_claimed"], 1000.0)
+        self.assertEqual(after["last_claimed"], 1000.0)
+
+    def test_the_outage_still_keeps_the_owner_and_the_state(self):
+        """The carried-forward parts are the point of the module and must not
+        have been thrown out with the fix."""
+        _, after = self.claim_then_outage()
+        self.assertEqual(after["owner"], "Sonarr")
+        self.assertEqual(after["state"], ownership.OWNED)
+
+    def test_updated_still_moves_because_the_pass_really_happened(self):
+        """`updated` is when Protectarr last considered this record, which is
+        true on an outage pass. It is not a claim."""
+        _, after = self.claim_then_outage()
+        self.assertEqual(after["updated"], 2000.0)
+
+    def test_a_real_claim_does_advance_last_claimed(self):
+        """The fix must not freeze the field for everyone."""
+        live = FakeArr("Sonarr", [A])
+        self.pass_([live], now=1000.0)
+        self.pass_([live], now=3000.0)
+        self.assertEqual(self.stored()["last_claimed"], 3000.0)
+
+    def test_a_real_claim_still_records_the_owner_type(self):
+        live = FakeArr("Radarr", [A], arr_type="radarr")
+        self.pass_([live], now=1000.0)
+        self.assertEqual(self.stored()["owner_type"], "radarr")
+
+    def test_a_reclaimed_orphan_still_has_its_dwell_cleared(self):
+        """`absent_since = None` moved inside the observed-claim branch, so the
+        reset that `actionable_orphan` documents has to still happen."""
+        live = FakeArr("Sonarr", [A])
+        self.pass_([live], now=1000.0)
+        self.pass_([FakeArr("Sonarr")], now=2000.0)          # absent
+        self.assertIsNotNone(self.stored()["absent_since"])
+        self.pass_([live], now=3000.0)                        # claimed again
+        self.assertIsNone(self.stored()["absent_since"])
+        self.assertEqual(self.stored()["state"], ownership.OWNED)
+
+    def test_an_outage_during_an_orphan_does_not_clear_the_dwell(self):
+        """The other direction: a carried-forward ORPHANED state must keep the
+        clock it already had rather than having it reset by an outage."""
+        live = FakeArr("Sonarr", [A])
+        self.pass_([live], now=1000.0)
+        self.pass_([FakeArr("Sonarr")], now=2000.0)          # absent, verified
+        started = self.stored()["absent_since"]
+        self.pass_([FakeArr("Sonarr", broken=True)], now=2500.0)
+        self.assertEqual(self.stored()["absent_since"], started)
+
+    def test_an_outage_rewrites_nothing_at_all_on_a_record_it_did_not_see(self):
+        """The invariant, stated against a record this code did not write.
+
+        `absent_since = None` is inside the guard for the same reason as the
+        other two, but no pass Protectarr runs can currently produce an OWNED
+        record that still has a dwell on it - so moving that one line back out
+        is invisible to a test that starts from a live pass. A store restored
+        from a backup, or written by hand while debugging, is not bound by that
+        and is exactly when an operator is least able to afford Protectarr
+        quietly editing fields it never observed.
+
+        So this seeds the record directly and asserts the whole of it survives
+        an outage untouched apart from `updated`.
+        """
+        seeded = {"state": ownership.OWNED, "owner": "Sonarr",
+                  "owner_type": "sonarr", "first_seen": 10.0,
+                  "last_claimed": 20.0, "absent_since": 30.0}
+        ownership._store.save(
+            {"version": ownership.VERSION, "owners": {A: dict(seeded)}})
+
+        self.pass_([FakeArr("Sonarr", [A], broken=True)], now=9999.0)
+
+        after = self.stored()
+        self.assertEqual(after["updated"], 9999.0)
+        self.assertEqual({k: v for k, v in after.items() if k != "updated"},
+                         seeded)
+
+    def test_a_type_change_on_a_real_claim_is_still_recorded(self):
+        """Someone re-pointing an instance at a different app type is an
+        observation, and must overwrite."""
+        self.pass_([FakeArr("Sonarr", [A], arr_type="sonarr")], now=1000.0)
+        self.pass_([FakeArr("Sonarr", [A], arr_type="radarr")], now=2000.0)
+        self.assertEqual(self.stored()["owner_type"], "radarr")
+
+
 class TestEvaluateHonoursOwnership(OwnershipCase):
     """The states have to actually change what Protectarr does."""
 

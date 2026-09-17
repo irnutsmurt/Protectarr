@@ -213,9 +213,25 @@ def _persist(resolved, stored, now):
             rec.setdefault("first_seen", now)
             if own.state == OWNED:
                 rec["owner"] = own.owner
-                rec["owner_type"] = own.client.type if own.client else None
-                rec["last_claimed"] = now
-                rec["absent_since"] = None
+                # `client` is the pass's own evidence: it is set only by
+                # `_claimed`, which ran because a queue we actually read named
+                # this torrent. `_unclaimed` carries a previous OWNED state
+                # forward with no client at all, and that is not an observation.
+                #
+                # Writing these three from a carried-forward state asserted
+                # things nobody saw. An *arr that was down for one pass had its
+                # torrents' `owner_type` overwritten with None - erasing the one
+                # field that says whether the owner is Sonarr or Radarr - and
+                # their `last_claimed` moved to now, dating a claim that was
+                # never made. Both survived every restart afterwards, because
+                # the next outage did it again.
+                if own.client:
+                    rec["owner_type"] = own.client.type
+                    rec["last_claimed"] = now
+                    # A torrent that is claimed again is not absent, and the
+                    # next absence is a new absence rather than a resumption of
+                    # the old one. Only a real claim may say so.
+                    rec["absent_since"] = None
             elif own.state == ORPHANED:
                 rec["owner"] = own.owner
                 if not rec.get("absent_since"):
