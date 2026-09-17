@@ -43,6 +43,15 @@ function showDetails(i){
     ['Category', r.category],
     ['Infohash', r.hash ? '<code>' + esc(r.hash) + '</code>' : null, true]
   ]);
+  // Sections the record brings with it, for pages whose dossier is not a
+  // remediation. Rendered here rather than in a second dialog: an operator
+  // should not have to learn two layouts for the same kind of question, and
+  // the empty-row rule below is the thing that makes one dialog serve both.
+  // Nothing spans unless the record asks, so Timeline stays the only
+  // full-width section on the History side.
+  (r.extra || []).forEach(function (s) {
+    html += section(s.title, s.rows, s.span);
+  });
   html += section('Why', [
     ['Finding', r.why],
     ['Also detected', r.also && r.also.length

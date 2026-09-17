@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="card">
+  <h2>Active Downloads <span class="hint" style="font-weight:400">- what Protectarr currently believes about each one</span></h2>
+  <div class="body">
+
+    {#- The age line is not decoration. This page is a projection of the last
+        completed scan, not a live stream from qBittorrent, and an operator who
+        thinks otherwise will read a 40-second-old row as proof that nothing is
+        happening. So the age is stated before the table, every time, at the
+        same prominence as the row count. -#}
+    {% if snap %}
+    <p class="snapage{{ ' stale' if stale }}">
+      {% if stale %}
+      <b>Showing the last successful scan.</b>
+      The most recent one failed, so this is what was true
+      {{ age_text }} ago, not what is true now.
+      {% else %}
+      Projected from the scan that finished {{ age_text }} ago.
+      {% endif %}
+      {% if snap.dry_run %}Protectarr is in <b>dry run</b>, so nothing here would be removed even if it were flagged.{% endif %}
+    </p>
+    {% if last_error and stale %}
+    <p class="hint" style="margin-top:-6px">Last scan error: {{ last_error }}</p>
+    {% endif %}
+
+    {%- if not snap.ownership_known %}
+    {#- The one failure that changes what the rows *mean* rather than how old
+        they are. With a queue unread Protectarr cannot tell an unowned
+        download from one whose owner is down, so it declines to delete
+        anything directly, and several rows below will say so. -#}
+    <p class="warnbox">
+      Could not read the queue of {{ snap.unreadable | join(', ') }}.
+      Ownership is uncertain for this pass, so Protectarr held back from acting
+      on anything it could not attribute. Torrents those applications own are
+      still shown with their last known owner.
+    </p>
+    {%- endif %}
+    {% endif %}
+
+    {% if snap and snap.rows %}
+    <div class="toolbar" style="margin-bottom:14px" id="activeFilters">
+      {#- Client-side, over rows already rendered. The population is the active
+          downloads rather than the library, so this is tens of rows on a normal
+          install and there is nothing to ask the server for. -#}
+      <button type="button" class="tool-btn active" data-filter="all">All <span class="fcount"></span></button>
+      <button type="button" class="tool-btn" data-filter="attention">Needs attention <span class="fcount"></span></button>
+      <button type="button" class="tool-btn" data-filter="owned">Owned <span class="fcount"></span></button>
+      <button type="button" class="tool-btn" data-filter="orphaned">Orphaned <span class="fcount"></span></button>
+      <button type="button" class="tool-btn" data-filter="conflicted">Conflicted <span class="fcount"></span></button>
+      <button type="button" class="tool-btn" data-filter="untracked">Untracked <span class="fcount"></span></button>
+    </div>
+
+    <div style="overflow-x:auto">
+      {#- `dlcards` is the narrow-width behaviour, at the same 999px History
+          uses. Measured: these eight columns need 813px once the release cell
+          is capped, and the card hands the table the viewport less 166px, so
+          979px is the floor. Uncapped, a 106-character release name pushes it
+          to 1370 and the table scrolls sideways on a 1440 desktop - which is
+          exactly the History problem this page was told not to repeat. The cap
+          lives on `td.dl-name` in the stylesheet. -#}
+      <table class="applist dlcards">
+        <thead>
+          <tr>
+            <th>Release</th>
+            <th class="num">Progress</th>
+            <th>Category</th>
+            <th>Owner</th>
+            <th>Ownership</th>
+            <th>Protectarr</th>
+            <th>Remediation</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr data-buckets="{{ r.filters }}">
+            <td class="dl-name" data-label="Release">
+              <div><code>{{ r.name }}</code></div>
+              <div class="hint">{% if r.size %}{{ r.size }}{% endif %}</div>
+            </td>
+            {#- `dl-empty` marks a cell with nothing to say. The desktop table
+                still renders it, because the column has to line up; the
+                stacked card hides it, because a heading over a dash is most of
+                a card and none of the information. -#}
+            <td class="num" data-label="Progress">{{ r.progress or '-' }}</td>
+            <td data-label="Category" class="{{ 'dl-empty' if not r.category }}">{{ r.category or '-' }}</td>
+            <td data-label="Owner" class="{{ 'dl-empty' if not r.owner }}">{{ r.owner or '-' }}</td>
+            <td data-label="Ownership">
+              <span class="pill {{ r.ownership.tone }}">{{ r.ownership.label }}</span>
+            </td>
+            {#- No nowrap. The reason is written out in style.css against the
+                History cell that learned it the hard way: an unwrappable
+                sentence sets a floor on its column, and the table cannot
+                shrink past it. -#}
+            <td class="dl-state" data-label="Protectarr">
+              <span class="pill {{ r.state.tone }}">{{ r.state.label }}</span>
+              <div class="hint" style="margin-top:4px">{{ r.state.why }}</div>
+            </td>
+            <td data-label="Remediation" class="{{ 'dl-empty' if not r.remediation }}">
+              {% if r.remediation %}
+              <span class="pill {{ r.remediation.tone }}">{{ r.remediation.label }}</span>
+              <div class="hint" style="margin-top:4px">{{ r.remediation.why }}</div>
+              {% else %}<span class="hint">-</span>{% endif %}
+            </td>
+            <td class="act">
+              <button type="button" class="btn small" onclick="showDetails({{ loop.index0 }})">Details</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <p class="hint" style="margin-top:12px" id="activeCount">
+      {{ rows | length }} active download{{ '' if rows | length == 1 else 's' }}{%
+        if attention %}, {{ attention }} needing attention{% endif %}.
+      This is a read-only view: Protectarr acts on its own schedule and nothing
+      on this page starts or stops anything.
+    </p>
+
+    {% elif snap %}
+    <p class="hint">
+      qBittorrent had nothing downloading when the last scan ran
+      {{ age_text }} ago. Finished and seeding torrents are not shown here:
+      there is nothing left to prevent once the payload has arrived.
+    </p>
+
+    {% else %}
+    {#- Deliberately not an empty table. "No scan has finished yet" and
+        "nothing is downloading" are different facts, and the second one would
+        be a lie during a qBittorrent outage at startup. -#}
+    <p class="hint">
+      No scan has completed since Protectarr started, so there is nothing to
+      show yet.
+      {% if running %}
+      A scan is running; this page fills in once the first one finishes.
+      {% else %}
+      The scanner is not running. Start it from the System page.
+      {% endif %}
+      {% if last_error %}<br><br>Last scan error: {{ last_error }}{% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="modal-overlay" id="detailModal" hidden>
+  <div class="modal wide">
+    <div class="modal-head"><span>Details</span>
+      <button type="button" class="modal-x" onclick="closeDetails()">&times;</button></div>
+    <div class="modal-body detail-grid" id="detail_body"></div>
+    <div class="modal-foot">
+      <button type="button" class="btn" onclick="closeDetails()">Close</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+var ROWS = {{ detail_rows | tojson }};
+</script>
+{% include "_details.html" %}
+<script>
+// Filtering, over rows the server already rendered. No request, no re-sort,
+// and the counts come from the rows themselves so they cannot disagree with
+// what the buttons then show.
+(function () {
+  var bar = document.getElementById('activeFilters');
+  if (!bar) return;
+  var rows = Array.prototype.slice.call(
+    document.querySelectorAll('.dlcards tbody tr'));
+
+  function matching(name) {
+    return rows.filter(function (tr) {
+      return (' ' + tr.dataset.buckets + ' ').indexOf(' ' + name + ' ') >= 0;
+    });
+  }
+
+  Array.prototype.forEach.call(bar.querySelectorAll('[data-filter]'),
+    function (btn) {
+      var n = matching(btn.dataset.filter).length;
+      btn.querySelector('.fcount').textContent = n;
+      // A bucket nothing is in is not a useful thing to click, but removing it
+      // would make the bar's shape depend on the data. Muted and left in place.
+      if (!n) btn.classList.add('empty');
+    });
+
+  bar.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-filter]');
+    if (!btn) return;
+    Array.prototype.forEach.call(bar.querySelectorAll('[data-filter]'),
+      function (b) { b.classList.toggle('active', b === btn); });
+    var want = btn.dataset.filter;
+    var shown = 0;
+    rows.forEach(function (tr) {
+      var on = (' ' + tr.dataset.buckets + ' ').indexOf(' ' + want + ' ') >= 0;
+      tr.hidden = !on;
+      if (on) shown++;
+    });
+    var count = document.getElementById('activeCount');
+    if (count) {
+      count.firstChild.nodeValue = '\n      Showing ' + shown + ' of '
+        + rows.length + ' active downloads. ';
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -98,6 +98,7 @@
 {%- set NAV_ICONS = {
   'applications': '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   'dashboard':    '<path d="M3 21h18"/><path d="M6 21V11"/><path d="M12 21V4"/><path d="M18 21v-6"/>',
+  'active':       '<path d="M12 3v10"/><path d="M8.4 9.6L12 13.2l3.6-3.6"/><path d="M4 16.5V20h16v-3.5"/>',
   'history':      '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.4 2"/>',
   'watchlist':    '<path d="M12 3.2l7.2 3v5.1c0 4.4-3.1 8.2-7.2 9.1-4.1-.9-7.2-4.7-7.2-9.1V6.2z"/>',
   'settings':     '<path d="M4 7h7"/><path d="M15.5 7H20"/><path d="M4 17h4.5"/><path d="M13 17h7"/><circle cx="13.2" cy="7" r="2.3"/><circle cx="10.7" cy="17" r="2.3"/>',
@@ -119,6 +120,10 @@
     <nav class="nav" aria-label="Primary">
       {{ navlink('applications', 'applications', 'Applications') }}
       {{ navlink('dashboard', 'dashboard', 'Dashboard') }}
+      {#- Between the overview and the record of what already happened, because
+          that is where it sits in time: this is what Protectarr thinks right
+          now, before any of it becomes History. -#}
+      {{ navlink('active', 'active', 'Active Downloads') }}
       {{ navlink('history', 'history', 'History') }}
       {{ navlink('watchlist', 'watchlist', 'Swarm Observations') }}
 

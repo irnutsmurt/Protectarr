@@ -16,6 +16,10 @@ from flask import (Flask, render_template, request, redirect, url_for,
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from . import config as cfg_mod
+# For the policy vocabulary only. `explain` and the four states it returns are
+# the engine's, and the Active Downloads page renders them rather than deciding
+# anything itself.
+from . import core
 from . import dashboard as dash
 from . import events
 from . import evidence
@@ -24,6 +28,7 @@ from . import logs
 from . import __version__
 from .netauth import resolve_client_ip, is_local
 from . import probe
+from . import snapshot
 from .qbit import QbitClient, QbitError
 from .arr import ArrClient, ARR_TYPES, build_clients
 
@@ -102,7 +107,7 @@ def section_url(section):
 #                 width, not better: the label ends up an inch from its value.
 #                 The log box below it benefits slightly, but it is
 #                 height-capped and scrolls, so it is the lesser half.
-WIDE_PAGES = {"dashboard", "history", "watchlist"}
+WIDE_PAGES = {"active", "dashboard", "history", "watchlist"}
 
 
 def _mappings_from_form(form):
@@ -801,6 +806,266 @@ def _current_policy(cfg):
     return rows
 
 
+# ---- Active Downloads ----
+
+# Why the safety mode does not extend to a torrent, in the operator's terms and
+# pointing at the thing they would change. Keyed on `explain`'s reason token, so
+# a reason added to the engine without wording here shows the token rather than
+# inventing an explanation for it.
+_NOT_COVERED = {
+    "not_tracked": "no application is tracking it",
+    "not_allowlisted": "its category is not in the allowlist",
+    "not_tracked_and_not_allowlisted":
+        "no application tracks it and its category is not in the allowlist",
+    "ownership_unknown":
+        "an application queue could not be read, so Protectarr cannot tell an "
+        "unowned download from one whose owner is simply down",
+    "unknown_mode": "the configured safety mode is not recognised",
+}
+
+_OWNERSHIP = {
+    "owned": ("Owned", "on", "an application is tracking it"),
+    "orphaned": ("Orphaned", "dry",
+                 "its application stopped tracking it while it is still "
+                 "downloading"),
+    "conflicted": ("Conflicted", "bad",
+                   "more than one application claims it, so Protectarr will "
+                   "not act on it either way"),
+    "untracked": ("Untracked", "off",
+                  "no application has ever been seen claiming it"),
+}
+
+
+def _mins(seconds):
+    """Seconds as the coarse duration a dwell is actually read in."""
+    if seconds is None:
+        return None
+    m = int(seconds // 60)
+    if m < 60:
+        return f"{m}m"
+    return f"{m // 60}h {m % 60}m" if m % 60 else f"{m // 60}h"
+
+
+def _age_text(seconds):
+    """A snapshot's age, in the units an operator reads it in.
+
+    Coarser than the poll interval on purpose. "18 seconds" invites someone to
+    compare it against a clock; the question this answers is only ever whether
+    what they are looking at is current, a few minutes old, or abandoned.
+    """
+    if seconds is None:
+        return None
+    if seconds < 90:
+        return "moments"
+    m = int(seconds // 60)
+    if m < 60:
+        return f"{m} minutes"
+    h = m // 60
+    if h < 48:
+        return f"{h} hour{'' if h == 1 else 's'}"
+    return f"{h // 24} days"
+
+
+def _protectarr_state(row):
+    """The single thing the Protectarr State column says. `(label, tone, why)`.
+
+    Ordered by what an operator needs to see first, not by which subsystem
+    produced it. A finding outranks everything because it is the only entry
+    here that is about this torrent being wrong rather than about Protectarr's
+    relationship to it.
+
+    Note what `Monitoring` does and does not claim. It means policy covers this
+    torrent, so if a finding appears Protectarr may act. It is not a statement
+    that anything is going to be removed, and most of a healthy library sits
+    there permanently.
+    """
+    if row.get("finding"):
+        find = row["finding"]
+        return ("Flagged", "bad",
+                find.get("reason") or "a detector flagged its contents")
+    state = row.get("policy_state")
+    detail = row.get("policy_detail") or {}
+
+    if state == core.BLOCKED:
+        return ("Blocked", "bad",
+                detail.get("why") or "more than one application claims it")
+    if state == core.WAITING:
+        if not detail.get("measurable"):
+            # Either the owner was unreachable this pass or the user paused it.
+            # Both mean the absence is not being measured, and a countdown
+            # drawn from zero would be a measurement nobody took.
+            return ("Waiting", "dry",
+                    "orphan dwell is not being measured: "
+                    + (detail.get("why") or "the absence could not be verified"))
+        return ("Waiting", "dry",
+                f"orphan dwell {_mins(detail.get('absent_for'))} "
+                f"/ {_mins(detail.get('required'))}")
+    if row.get("probe", {}).get("steered"):
+        return ("Probe in progress", "dry",
+                "reading the opening bytes of one file to check it is what it "
+                "claims to be")
+    if not row.get("inspected"):
+        return ("Waiting for metadata", "off",
+                "qBittorrent does not have the file list yet, so there is "
+                "nothing to inspect")
+    if state == core.NOT_COVERED:
+        return ("Not actionable by policy", "off",
+                _NOT_COVERED.get(row.get("policy_reason"))
+                or row.get("policy_reason"))
+    return ("Monitoring", "on", "can remediate if a finding appears")
+
+
+def _needs_attention(row):
+    """Is this a row a human has to do something about?
+
+    Deliberately the same definition the Dashboard's Triage Queue uses for the
+    remediation half: `failed_unverified` and nothing else, because that is the
+    one milestone the engine treats as terminal-and-wrong. `pending` and
+    `removed` are transient by design and a reconcile finishes them.
+    """
+    rem = row.get("remediation") or {}
+    return bool(row.get("finding")
+                or row.get("ownership") == "conflicted"
+                or rem.get("milestone") == intents.FAILED_UNVERIFIED)
+
+
+def _active_rows(snap):
+    """Snapshot rows as the table renders them."""
+    out = []
+    for row in snap["rows"]:
+        label, tone, why = _protectarr_state(row)
+        own_label, own_tone, own_why = _OWNERSHIP.get(
+            row.get("ownership"), _OWNERSHIP["untracked"])
+        rem = row.get("remediation") or {}
+        milestone = _MILESTONES.get(rem.get("milestone"))
+        out.append({
+            "hash": row["hash"],
+            "name": row["name"],
+            "progress": _percent(row.get("progress")),
+            "size": _human_size(row.get("size")),
+            "category": row.get("category") or None,
+            "owner": row.get("owner"),
+            "ownership": {"label": own_label, "tone": own_tone, "why": own_why},
+            "state": {"label": label, "tone": tone, "why": why},
+            "remediation": ({"label": milestone[0], "tone": milestone[1],
+                             "why": milestone[2]} if milestone else None),
+            "attention": _needs_attention(row),
+            # The filter buttons key on this rather than re-deriving the
+            # classification in JavaScript.
+            "filters": _row_filters(row),
+        })
+    return out
+
+
+def _row_filters(row):
+    """Which filter buckets a row belongs to. Always includes `all`."""
+    buckets = ["all", row.get("ownership") or "untracked"]
+    if _needs_attention(row):
+        buckets.append("attention")
+    return " ".join(buckets)
+
+
+def _percent(p):
+    try:
+        return f"{float(p) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return None
+
+
+def _active_detail(row):
+    """One row as the Details dossier payload.
+
+    Maps onto the fields `_details.html` already renders where they mean the
+    same thing, and supplies the rest as `extra` sections. Reusing the dialog
+    rather than writing a second one is the point: an operator should not have
+    to learn two layouts for the same kind of question.
+    """
+    detail = row.get("policy_detail") or {}
+    rem = row.get("remediation") or {}
+    probe_state = row.get("probe") or {}
+    label, _, why = _protectarr_state(row)
+
+    dwell = None
+    if row.get("ownership") == "orphaned":
+        if detail.get("measurable") or row.get("absent_for") is not None:
+            dwell = (f"absent {_mins(row.get('absent_for'))}"
+                     + (f" of {_mins(detail.get('required'))} required"
+                        if detail.get("required") else ""))
+        else:
+            dwell = "not being measured on this pass"
+
+    return {
+        # ---- fields the built-in sections already know ----
+        "release": row["name"],
+        "app": row.get("owner"),
+        "size": _human_size(row.get("size")),
+        "category": row.get("category"),
+        "hash": row["hash"],
+        "why": row.get("finding", {}).get("reason") if row.get("finding") else None,
+        "severity": row.get("finding", {}).get("severity") if row.get("finding") else None,
+        "profile": row.get("profile"),
+        "status": ({"label": _MILESTONES[rem["milestone"]][0],
+                    "milestone": rem["milestone"]}
+                   if rem.get("milestone") in _MILESTONES else None),
+        "error": rem.get("error"),
+        "search_command": rem.get("remediation_id"),
+        "search_state": rem.get("search_state"),
+        "search_result": rem.get("search_result"),
+        "search_message": rem.get("search_message"),
+
+        # ---- and the ones only this page has ----
+        "extra": [
+            {"title": "In qBittorrent", "rows": [
+                ["State", row.get("qstate")],
+                ["Progress", _percent(row.get("progress"))],
+                ["Tags", ", ".join(row.get("tags") or []) or None],
+                ["Inspected", None if row.get("inspected")
+                 else "not yet, qBittorrent has no file list for it"],
+            ]},
+            {"title": "Ownership", "rows": [
+                ["State", (_OWNERSHIP.get(row.get("ownership")) or ("",))[0]],
+                ["Application", row.get("owner")],
+                ["Application type", row.get("owner_type")],
+                # The scan's own sentence. For a conflict this is the only
+                # place the claimants appear at all, because the store
+                # deliberately never records them.
+                ["How Protectarr knows", row.get("ownership_why")],
+                ["Orphan dwell", dwell],
+            ]},
+            {"title": "Policy", "rows": [
+                ["Protectarr state", label],
+                ["Why", why],
+                ["Profile", row.get("profile")],
+                ["Profile chosen by", _PROFILE_SOURCE.get(
+                    row.get("profile_source"))],
+                ["If a finding appears", _WOULD.get(row.get("would"))],
+            ]},
+            {"title": "Content probe", "rows": [
+                ["Enabled", "no" if not probe_state.get("enabled") else None],
+                ["Selected this pass", "yes" if probe_state.get("candidate")
+                 else None],
+                ["Currently steered", "yes" if probe_state.get("steered")
+                 else None],
+                ["Steering opened", probe_state.get("opened")],
+            ]},
+        ],
+    }
+
+
+_PROFILE_SOURCE = {
+    "application": "this application's own profile setting",
+    "category": "a category mapping in Reaping Rules",
+    "default": "the configured default profile",
+    "builtin": "nothing is configured, so the built-in default applies",
+}
+
+_WOULD = {
+    "arr_fail": "the owning application would be asked to fail and blocklist it",
+    "qbit_delete": "it would be deleted from qBittorrent directly, because no "
+                   "application owns it",
+}
+
+
 def _human_size(n):
     """Bytes -> the sizes people recognise from a torrent client."""
     try:
@@ -1024,6 +1289,39 @@ def create_app(service):
             # Every folded row, not just the five shown: a Triage row's dialog
             # can point past the end of Recent Activity.
             detail_rows=[_detail(r) for r in rows])
+
+    @app.route("/active")
+    def active():
+        """What Protectarr currently believes about the active downloads.
+
+        Read-only, and a projection of the last completed scan rather than a
+        live view of qBittorrent. That distinction is the whole reason the
+        page states its own age: the alternative was a second full torrent
+        fetch on every browser refresh, for data that is at most one poll
+        interval staler than the engine's own.
+
+        Three states this can be in, and they are not the same:
+
+            no snapshot    Protectarr has not finished a pass since it
+                           started. Not an empty library.
+            stale          a pass has failed since the last good one, so what
+                           is shown is the last thing that was true.
+            current        the last pass completed.
+        """
+        snap = snapshot.published(service.state)
+        rows = _active_rows(snap) if snap else []
+        return page(
+            "active.html", active="active", snap=snap, rows=rows,
+            age_text=_age_text(snapshot.age(snap)),
+            # `last_error` is what makes a snapshot stale: the scan loop keeps
+            # it set until a pass succeeds, and a pass that succeeded is a pass
+            # that published. Reading the two together is what stops the page
+            # claiming an outage is a quiet library.
+            stale=bool(snap and service.state.get("last_error")),
+            last_error=service.state.get("last_error"),
+            running=service.state.get("running"),
+            attention=sum(1 for r in rows if r["attention"]),
+            detail_rows=[_active_detail(r) for r in (snap["rows"] if snap else [])])
 
     @app.route("/system")
     def system():

@@ -369,7 +369,8 @@ class TestWideContent(ShellCase):
         self.assertGreater(int(m.group(1)), 1320)
 
     def test_page_type_drives_it_rather_than_the_template(self):
-        self.assertEqual(web.WIDE_PAGES, {"dashboard", "history", "watchlist"})
+        self.assertEqual(web.WIDE_PAGES,
+                         {"active", "dashboard", "history", "watchlist"})
 
 
 class TestNavigationRemainsUsable(ShellCase):
@@ -378,7 +379,9 @@ class TestNavigationRemainsUsable(ShellCase):
         nav = re.search(r'<nav class="nav"[^>]*>(.*?)</nav>', html, re.S).group(1)
         links = re.findall(r"<a\s[^>]*>.*?</a>", nav, re.S)
         primary = [a for a in links if 'class="ico"' in a]
-        self.assertEqual(len(primary), 6, "expected six primary nav links")
+        # Applications, Dashboard, Active Downloads, History, Swarm
+        # Observations, Settings, System.
+        self.assertEqual(len(primary), 7, "expected seven primary nav links")
         for a in primary:
             self.assertIn('<svg class="ico"', a)
             self.assertIn('<span class="label">', a)

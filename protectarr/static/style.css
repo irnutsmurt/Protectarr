@@ -708,6 +708,118 @@ h3.sub { display: flex; align-items: center; gap: 9px; }
   .histcards td.act { grid-row: 7; }
 }
 
+/* ---- Active Downloads ----
+   The age of the projection, stated before the table rather than under it.
+   This page is the last completed scan, not a live feed, and someone who reads
+   it as live will take a 40-second-old row as proof that nothing is happening.
+   `stale` is the stronger case: a pass has failed since, so the rows are the
+   last thing that was true rather than the most recent thing that is. */
+.snapage { font-size: 13px; color: var(--text-dim); margin: 0 0 14px; }
+.snapage.stale {
+  color: var(--warn); background: #d8a2001a; border: 1px solid #d8a20055;
+  border-radius: 4px; padding: 9px 12px;
+}
+.warnbox {
+  font-size: 13px; color: var(--warn); background: #d8a2001a;
+  border: 1px solid #d8a20055; border-radius: 4px; padding: 9px 12px;
+  margin: 0 0 14px;
+}
+/* A filter nothing is in. Left in place rather than removed, so the bar's
+   shape does not change with the data, but not dressed up as a destination. */
+.tool-btn.empty { opacity: .45; }
+.tool-btn .fcount { color: var(--text-dim); font-weight: 400; margin-left: 4px; }
+.tool-btn.active .fcount { color: inherit; }
+
+.dlcards td.act, .dlcards td.num, .dlcards th.num { text-align: right; }
+
+/* The cap that decides this table's floor, and the whole reason it is not
+   History.
+
+   Measured on the rendered page, not a mock of it: these eight columns come to
+   688px of min-content, which is a 854px viewport once the card has taken its
+   166px. With the cap removed a 106-character release name takes the same
+   table to 1204px, or a 1370px viewport, and 1370 means sideways scrolling on
+   an ordinary 1440 desktop. That is what History does today and what this page
+   was told not to repeat.
+
+   The check that matters is that name length stops mattering at all. Measured
+   with a 124-character release name in the first column: floor 688px, release
+   column 75px, identical to ordinary names to the pixel. History's floor moves
+   to 1366 under the same test.
+
+   `anywhere` rather than `break-word`, and a `max-width` rather than a
+   `width`. A release name is one unbreakable token: `break-word` permits a
+   break during layout but does not reduce the cell's min-content
+   contribution, so the column still demands the whole word and the floor does
+   not move. Measured - it changed it by 0px. `anywhere` does reduce it, and
+   the max-width is what gives it something to reduce to. */
+.dlcards td.dl-name { max-width: 260px; }
+.dlcards td.dl-name code { overflow-wrap: anywhere; }
+
+/* Same 999px as History, but not for the same reason, and the difference is
+   worth saying. History breaks at 999 because that is genuinely where its
+   table stops fitting. This table fits down to 854, so 999 is a choice rather
+   than a constraint: two tables on adjacent pages changing shape at different
+   widths reads as a rendering fault, and 145px of headroom is a cheaper price
+   than that. If the column set grows, check the floor again before assuming
+   this number still has slack in it. */
+@media (max-width: 999px) {
+  .dlcards, .dlcards tbody, .dlcards td { display: block; }
+  .dlcards thead { display: none; }
+  /* A grid, not a plain stack, and the reason is measured. Stacked one field
+     per line the card came to 460px at 768, and 172px of that was four cells -
+     Progress, Category, Owner, Ownership - each spending a whole 43px line on
+     one short word. Two columns puts those four on two lines instead of four
+     and the prose fields keep the full width they need.
+
+     Auto-placement, with only the full-width cells named. Which cell is third
+     depends on what is hidden below, so anything keyed on position would put
+     the wrong field in the left column the moment a row has no remediation. */
+  .dlcards tr {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px 14px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: #262626; padding: 12px 14px; margin-bottom: 10px;
+  }
+  .dlcards tr:last-child { margin-bottom: 0; }
+  .dlcards td { border: none; padding: 0; text-align: left; }
+  .dlcards td.num { text-align: left; }
+  .dlcards td.dl-name,
+  .dlcards td.dl-state,
+  .dlcards td[data-label="Remediation"],
+  .dlcards td.act { grid-column: 1 / -1; }
+  /* A field with nothing in it. On the desktop table the cell has to exist so
+     the column lines up; in a card it is a heading over a dash, and four of
+     those is most of the card. */
+  .dlcards td.dl-empty { display: none; }
+  /* The cap is a desktop column constraint. Down here the cell is a block in
+     a card that is already as wide as the viewport, so holding it to 260px
+     would waste most of the line. */
+  .dlcards td.dl-name { max-width: none; }
+  .dlcards td[data-label]::before {
+    content: attr(data-label); display: block;
+    font-size: 11px; font-weight: 600; letter-spacing: .4px;
+    text-transform: uppercase; color: var(--text-dim); margin-bottom: 3px;
+  }
+  .dlcards code { overflow-wrap: anywhere; }
+  /* Taller, not wider, and the same rule History's card uses. The desktop
+     button is under the 44px a fingertip wants; `min-height` rather than more
+     padding because the button is already a centring flex box, so the height
+     is stated once instead of being re-derived from the font. */
+  .dlcards .btn.small {
+    min-height: 44px; padding: 8px 18px; font-size: 13px;
+  }
+}
+
+/* There is deliberately no second breakpoint dropping these cards to one
+   column. There was one at 380px, on the assumption that two columns would
+   stop being readable somewhere around the narrower phones; measured through
+   an iframe (chromium will not open a window below 500px) it holds to 280px
+   with no overflow and nothing clipped, and the pairs that share a line are
+   short values like `39%` and `tv-sonarr` rather than prose. At 375 - the
+   commonest phone width - the rule was costing 103px of card height to solve
+   a problem that does not start until below any real device. */
+
 /* ---- forms ---- */
 label { display: block; font-size: 12px; color: var(--text-dim); margin: 12px 0 4px; }
 label:first-child { margin-top: 0; }
