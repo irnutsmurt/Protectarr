@@ -33,6 +33,41 @@
         return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c];
       });
     }
+
+    // A fetch that always resolves to one shape, so no caller has to work out
+    // what a parse failure means.
+    //
+    // The endpoints here answer with `{ok, data, message}`. What they answer
+    // with when something goes wrong *before* the endpoint runs is not JSON at
+    // all: an expired session is a 401 carrying the text `Unauthorized`, a
+    // reverse proxy in front of Protectarr answers 502 with an HTML page, and
+    // an unhandled error is Flask's own HTML. `r.json()` throws a SyntaxError
+    // on each of those, and a caller that rendered the exception put
+    // `SyntaxError: Unexpected token '<'` in front of an operator, which names
+    // the parser and not one thing they could act on.
+    //
+    // So the raw failure goes to the console, where it belongs, and the caller
+    // gets a short sentence. `transport` says which kind of failure it was:
+    // an endpoint reporting that qBittorrent is down is a different problem
+    // from not having reached Protectarr at all, and they have different fixes.
+    function fetchJson(url, opts) {
+      return fetch(url, opts).then(function (r) {
+        return r.text().then(function (body) {
+          try { return {http: r.status, body: JSON.parse(body)}; }
+          catch (e) { return {http: r.status, why: e, raw: body}; }
+        });
+      }, function (e) {
+        return {http: 0, why: e};
+      }).then(function (r) {
+        if (r.body && typeof r.body.ok === 'boolean') return r.body;
+        console.error('protectarr: ' + url + ' did not answer with JSON',
+                      {status: r.http, error: r.why, body: r.raw});
+        return {ok: false, transport: true, message:
+          r.http === 401 ? 'Your session has expired. Reload the page.'
+          : r.http === 0 ? 'Protectarr is not responding.'
+          : 'Protectarr returned an unexpected response.'};
+      });
+    }
   </script>
 </head>
 <body>

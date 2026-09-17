@@ -104,9 +104,20 @@ class TestAllCase(unittest.TestCase):
     # Every fetch is answered here, after a delay long enough that the
     # intermediate states can be sampled. `FAIL` names the applications that
     # should come back unreachable.
+    # A stand-in Response, not a stub of whatever the caller happens to use.
+    # The first version only implemented `.json()`, which is all the old code
+    # called; the moment the page started reading `.text()` so it could survive
+    # a non-JSON answer, eleven tests failed against a fake that no real
+    # browser would ever hand back.
     STUB = """
     var CALLS = [];
     var FAIL = %(fail)s;
+    function response(payload, status) {
+      var text = JSON.stringify(payload);
+      return {status: status || 200, ok: (status || 200) < 400,
+              text: function () { return Promise.resolve(text); },
+              json: function () { return Promise.resolve(JSON.parse(text)); }};
+    }
     window.fetch = function (url, opts) {
       var body = {};
       try { body = JSON.parse((opts || {}).body || '{}'); } catch (e) {}
@@ -115,9 +126,7 @@ class TestAllCase(unittest.TestCase):
       var ok = FAIL.indexOf(name) === -1;
       return new Promise(function (resolve) {
         setTimeout(function () {
-          resolve({json: function () {
-            return Promise.resolve({ok: ok, message: ok ? 'Online' : 'Refused'});
-          }});
+          resolve(response({ok: ok, message: ok ? 'Online' : 'Refused'}));
         }, %(delay)d);
       });
     };

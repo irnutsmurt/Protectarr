@@ -245,6 +245,16 @@ var QBIT_TEST = {
   verify_ssl: {{ cfg.qbittorrent.verify_ssl | tojson }}
 };
 
+// `post()` in _js.html parses with r.json(), which throws on the 401 an
+// expired session answers with. That exception used to land in a row's tooltip
+// as `SyntaxError: Unexpected token 'U'`.
+function postJson(url, body) {
+  return fetchJson(url, {method: 'POST',
+    headers: {'Content-Type': 'application/json',
+              'X-CSRF-Token': window.CSRF || ''},
+    body: JSON.stringify(body)});
+}
+
 function testTargets() {
   var out = [];
   var qs = document.getElementById('qbit_status');
@@ -261,10 +271,10 @@ function testOne(t) {
   if (t.kind === 'qbit') {
     // Password and API key left out on purpose: blank means "use the stored
     // one", which is how the credential stays on the server.
-    return post('{{ url_for("test_qbit") }}', QBIT_TEST);
+    return postJson('{{ url_for("test_qbit") }}', QBIT_TEST);
   }
-  return post('{{ url_for("test_arr") }}',
-              {name: t.label, type: t.type, url: t.url, index: t.index});
+  return postJson('{{ url_for("test_arr") }}',
+                  {name: t.label, type: t.type, url: t.url, index: t.index});
 }
 
 function testAll(btn) {
@@ -294,8 +304,6 @@ function testAll(btn) {
     return testOne(t).then(function (r) {
       setStatus(t.el, !!r.ok, r.message);
       if (r.ok) ok++;
-    }, function (e) {
-      setStatus(t.el, false, String(e));
     }).then(function () {
       t.el.classList.remove('st-testing');
       return step(i + 1);

@@ -175,11 +175,11 @@ function checkPaths() {
   var rows = document.getElementById('probe_rows');
   msg.textContent = 'checking…'; msg.style.color = 'var(--text-dim)';
   rows.innerHTML = '';
-  fetch('{{ url_for("probe_check") }}', {
+  fetchJson('{{ url_for("probe_check") }}', {
     method: 'POST',
     headers: {'Content-Type': 'application/json', 'X-CSRF-Token': window.CSRF || ''},
     body: JSON.stringify({mappings: currentMappings()})
-  }).then(function(r){ return r.json(); }).then(function(r){
+  }).then(function(r){
     if (!r.ok) { msg.textContent = '✗ ' + r.message; msg.style.color = 'var(--danger)'; return; }
     var any = (r.data.rows || []).some(function(x){ return x.found; });
     msg.textContent = (any ? '✓ ' : '✗ ') + r.data.message;
@@ -191,8 +191,6 @@ function checkPaths() {
         + 'Protectarr: <code>' + esc(x.local_path) + '</code>'
         + (x.note ? '<br>' + esc(x.note) : '') + '</p>';
     }).join('');
-  }).catch(function(e){
-    msg.textContent = '✗ ' + String(e); msg.style.color = 'var(--danger)';
   });
 }
 </script>

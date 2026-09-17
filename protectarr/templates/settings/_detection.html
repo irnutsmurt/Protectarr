@@ -98,11 +98,16 @@ function renderIndexerBoxes(indexers, err) {
 
   if (!names.length) {
     el.innerHTML = '<p class="hint">' + (err
-      ? 'Could not reach your apps to list indexers (' + esc(err) + '). Fix the app connection, then reload.'
+      ? esc(err) + ' Fix the app connection, then reload.'
       : 'No indexers found. Add an application (Sonarr/Radarr/…) with indexers first.') + '</p>';
     return;
   }
-  el.innerHTML = names.sort(function(a,b){ return a.toLowerCase() < b.toLowerCase() ? -1 : 1; })
+  // Say why the list is only what was already saved, the same way the category
+  // picker does. Without this the per-row "not currently reachable" note was
+  // the only clue, which says a name is missing but not that the whole list is
+  // stale or what to do about it.
+  var head = err ? '<p class="hint">' + esc(err) + '</p>' : '';
+  el.innerHTML = head + names.sort(function(a,b){ return a.toLowerCase() < b.toLowerCase() ? -1 : 1; })
     .map(function(n){
       var ix = byName[n];
       var checked = saved.indexOf(n) !== -1 ? ' checked' : '';
@@ -113,10 +118,21 @@ function renderIndexerBoxes(indexers, err) {
     }).join('');
 }
 
-fetch('{{ url_for("dashboard_data") }}').then(function(r){ return r.json(); }).then(function(r){
+// Same treatment as the category picker next door, and for the same reason:
+// what came back here was either a raw application error or, when the request
+// never reached the endpoint, a SyntaxError from parsing a login page.
+fetchJson('{{ url_for("dashboard_data") }}').then(function(r){
   if (r.ok) {
-    var qbitErr = (r.data.errors || []).find(function(e){ return e.indexOf('qBittorrent:') !== 0; });
-    renderIndexerBoxes(r.data.indexers, qbitErr);
-  } else { renderIndexerBoxes([], r.message); }
-}).catch(function(e){ renderIndexerBoxes([], String(e)); });
+    var appErr = (r.data.errors || []).find(function(e){
+      return e.indexOf('qBittorrent:') !== 0; });
+    if (appErr) console.warn('protectarr: indexers unavailable:', appErr);
+    renderIndexerBoxes(r.data.indexers,
+      appErr ? 'Could not reach your applications - showing your saved indexers.'
+             : null);
+  } else {
+    renderIndexerBoxes([], r.transport ? r.message
+      : 'Could not reach your applications - showing your saved indexers.');
+    if (!r.transport) console.warn('protectarr: indexers unavailable:', r.message);
+  }
+});
 </script>

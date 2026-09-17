@@ -156,13 +156,14 @@ function renderBoxes(elId, field, noun, saved, live, err) {
 
   if (!names.length) {
     el.innerHTML = '<p class="hint">' + (err
-      ? 'Could not reach qBittorrent to list ' + noun + ' (' + esc(err) + '). Check the connection on the Applications page, then reload.'
+      ? esc(err) + ' Check the connection on the Applications page, then reload.'
       : 'qBittorrent has no ' + noun + ' defined yet. Create one there (or let your apps create it) and reload.') + '</p>';
     return;
   }
   // Say so when the list is only what was already saved, rather than letting a
-  // short list look like the full picture.
-  var head = err ? '<p class="hint">Could not reach qBittorrent (' + esc(err) + ') - showing your saved ' + noun + ' only.</p>' : '';
+  // short list look like the full picture. `err` arrives as a finished
+  // sentence: see `reason()` for why the underlying exception is not in it.
+  var head = err ? '<p class="hint">' + esc(err) + '</p>' : '';
   el.innerHTML = head + names.sort(function(a,b){ return a.toLowerCase() < b.toLowerCase() ? -1 : 1; })
     .map(function(n){
       var checked = saved.indexOf(n) !== -1 ? ' checked' : '';
@@ -189,13 +190,27 @@ function updateAllowNote() {
 document.getElementById('s_mode').addEventListener('change', updateAllowNote);
 updateAllowNote();
 
-fetch('{{ url_for("qbit_taxonomy") }}').then(function(r){ return r.json(); }).then(function(r){
+// One short sentence for the card, and the detail to the console.
+//
+// Two different failures used to arrive here and both were rendered raw. An
+// endpoint reporting that qBittorrent is down hands back a requests exception,
+// which is long and names a Python library. A request that never reached the
+// endpoint - an expired session answering 401 `Unauthorized`, a proxy
+// answering HTML - made `r.json()` throw, and the SyntaxError went into the
+// card verbatim. Neither told an operator anything they could act on, and the
+// second actively pointed at the wrong component.
+function reason(r, noun) {
+  if (r.ok) return null;
+  if (r.transport) return r.message;     // already a sentence, already logged
+  console.warn('protectarr: qBittorrent ' + noun + ' unavailable:', r.message);
+  return 'Could not reach qBittorrent - showing your saved ' + noun + '.';
+}
+
+fetchJson('{{ url_for("qbit_taxonomy") }}').then(function(r){
   var d = r.ok ? r.data : {};
-  var err = r.ok ? null : r.message;
-  renderBoxes('cat_boxes', 'allowed_categories', 'categories', SAVED_CATS, d.categories, err);
-  renderBoxes('tag_boxes', 'allowed_tags', 'tags', SAVED_TAGS, d.tags, err);
-}).catch(function(e){
-  renderBoxes('cat_boxes', 'allowed_categories', 'categories', SAVED_CATS, [], String(e));
-  renderBoxes('tag_boxes', 'allowed_tags', 'tags', SAVED_TAGS, [], String(e));
+  renderBoxes('cat_boxes', 'allowed_categories', 'categories', SAVED_CATS,
+              d.categories, reason(r, 'categories'));
+  renderBoxes('tag_boxes', 'allowed_tags', 'tags', SAVED_TAGS,
+              d.tags, reason(r, 'tags'));
 });
 </script>
