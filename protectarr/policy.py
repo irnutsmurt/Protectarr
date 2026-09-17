@@ -68,18 +68,32 @@ def profiles(cfg):
     return out
 
 
-def resolve(cfg, arr_entry, category):
-    """Which profile applies to this torrent.
+def resolve_with_source(cfg, arr_entry, category):
+    """Which profile applies, and which rule chose it. `(name, source)`.
 
     Most specific wins: the owning *arr's own setting, then a category mapping,
     then the global default, then `media`.
+
+    The source exists because "media" on its own does not tell an operator
+    whether that came from their Sonarr entry, from a category mapping, or from
+    nobody having set anything. Those have three different places to go and
+    change it, and the Details dossier is where that question gets asked.
     """
     if arr_entry and arr_entry.get("profile"):
-        return arr_entry["profile"]
+        return arr_entry["profile"], "application"
     cat_map = cfg.get("safety", {}).get("category_profiles") or {}
     if category and cat_map.get(category):
-        return cat_map[category]
-    return cfg.get("detection", {}).get("profile") or "media"
+        return cat_map[category], "category"
+    configured = cfg.get("detection", {}).get("profile")
+    if configured:
+        return configured, "default"
+    return "media", "builtin"
+
+
+def resolve(cfg, arr_entry, category):
+    """Which profile applies to this torrent. A projection of
+    `resolve_with_source`, for the callers that only need the name."""
+    return resolve_with_source(cfg, arr_entry, category)[0]
 
 
 def judge(cfg, profile_name, find):

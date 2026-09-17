@@ -17,6 +17,7 @@ from . import policy
 from . import probe
 from . import intents
 from . import ownership
+from . import snapshot
 from . import logs
 from .qbit import QbitClient, QbitError
 from .arr import build_clients
@@ -479,6 +480,11 @@ def scan(cfg, state, side_effects=True):
     # list is megabytes of seeding torrents fetched every poll and discarded
     # immediately; the state check below still has the final say.
     torrents = qb.torrents(state_filter="downloading" if only_active else None)
+    # Stamped here rather than at the end of the pass. This is the moment the
+    # torrent list was true, and a probe lane holding the scan for its full
+    # budget afterwards would otherwise make a two-minute-old list claim to be
+    # current.
+    taken_at = time.time()
     log.debug("qBittorrent returned %d torrent(s)%s", len(torrents),
               " (server-side filter=downloading)" if only_active else "")
 
@@ -665,6 +671,32 @@ def scan(cfg, state, side_effects=True):
                                        ownership_known, arr_by_name,
                                        resolved=resolved,
                                        side_effects=side_effects))
+
+    # Everything the Active Downloads view needs was established above and is
+    # about to go out of scope. Projected here, at the end, so the detection
+    # loop stays a detection loop: it already `continue`s past several states,
+    # and building rows inside it would mean either duplicating those branches
+    # or losing the torrents they skip.
+    #
+    # Only on a side-effecting pass. A preview reads the same qBittorrent but
+    # runs the probe lane without steering, so publishing its view would show
+    # "not steered" for torrents the real scan does steer, and a page would
+    # flicker between the two depending on who scanned last.
+    if side_effects:
+        try:
+            snapshot.publish(state, snapshot.build(
+                torrents, taken_at, resolved, owner, ownership_known,
+                unreadable=[c.name for c in arr_clients
+                            if c.name not in readable],
+                cfg=cfg, arr_by_name=arr_by_name, actions=actions,
+                intents_by_hash=intents.records(),
+                probe_on=probe_on,
+                steered=probe.ledger.entries(),
+                candidates=[(t.get("hash") or "").lower()
+                            for t, _, _ in probe_candidates],
+                explain=explain))
+        except Exception:  # noqa: BLE001 - a view must never break a scan
+            log.exception("Could not publish the active-downloads snapshot")
 
     log.debug("Scan finished in %.2fs: %d inspected, %d skipped, %d action(s)",
               time.time() - started, inspected, skipped, len(actions))
