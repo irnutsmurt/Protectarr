@@ -5,6 +5,7 @@ import json
 import time
 import logging
 import threading
+import collections
 
 import requests
 
@@ -181,8 +182,124 @@ def allowlisted(torrent, safety):
     return False
 
 
+# What policy has to say about a torrent, before any finding exists.
+#
+# These are deliberately not a verdict on the torrent. PERMITTED means "if
+# something is found here, Protectarr is allowed to act on it", which is a
+# statement about scope, not an intention to delete anything. Most of a healthy
+# library sits at PERMITTED forever and is never touched.
+PERMITTED = "permitted"
+WAITING = "waiting"          # an orphan that has not been absent long enough yet
+BLOCKED = "blocked"          # an ownership conflict, never resolved automatically
+NOT_COVERED = "not_covered"  # the safety mode does not extend to this torrent
+
+# `state`  one of the four above
+# `action` what would happen if a finding appeared: "arr_fail", "qbit_delete"
+#          or None. Only ever set on PERMITTED.
+# `reason` a stable machine-readable token for the UI to key on
+# `detail` a dict of the numbers behind the reason, or None. Structured rather
+#          than pre-formatted, so the table can render "6m / 10m" and the
+#          Details dossier can render the same facts at length.
+Judgement = collections.namedtuple("Judgement", "state action reason detail")
+
+
+def _mode_coverage(mode, arr_hit, is_allowed, ownership_known):
+    """Does `safety.mode` extend to this torrent at all? (action, reason).
+
+    Ownership is not consulted here. This answers the narrower question the
+    mode itself asks - is this torrent in scope - and `explain` layers the
+    ownership vetoes on top. Keeping the two apart is what lets the UI say
+    "waiting on a dwell" only for a torrent that waiting will actually help,
+    rather than for one the mode was never going to cover.
+    """
+    if mode == "arr_tracked":
+        if arr_hit:
+            return "arr_fail", "tracked_by_arr"
+        return None, "not_tracked"
+    if mode == "both":
+        if arr_hit and is_allowed:
+            return "arr_fail", "tracked_and_allowlisted"
+        if not arr_hit and not is_allowed:
+            return None, "not_tracked_and_not_allowlisted"
+        return None, "not_tracked" if not arr_hit else "not_allowlisted"
+    if mode == "allowlist":
+        if not is_allowed:
+            return None, "not_allowlisted"
+        if arr_hit:
+            return "arr_fail", "tracked_by_arr"
+        if not ownership_known:
+            # The one place uncertainty costs an action rather than buying
+            # safety for free: with a queue unread we cannot tell an ownerless
+            # torrent from one whose owner is simply down.
+            return None, "ownership_unknown"
+        return "qbit_delete", "allowlisted_and_unowned"
+    if mode == "either":
+        if arr_hit:
+            return "arr_fail", "tracked_by_arr"
+        if not ownership_known:
+            return None, "ownership_unknown"
+        if is_allowed:
+            return "qbit_delete", "allowlisted_and_unowned"
+        return None, "not_tracked_and_not_allowlisted"
+    return None, "unknown_mode"
+
+
+def explain(torrent, arr_hit, safety, ownership_known=True, own=None):
+    """Why Protectarr would or would not act here, without acting. Read-only.
+
+    This is the decision table. `evaluate` is a projection of it that keeps
+    only the action, and the Active Downloads view is a projection that keeps
+    the reason. Two readers, one table: the alternative was the web layer
+    re-implementing the mode branches, which drifts the first time someone
+    edits a mode and drifts silently, because nothing compares the two.
+
+    Pure. No I/O, no writes, no mutation of anything passed in - which is what
+    makes it safe for a request thread to call while the scanner is running.
+
+    Ownership vetoes are applied *after* mode coverage deliberately. A dwelled
+    orphan in `arr_tracked` mode that no *arr currently claims is not going to
+    become actionable when its dwell expires, because the mode does not cover
+    it either way, and reporting it as "waiting" would promise something that
+    never arrives.
+    """
+    is_allowed = allowlisted(torrent, safety)
+
+    # A conflict outranks everything, including a mode that would not have
+    # covered the torrent anyway. It is the one state that needs a human, and
+    # it is the reason no *arr appears to own the torrent in the first place.
+    if own is not None and own.state == ownership.CONFLICTED:
+        return Judgement(BLOCKED, None, "ownership_conflict",
+                         {"why": own.why, "owner": own.owner})
+
+    action, reason = _mode_coverage(
+        safety.get("mode", "arr_tracked"), arr_hit, is_allowed, ownership_known)
+    if action is None:
+        return Judgement(NOT_COVERED, None, reason,
+                         {"mode": safety.get("mode", "arr_tracked")})
+
+    if own is not None and own.state == ownership.ORPHANED:
+        dwell = safety.get("orphan_dwell_minutes", 10)
+        if not ownership.actionable_orphan(own, dwell):
+            # `absent_for` is None rather than 0 on any pass that could not
+            # verify the absence - an unreadable owner, or a torrent the user
+            # paused. The dwell is genuinely not measurable then, and the UI
+            # has to say so instead of drawing a progress bar from zero.
+            return Judgement(WAITING, None, "orphan_dwell", {
+                "absent_for": own.absent_for,
+                "required": max(0, dwell) * 60,
+                "owner": own.owner,
+                "measurable": own.absent_for is not None,
+                "why": own.why})
+
+    return Judgement(PERMITTED, action, reason, None)
+
+
 def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True, own=None):
     """Decide what to do with a torrent that contains a blocked file.
+
+    A projection of `explain` that keeps only the action. Everything below
+    describes the table `explain` implements; this function is the half of it
+    the reaping path needs.
 
     Returns one of: 'arr_fail' (hand back to the owning arr), 'qbit_delete'
     (remove directly), or None (leave it alone).
@@ -215,38 +332,13 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True, own=None)
         both         is an AND, so it is narrower than either half.
         either       the union: let the *arr handle it whenever it can, and fall
                      back to deleting orphans in categories you trust.
+
+    `bad_name` is not read. It has been dead since ownership landed, and the
+    probe-candidate call site below already passes "". Kept because removing a
+    positional parameter from a function this central is a change worth making
+    on purpose rather than in passing.
     """
-    mode = safety.get("mode", "arr_tracked")
-    is_allowed = allowlisted(torrent, safety)
-
-    if own is not None and own.state == ownership.CONFLICTED:
-        return None
-    if own is not None and own.state == ownership.ORPHANED:
-        if not ownership.actionable_orphan(
-                own, safety.get("orphan_dwell_minutes", 10)):
-            return None
-
-    if mode == "arr_tracked":
-        return "arr_fail" if arr_hit else None
-    if mode == "both":
-        if arr_hit and is_allowed:
-            return "arr_fail"
-        return None
-    if mode == "allowlist":
-        if not is_allowed:
-            return None
-        if arr_hit:
-            return "arr_fail"
-        return "qbit_delete" if ownership_known else None
-    if mode == "either":
-        # An *arr owning it always wins: that path blocklists the release and
-        # decides about requeueing, which deleting from qBittorrent cannot do.
-        if arr_hit:
-            return "arr_fail"
-        if not ownership_known:
-            return None
-        return "qbit_delete" if is_allowed else None
-    return None
+    return explain(torrent, arr_hit, safety, ownership_known, own).action
 
 
 def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb,
