@@ -19,3 +19,6 @@ logs/
 # Throwaway experiment output from scripts/. Release names and paths, not
 # secrets, but generated data does not belong in the repo.
 captures/
+
+CLAUDE.md
+PROJECT_STATE.md
