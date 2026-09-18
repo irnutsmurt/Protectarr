@@ -332,6 +332,54 @@ class TestPathTwoTheFirstPassRace(ScanCase):
             self.scan([fresh], [FakeArr("Sonarr")])[0]["decision"],
             self.scan([old], [FakeArr("Sonarr")])[0]["decision"])
 
+    def test_the_very_next_pass_would_have_established_sonarr_as_the_owner(self):
+        """The cost of the race, made explicit.
+
+        Identical inputs both times. The only difference is that Sonarr's queue
+        has published the item by the second pass - which is the normal outcome,
+        because `RefreshMonitoredDownloads` runs on its own timer and the grab
+        precedes it. One scan earlier and Protectarr deletes the files and
+        never tells Sonarr; one scan later and Sonarr is handed the release
+        back, blocklists it, and searches for a replacement.
+
+        Two passes of the same torrent, two incompatible answers, and which one
+        an operator gets is decided by where a 20-second poll happens to land.
+        """
+        raced = self.scan([downloading()], [FakeArr("Sonarr")])
+        self.assertEqual(raced[0]["decision"], "qbit_delete")
+        self.assertIsNone(raced[0]["arr"])
+
+        ownership._store.reset()
+        lucky = self.scan([downloading()], [FakeArr("Sonarr", [A])])
+        self.assertEqual(lucky[0]["decision"], "arr_fail")
+        self.assertEqual(lucky[0]["arr"], "Sonarr")
+
+    def test_losing_the_race_is_unrecoverable_where_winning_it_is_not(self):
+        """Why this is worth more than the difference between two code paths.
+
+        `arr_fail` hands the release back: Sonarr blocklists it and searches
+        again, so the episode still arrives. `qbit_delete` removes the files
+        with no blocklist and no requeue, so Sonarr sits waiting for an import
+        that is never coming, and the release it already rejected stays
+        eligible for the next automatic search.
+        """
+        raced = self.scan([downloading()], [FakeArr("Sonarr")])
+        self.assertEqual(raced[0]["decision"], "qbit_delete")
+
+        ownership._store.reset()
+        lucky = self.scan([downloading()], [FakeArr("Sonarr", [A])])
+        self.assertIsNotNone(lucky[0]["_owner"],
+                             "the *arr-aware path carries the queue record "
+                             "that makes a blocklist and requeue possible")
+
+    def test_a_torrent_deleted_by_the_race_leaves_no_ownership_record(self):
+        """There is nothing for a later pass to learn from, either. The fix for
+        the carried-forward OWNED state cannot help here even in principle,
+        because this torrent never reaches a state worth persisting -
+        `_persist` skips UNTRACKED as "nothing worth remembering yet"."""
+        self.scan([downloading()], [FakeArr("Sonarr")])
+        self.assertEqual(ownership.records(), {})
+
 
 class TestPathThreeAnArrRemovedFromTheConfig(ScanCase):
     """`ownership_known` counts configured clients, not stored owners.
