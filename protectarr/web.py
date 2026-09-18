@@ -836,6 +836,26 @@ _OWNERSHIP = {
 }
 
 
+def _blocked_why(reason, detail):
+    """Wording for a refusal that is about ownership rather than scope.
+
+    Keyed on `explain`'s reason token, like `_NOT_COVERED`. The conflict
+    sentence used to be the fallback for every BLOCKED judgement, which meant
+    any reason added to the engine afterwards would tell an operator that two
+    applications claim the torrent when nothing of the sort had happened.
+    """
+    if reason == "owned_not_claimed_this_pass":
+        # Deliberately past tense. The *arr is not claiming it now - that is
+        # the whole reason we are here - and saying it is would send someone
+        # to a queue that does not list it.
+        owner = detail.get("owner") or "an application"
+        return (f"previously owned by {owner}; ownership was not re-confirmed "
+                f"this scan, so it will not be removed as unowned")
+    if reason == "ownership_conflict":
+        return detail.get("why") or "more than one application claims it"
+    return detail.get("why") or reason
+
+
 def _mins(seconds):
     """Seconds as the coarse duration a dwell is actually read in."""
     if seconds is None:
@@ -887,8 +907,7 @@ def _protectarr_state(row):
     detail = row.get("policy_detail") or {}
 
     if state == core.BLOCKED:
-        return ("Blocked", "bad",
-                detail.get("why") or "more than one application claims it")
+        return ("Blocked", "bad", _blocked_why(row.get("policy_reason"), detail))
     if state == core.WAITING:
         if not detail.get("measurable"):
             # Either the owner was unreachable this pass or the user paused it.

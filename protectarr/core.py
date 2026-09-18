@@ -278,6 +278,38 @@ def explain(torrent, arr_hit, safety, ownership_known=True, own=None):
         return Judgement(NOT_COVERED, None, reason,
                          {"mode": safety.get("mode", "arr_tracked")})
 
+    # Durable OWNED evidence outranks the fallback delete. A stored OWNED state
+    # is the last thing anyone positively observed about this torrent, and
+    # removing it as unowned contradicts that observation.
+    #
+    # We only reach this with `arr_hit` empty - every mode routes a live claim
+    # to `arr_fail` inside `_mode_coverage` - so the record was carried forward
+    # by `ownership._unclaimed` rather than re-confirmed this pass. There is no
+    # separate `not arr_hit` test here for exactly that reason: it would be a
+    # condition no input can falsify.
+    #
+    # Three situations produce it, and the third is why the global
+    # `ownership_known` flag is not enough on its own:
+    #
+    #   * the user paused it. `ORPHANABLE_STATES` deliberately excludes the
+    #     paused states so a deliberate pause is never read as abandonment -
+    #     which also means no orphan clock ever starts, so without this veto a
+    #     paused torrent was *less* protected than a downloading one.
+    #   * its owner was unreachable, and the state stands from the last pass.
+    #   * its owner has been deleted from the configuration. `ownership_known`
+    #     compares readable queues against *configured* clients, and a removed
+    #     *arr is in neither set, so the flag still reads True while nothing is
+    #     left that could ever confirm or deny the claim.
+    #
+    # ORPHANED is deliberately not covered. That state was earned by reading
+    # the owner's queue and watching the torrent leave it while it was still
+    # acquiring data, which is a positive observation of departure; the dwell
+    # below is what ages it. OWNED carries no such observation, so there is
+    # nothing to age and no dwell that would ever expire.
+    if action == "qbit_delete" and own is not None and own.state == ownership.OWNED:
+        return Judgement(BLOCKED, None, "owned_not_claimed_this_pass",
+                         {"owner": own.owner, "why": own.why})
+
     if own is not None and own.state == ownership.ORPHANED:
         dwell = safety.get("orphan_dwell_minutes", 10)
         if not ownership.actionable_orphan(own, dwell):
@@ -322,6 +354,10 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True, own=None)
                     `orphan_dwell_minutes`. An *arr that moves an item between
                     queues, or is mid-restart, produces a brief absence that is
                     not abandonment.
+        owned       an *arr owns it, but no queue named it on this pass. Never
+                    deleted directly. The stored owner is a real observation
+                    and "nothing owns this" would contradict it; the *arr-aware
+                    path is still available the moment a queue claims it again.
 
     Each mode has a different blind spot, which is why `either` exists:
 

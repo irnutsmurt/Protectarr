@@ -202,6 +202,69 @@ class TestTheProtectarrStateVocabulary(PageCase):
         self.assertEqual(s["label"], "Blocked")
         self.assertIn("Radarr", s["why"])
 
+    def test_an_owned_torrent_not_reclaimed_reads_as_blocked_and_names_it(self):
+        """The refusal an operator sees when the OWNED veto fires: a paused
+        torrent Sonarr owns, in a mode that would otherwise delete it."""
+        own = ownership.Ownership(
+            ownership.OWNED, "Sonarr", None, None, None,
+            "Sonarr no longer claims it and it is not trying to download")
+        s = self.state_of(resolved={A: own})
+        self.assertEqual(s["label"], "Blocked")
+        self.assertIn("Sonarr", s["why"])
+
+    def test_that_refusal_does_not_claim_the_arr_currently_owns_it(self):
+        """It says "previously owned", in the past tense, deliberately.
+
+        Sonarr's queue does not list this torrent - that is the entire reason
+        the veto fired. Telling someone Sonarr is tracking it sends them to a
+        queue where it does not appear.
+        """
+        own = ownership.Ownership(ownership.OWNED, "Sonarr", None, None, None,
+                                  "carried forward")
+        why = self.state_of(resolved={A: own})["why"].lower()
+        self.assertIn("previously owned by sonarr", why)
+        for claim in ("is tracking", "currently", "claims it", "is downloading"):
+            self.assertNotIn(claim, why)
+
+    def test_that_refusal_never_inherits_the_conflict_sentence(self):
+        """`_blocked_why` used to fall back to the conflict wording for every
+        BLOCKED judgement, so a new reason would have told an operator that two
+        applications claim a torrent that only ever had one owner."""
+        own = ownership.Ownership(ownership.OWNED, "Sonarr", None, None, None,
+                                  "carried forward")
+        why = self.state_of(resolved={A: own})["why"].lower()
+        self.assertNotIn("more than one", why)
+
+    def test_every_blocked_reason_has_wording(self):
+        """The BLOCKED twin of the NOT_COVERED sweep below. A refusal rendered
+        as a bare token like `owned_not_claimed_this_pass` is not an
+        explanation."""
+        states = {
+            "conflicted": ownership.Ownership(
+                ownership.CONFLICTED, None, None, None, None, "two claims"),
+            "owned": ownership.Ownership(
+                ownership.OWNED, "Sonarr", None, None, None, "carried"),
+            "orphan": ownership.Ownership(
+                ownership.ORPHANED, "Sonarr", None, None, 60, "absent"),
+            "untracked": ownership.Ownership(
+                ownership.UNTRACKED, None, None, None, None, "never claimed"),
+        }
+        seen = set()
+        for mode in ("arr_tracked", "both", "allowlist", "either"):
+            for own in states.values():
+                for hit in (None, ("c", {})):
+                    j = core.explain({"category": "tv", "tags": ""}, hit,
+                                     dict(CFG["safety"], mode=mode), True,
+                                     own=own)
+                    if j.state != core.BLOCKED:
+                        continue
+                    seen.add(j.reason)
+                    why = web._blocked_why(j.reason, j.detail or {})
+                    self.assertNotEqual(why, j.reason,
+                                        f"{j.reason} rendered as a bare token")
+        self.assertEqual(seen, {"ownership_conflict",
+                                "owned_not_claimed_this_pass"})
+
     def test_an_orphan_inside_its_dwell_shows_both_numbers(self):
         own = ownership.Ownership(ownership.ORPHANED, "Sonarr", None, None,
                                   6 * 60, "absent")

@@ -18,11 +18,22 @@ human decides behaviour should change.
 
 Note two things the table shows that are easy to miss in the source:
 
-  * `none`, `untracked`, `owned` and `orphan_dwelled` are indistinguishable in
-    every mode. Ownership only alters the outcome for `conflicted` (never) and
-    for an orphan inside its dwell (never). Everything else falls straight
-    through to the mode dispatch.
+  * ownership alters the outcome for exactly the three states that carry
+    evidence about an owner: `conflicted` (never actionable), an orphan inside
+    its dwell (never actionable), and `owned` (never deleted *directly*).
+    `none`, `untracked` and `orphan_dwelled` fall straight through to the mode
+    dispatch.
   * an unrecognised mode is a refusal, not a default. `bogus` is all dashes.
+
+The `owned` row changed in the 0.9.x ownership safety fix. It used to read `Q`
+in the `allowlist`/`either` direct-delete cell, alongside `none` and
+`untracked`, and a test here asserted that as a rule. It was wrong, and
+reachable: `arr_hit` is built only from queues read *this* pass, so a torrent
+whose stored record names Sonarr arrives here with `arr_hit` empty whenever the
+user paused it, its owner was unreachable, or its owner was deleted from the
+config. Protectarr deleted those from qBittorrent, files and all, and logged
+"no *arr owned it". The two cells below were re-derived from the fixed code and
+checked to be the only ones that moved.
 """
 
 import unittest
@@ -63,14 +74,14 @@ both           conflicted        - -  - -    - -  - -
 
 allowlist      none              - -  - Q    - -  A A
 allowlist      untracked         - -  - Q    - -  A A
-allowlist      owned             - -  - Q    - -  A A
+allowlist      owned             - -  - -    - -  A A
 allowlist      orphan_fresh      - -  - -    - -  - -
 allowlist      orphan_dwelled    - -  - Q    - -  A A
 allowlist      conflicted        - -  - -    - -  - -
 
 either         none              - -  - Q    A A  A A
 either         untracked         - -  - Q    A A  A A
-either         owned             - -  - Q    A A  A A
+either         owned             - -  - -    A A  A A
 either         orphan_fresh      - -  - -    - -  - -
 either         orphan_dwelled    - -  - Q    A A  A A
 either         conflicted        - -  - -    - -  - -
@@ -189,13 +200,42 @@ class TestTheInvariantsBehindTheTable(unittest.TestCase):
             self.assertEqual(row, [None] * 8,
                              f"mode {mode} acted inside the dwell")
 
-    def test_ownership_is_otherwise_invisible_to_the_decision(self):
-        """`owned`, `untracked`, a dwelled orphan and no record at all are the
-        same input as far as the mode dispatch is concerned."""
+    def test_ownership_is_invisible_only_where_it_carries_no_evidence(self):
+        """No record, never claimed, and an orphan that has served its dwell
+        are the same input as far as the mode dispatch is concerned.
+
+        `owned` is deliberately not in this list. It used to be, which is what
+        made the direct-delete cell unsafe: a stored owner counted for exactly
+        nothing once the pass itself saw no claim.
+        """
         for mode in ("arr_tracked", "both", "allowlist", "either", "bogus"):
             rows = [EXPECTED[(mode, k)] for k in
-                    ("none", "untracked", "owned", "orphan_dwelled")]
+                    ("none", "untracked", "orphan_dwelled")]
             self.assertEqual(rows[1:], rows[:-1], f"mode {mode} diverged")
+
+    def test_a_stored_owner_is_never_deleted_directly_in_any_mode(self):
+        """The invariant the fix exists to enforce, read off the table.
+
+        Direct deletion is the one verdict that bypasses the owning *arr
+        entirely - no blocklist, no replacement search, files removed. It may
+        not be reached for a torrent Protectarr has durable OWNED evidence
+        about, whatever the mode and whatever the allowlist says.
+        """
+        for mode, row in self.rows_for("owned").items():
+            self.assertNotIn("qbit_delete", row,
+                             f"mode {mode} deleted a torrent with a stored owner")
+
+    def test_a_dwelled_orphan_is_still_reapable_where_the_mode_allows_it(self):
+        """The other half, so the fix cannot be "protect everything".
+
+        ORPHANED was earned by reading the owner's queue and watching the
+        torrent leave it while it was still downloading. That is a positive
+        observation, the dwell ages it, and catching those is the whole reason
+        `either` exists.
+        """
+        for mode in ("allowlist", "either"):
+            self.assertIn("qbit_delete", EXPECTED[(mode, "orphan_dwelled")],
+                          f"mode {mode} stopped reaping dwelled orphans")
 
     def test_an_unknown_mode_refuses_rather_than_defaulting(self):
         """A typo in `safety.mode` must do nothing, not fall back to a mode
