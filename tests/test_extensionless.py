@@ -4,11 +4,23 @@ Sonarr grabbed several releases whose primary file carries no extension at all,
 for example `South Park S29E01 1080p WEB-DL DDP5 1 x265 FLUX`. They failed to
 import because nothing downstream could tell what the bytes were.
 
-Nothing in this file changes detection or remediation. Every test pins the
-*current* answer, so that the byte-classifier work has an external record of
-where the lane stands before anything moves. Several of these tests assert a
-gap rather than a guarantee; each one says so in its name, so a future change
-that closes the gap fails here deliberately rather than by accident.
+Nothing in this file changes detection or remediation. Every test pinned the
+*current* answer, so that the byte-classifier work had an external record of
+where the lane stood before anything moved. Several asserted a gap rather than
+a guarantee, so that a change closing one would fail here deliberately rather
+than by accident.
+
+Phase C1 closed the selection and classification gaps, and this file was
+updated from the failures - which is what it was for. What it now records is
+the split that survived:
+
+    `validate` still needs a claimed extension, and still answers UNKNOWN
+    without one. That did not change and is not a gap; it is the question that
+    function asks. `probe.classify` asks the other one.
+
+    The archive detector still cannot accept byte evidence, and the probe lane
+    still builds its own findings. That gap is open on purpose: C1 is a sensor
+    and is not allowed to change what gets reaped.
 
 The fixtures are the real thing wherever the format has a structure worth
 having: the Matroska header is a parseable EBML header with a DocType, and the
@@ -32,7 +44,7 @@ cfg_mod.CONFIG_PATH = os.path.join(tempfile.mkdtemp(), "config.yaml")
 
 from protectarr import logs  # noqa: E402
 from protectarr.detectors import archives  # noqa: E402
-from protectarr.probe import engine, ledger, paths, validators  # noqa: E402
+from protectarr.probe import classify, engine, ledger, paths, validators  # noqa: E402
 from protectarr.probe.validators import UNKNOWN  # noqa: E402
 
 logs.configure({"logging": {"level": "critical", "console_level": "critical",
@@ -84,9 +96,23 @@ MKV = _matroska_header()
 MP4 = (b"\x00\x00\x00\x18" + b"ftyp" + b"mp42"
        + b"\x00\x00\x00\x00" + b"mp42" + b"isom")
 
-# MZ plus a DOS stub whose e_lfanew points at a real PE signature.
+# MZ plus a DOS stub whose e_lfanew points at a real PE signature, a COFF
+# header that declares an optional header, and the optional header's magic.
+#
+# The last two were added in C1. Without them this fixture is a PE *object*
+# file, not an image - `SizeOfOptionalHeader` was zero - and the structural
+# parser is right to call it ambiguous. `sniff` accepted it because it checked
+# for `PE\0\0` and stopped, which is exactly the difference the classifier
+# exists to make.
 PE = (b"MZ" + b"\x90" * 0x3a + (0x80).to_bytes(4, "little")
-      + b"\x00" * (0x80 - 0x40) + b"PE\x00\x00" + b"\x4c\x01" + b"\x00" * 60)
+      + b"\x00" * (0x80 - 0x40) + b"PE\x00\x00"
+      + b"\x4c\x01"                     # Machine: i386
+      + b"\x03\x00"                     # NumberOfSections
+      + b"\x00" * 12                    # timestamp, symbol table, count
+      + b"\xe0\x00"                     # SizeOfOptionalHeader: 224
+      + b"\x02\x01"                     # Characteristics: executable image
+      + b"\x0b\x01"                     # optional header magic: PE32
+      + b"\x00" * 60)
 
 # MZ with nothing behind it. Not a program as far as anyone can prove, and the
 # taxonomy's `ambiguous_format` case rather than a confirmed executable.
@@ -97,10 +123,22 @@ ELF = (b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8
        + (2).to_bytes(2, "little") + (0x3e).to_bytes(2, "little")
        + (1).to_bytes(4, "little") + b"\x00" * 40)
 
-# OLE2 compound file: .msi, .doc, and a great many droppers.
-OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 8 + b"\x3e\x00\x03\x00"
+# OLE2 compound file: .msi, .doc, and a great many droppers. Carried out to the
+# sector shift at 0x1e, because that and the byte-order mark are the fields a
+# structural parser reads; the original stopped at 20 bytes and could only ever
+# have been recognised by its magic.
+OLE = bytearray(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 40)
+OLE[0x18:0x20] = (b"\x3e\x00"           # minor version
+                  + b"\x03\x00"         # major version
+                  + b"\xfe\xff"         # byte-order mark
+                  + b"\x09\x00")        # sector shift: 512-byte sectors
+OLE = bytes(OLE)
 
-ZIP = b"PK\x03\x04\x14\x00\x00\x00\x08\x00" + b"\x00" * 16
+# A complete 30-byte local file header. The compression method (offset 8) is
+# the field that has to be a real one; the original fixture stopped at 26 bytes
+# and never reached it.
+ZIP = (b"PK\x03\x04" + b"\x14\x00" + b"\x00\x00" + b"\x08\x00"
+       + b"\x00" * 18 + b"\x08\x00" + b"\x00\x00" + b"file.txt")
 RAR = b"Rar!\x1a\x07\x00" + b"\xcf\x90\x73\x00\x00\x0d\x00" + b"\x00" * 16
 SEVENZIP = b"7z\xbc\xaf\x27\x1c\x00\x04" + b"\x00" * 16
 
@@ -236,35 +274,64 @@ class TestDottedSceneNamesAreNotExtensionless(unittest.TestCase):
             validators.ext_of("Lioness.S03E08.1080p.WEB-DL.DDP5.1.H.265-NTb"),
             ".265-ntb")
 
-    def test_both_shapes_are_equally_invisible_to_the_probe_lane(self):
+    def test_both_shapes_are_equally_invisible_to_the_typed_lane(self):
         for name in (SPACED, DOTTED):
             with self.subTest(name=name):
                 self.assertNotIn(validators.ext_of(name), validators.VALIDATABLE)
 
-    def test_neither_shape_reaches_a_verdict_on_real_payload_bytes(self):
+    def test_neither_shape_reaches_a_verdict_through_validate(self):
         for name in (SPACED, DOTTED):
             for head in (MKV, PE, OLE, ZIP):
                 with self.subTest(name=name, head=head[:4]):
                     self.assertEqual(validators.validate(name, head, True)[0],
                                      UNKNOWN)
 
+    def test_c1_closed_this_by_asking_the_bytes_instead_of_the_name(self):
+        """Both shapes are untyped candidates, and the payload behind either
+        one now classifies. The name is not consulted at all."""
+        for name in (SPACED, DOTTED):
+            files = [{"name": name, "priority": 1, "size": 2_000_000_000,
+                      "piece_range": [0, 900]}]
+            with self.subTest(name=name):
+                self.assertEqual([i for i, _ in engine.untyped(files)], [0])
+        for head, expected in ((MKV, "media_format_confirmed"),
+                               (PE, "executable_format_confirmed"),
+                               (OLE, "ole_compound_confirmed"),
+                               (ZIP, "archive_format_confirmed")):
+            with self.subTest(head=head[:4]):
+                v = classify.classify(head, True, len(head), len(head))
+                self.assertEqual(v.evidence, expected)
+
 
 class TestTargetSelectionSkipsExtensionlessFiles(unittest.TestCase):
-    """GAP. `targets` filters on the claimed extension, so an extensionless
-    payload is never a probe target and its bytes are never read."""
+    """CLOSED in C1, and the seam is worth keeping visible.
 
-    def test_an_extensionless_payload_is_not_a_target(self):
+    `targets` still filters on the claimed extension - it is the typed lane and
+    its job did not change. What changed is that it is no longer the only lane:
+    `candidates` merges it with `untyped`, and the engine reads both.
+    """
+
+    def test_an_extensionless_payload_is_still_not_a_typed_target(self):
         files = [{"name": SPACED, "priority": 1, "size": 2_000_000_000,
                   "piece_range": [0, 900]}]
         self.assertEqual(engine.targets(files), [])
 
-    def test_a_normal_media_file_beside_it_is_still_the_only_target(self):
+    def test_but_it_is_now_an_untyped_candidate(self):
+        files = [{"name": SPACED, "priority": 1, "size": 2_000_000_000,
+                  "piece_range": [0, 900]}]
+        self.assertEqual([i for i, _ in engine.untyped(files)], [0])
+        self.assertEqual([(i, k) for i, _, k in engine.candidates(files)],
+                         [(0, engine.UNTYPED)])
+
+    def test_a_normal_media_file_beside_it_is_still_the_only_typed_target(self):
         files = [
             {"name": SPACED, "priority": 1, "size": 2_000_000_000,
              "piece_range": [0, 900]},
             {"name": "ep1.mkv", "priority": 1, "size": 900, "piece_range": [901, 905]},
         ]
         self.assertEqual([i for i, _ in engine.targets(files)], [1])
+        self.assertEqual([(i, k) for i, _, k in engine.candidates(files)],
+                         [(0, engine.UNTYPED), (1, engine.TYPED)])
 
 
 class TestTargetSelectionHasNoSizeFloor(unittest.TestCase):
@@ -369,8 +436,14 @@ class TestArchiveDetectorCannotAcceptByteEvidence(unittest.TestCase):
 
 
 class TestTheWholeTorrentIsANoOp(unittest.TestCase):
-    """End to end: an extensionless torrent costs a candidate slot and returns
-    nothing, without reading a byte or touching a single qBittorrent setting."""
+    """End to end. It is still a no-op, for a different reason.
+
+    Before C1 nothing was read, because there was no candidate. Now the bytes
+    are read and classified, and the torrent is *still* a no-op: no finding, no
+    remediation, nothing reaped. That is the C1 contract, and the distinction
+    between the two reasons is the thing these tests exist to hold - "found
+    nothing" and "never looked" must not be the same passing test.
+    """
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -387,57 +460,99 @@ class TestTheWholeTorrentIsANoOp(unittest.TestCase):
         with open(os.path.join(self.content, name), "wb") as fh:
             fh.write(data)
 
-    def test_a_single_file_extensionless_executable_is_not_found(self):
-        self._write(SPACED, PE)
-        files = [{"name": SPACED, "priority": 1, "size": 2_000_000_000,
-                  "piece_range": [0, 4]}]
-        qb = FakeQb(files, [2] * 10, self.torrent)
-        res = engine.inspect(qb, self.torrent, files, cfg(), {})
+    def _single(self, name, data):
+        """A one-file torrent, whose `content_path` *is* the file.
+
+        qBittorrent reports the two shapes differently. An earlier version of
+        these tests put a single-file payload inside a directory, which made
+        every read fail and left "found nothing" passing for the wrong reason -
+        the exact confusion this class is now named after.
+        """
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return (dict(self.torrent, content_path=path, name=name),
+                [{"name": name, "priority": 1, "size": len(data),
+                  "piece_range": [0, 0]}])
+
+    def test_a_single_file_extensionless_executable_is_read_but_not_reaped(self):
+        torrent, files = self._single(SPACED, PE)
+        qb = FakeQb(files, [2] * 10, torrent)
+        state = {}
+        res = engine.inspect(qb, torrent, files, cfg(), state)
         self.assertEqual(res.findings, ())
         self.assertFalse(res.steered)
         self.assertEqual(qb.calls, [])
+        # It was read, classified, and resolved. C1 stops one step short of a
+        # finding, and that step is the whole of C2.
+        self.assertTrue(state["probe_memo"]["abc123"]["resolved"].get(SPACED))
+        self.assertEqual(
+            classify.classify(PE, True, len(PE), len(PE)).evidence,
+            "executable_format_confirmed")
 
-    def test_a_tiny_metadata_file_beside_the_payload_is_equally_unseen(self):
+    def test_a_tiny_metadata_file_beside_the_payload_is_read_too(self):
         """The multi-file shape a candidate rule has to survive: the small
-        extensionless file sorts first alphabetically and is 35 bytes."""
+        extensionless file sorts first alphabetically and is 35 bytes.
+
+        Both are candidates - there is no size floor - and both resolve from
+        data already on disk, so neither costs a steer.
+        """
         self._write("info", TINY_METADATA)
         self._write(SPACED, MKV)
         files = [
             {"name": "info", "priority": 1, "size": len(TINY_METADATA),
              "piece_range": [0, 0]},
-            {"name": SPACED, "priority": 1, "size": 2_000_000_000,
-             "piece_range": [0, 900]},
+            {"name": SPACED, "priority": 1, "size": len(MKV),
+             "piece_range": [0, 0]},
         ]
         qb = FakeQb(files, [2] * 901, self.torrent)
-        res = engine.inspect(qb, self.torrent, files, cfg(), {})
+        state = {}
+        res = engine.inspect(qb, self.torrent, files, cfg(), state)
         self.assertEqual(engine.targets(files), [])
+        self.assertEqual([f["name"] for _, f in engine.untyped(files)],
+                         ["info", SPACED])
         self.assertEqual(res.findings, ())
         self.assertEqual(qb.calls, [])
+        self.assertEqual(sorted(state["probe_memo"]["abc123"]["resolved"]),
+                         sorted(["info", SPACED]))
 
-    def test_an_extensionless_payload_beside_real_media_probes_only_the_media(self):
+    def test_an_extensionless_payload_beside_real_media_is_probed_as_well(self):
         self._write("ep1.mkv", MKV)
         self._write(SPACED, PE)
         files = [
-            {"name": "ep1.mkv", "priority": 1, "size": 900, "piece_range": [0, 4]},
-            {"name": SPACED, "priority": 1, "size": 2_000_000_000,
-             "piece_range": [5, 900]},
+            {"name": "ep1.mkv", "priority": 1, "size": len(MKV),
+             "piece_range": [0, 0]},
+            {"name": SPACED, "priority": 1, "size": len(PE),
+             "piece_range": [0, 0]},
         ]
         qb = FakeQb(files, [2] * 901, self.torrent)
         res = engine.inspect(qb, self.torrent, files, cfg(), {})
+        self.assertEqual([(i, k) for i, _, k in engine.candidates(files)],
+                         [(0, engine.TYPED), (1, engine.UNTYPED)])
+        # The `.mkv` really is Matroska and the payload really is a program.
+        # Neither produces a finding: the first because it is honest, the
+        # second because C1 does not act.
         self.assertEqual(res.findings, ())
         self.assertEqual(qb.calls, [])
 
-    def test_an_undownloaded_opening_range_still_reaches_no_target(self):
-        """With a `.mkv` this torrent would become a steering candidate. With
-        no extension there is nothing to steer at, so the budget is never even
-        considered."""
+    def test_an_undownloaded_opening_range_is_now_worth_steering_for(self):
+        """The gap this file was written to record, closed.
+
+        With no extension there used to be nothing to steer at, so the budget
+        was never considered. There is now, and the steering machinery runs -
+        ledger, priorities, restore - and still returns no finding.
+        """
         files = [{"name": SPACED, "priority": 1, "size": 2_000_000_000,
                   "piece_range": [0, 900]}]
         qb = FakeQb(files, [0] * 901, self.torrent)
-        res = engine.inspect(qb, self.torrent, files, cfg(), {})
+        # Short-circuit the wait: qBittorrent never schedules the piece here,
+        # so this asks how the lane gives up rather than how it succeeds.
+        res = engine.inspect(qb, self.torrent, files, cfg(
+            no_progress_seconds=2, poll_seconds=1), {})
         self.assertEqual(res.findings, ())
-        self.assertFalse(res.steered)
-        self.assertEqual(qb.calls, [])
+        self.assertTrue(res.steered)
+        self.assertIn(("seq", True), qb.calls)
+        self.assertIn(("prio", [0], 7), qb.calls)
 
 
 if __name__ == "__main__":

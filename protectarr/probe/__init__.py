@@ -8,6 +8,7 @@ qBittorrent settings it then has to restore, so it is off by default, budgeted,
 and only ever runs on a torrent the fast lane had nothing to say about.
 
     validators  does this parse as what its extension claims? (tri-state)
+    classify    what do these bytes prove, with no claim to check them against?
     pieces      which pieces cover a header, and are they all verified?
     paths       where are the bytes, and are they really the file's bytes?
     ledger      what did we change, written down before we change it
@@ -19,6 +20,7 @@ next move - a payload wearing a real `.mkv` extension - not a fix for something
 broken.
 """
 
-from . import validators  # noqa: F401 - re-exported for the wording helpers
-from .engine import enabled, inspect, settings, steerable, targets  # noqa: F401
+from . import classify, validators  # noqa: F401 - the wording helpers
+from .engine import (candidates, enabled, inspect, settings,  # noqa: F401
+                     steerable, targets, untyped)
 from .ledger import broken, reconcile  # noqa: F401

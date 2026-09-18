@@ -49,8 +49,9 @@ import collections
 import requests
 
 from .. import logs
-from ..detectors import finding
-from . import ledger, paths, pieces, validators
+from ..config import DEFAULTS as _CONFIG_DEFAULTS
+from ..detectors import _util, finding
+from . import classify, ledger, paths, pieces, validators
 from .validators import INVALID, UNKNOWN, VALID
 
 log = logs.get("probe")
@@ -143,6 +144,131 @@ def targets(files):
     return out
 
 
+# Two kinds of candidate, judged by two different questions. A typed file is
+# asked "do the bytes match the claim?"; an untyped one has no claim, so it is
+# asked "what do the bytes prove?" instead.
+TYPED, UNTYPED = "typed", "untyped"
+
+# Extensions that are not in any list Protectarr already keeps but that are
+# unmistakably a format claim. Kept explicit rather than folded into the
+# detectors' sets, because those sets drive detection and this one only decides
+# where to spend a free read.
+_OTHER_CLAIMS = frozenset((
+    ".srt", ".sub", ".idx", ".ass", ".ssa", ".vtt", ".sup",     # subtitles
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tbn",   # images
+    ".sfv", ".md5", ".sha1", ".par2", ".torrent", ".nzb",
+    ".json", ".xml", ".yaml", ".yml", ".ini", ".cue", ".log", ".sh",
+))
+
+# Every extension anything downstream reads as a claim about a format.
+#
+# Deliberately assembled from the *defaults* rather than from the running
+# config. A user who edits their blocked extensions or their archive list is
+# tuning a detector; they are not asking the probe lane to start reading bytes
+# it did not read before. Selection that moved with an unrelated setting would
+# be a surprise, and the failure it would cause is silent.
+#
+# The direction of error matters and is the reason this set can be approximate:
+# an extension missing from here makes a file an untyped candidate, which costs
+# one local read and can never produce a finding it would not otherwise have.
+# A file wrongly listed here is simply left to the lane it already had.
+_DET_DEFAULTS = _CONFIG_DEFAULTS["detection"]
+_ARCHIVE_CLAIMS = frozenset(
+    e.lower() for e in _DET_DEFAULTS["archive_detection"]["archive_extensions"])
+CLAIM_EXTS = frozenset(
+    _util.VIDEO_EXTS | _util.AUDIO_EXTS | _util.BOOK_EXTS | _util.LURE_EXTS
+    | _ARCHIVE_CLAIMS | _OTHER_CLAIMS | set(validators.VALIDATABLE)
+    | {e.lower() for e in _DET_DEFAULTS["blocked_extensions"]})
+
+
+def is_padding(name):
+    """A libtorrent pad file, under both conventions seen in the wild.
+
+    Pad files exist to align the next real file to a piece boundary. They are
+    zeros by construction, so reading one answers nothing, and they are the one
+    exclusion the candidate rule makes on something other than its name's
+    meaning.
+    """
+    name = (name or "").replace("\\", "/")
+    return (name.startswith("_____padding_file")
+            or "/_____padding_file" in name
+            or name.split("/")[0] == ".pad")
+
+
+def has_format_claim(name, files=None):
+    """Does this filename claim a format that anything downstream recognises?
+
+    The condition the untyped lane is really after, stated as its negation, and
+    it is not "has an extension". A dotted scene name splits to a suffix that is
+    not a claim at all: `South.Park...x265-FLUX` yields `.x265-flux`, and
+    `...H.265-NTb` yields `.265-ntb`. Keying on an empty extension would catch
+    the spaced form of the same release and miss the dotted one.
+
+    The numeric case needs the rest of the file list, because `.001` means a
+    split archive only in the company of one; `H.264` is the commonest token in
+    a scene video name and is not a claim about anything. See
+    `detectors._util._is_archive_volume`, which measured that distinction.
+    """
+    e = _util.ext(name)
+    if not e:
+        return False
+    if e in CLAIM_EXTS:
+        return True
+    return _util.is_archive(name, files, _ARCHIVE_CLAIMS)
+
+
+def untyped(files):
+    """Candidates with no format claim to validate. Frozen rule, no size floor.
+
+    There is deliberately no minimum size and no cap on how many files qualify.
+    A floor was measured and rejected: it excluded the synthetic sidecars it was
+    aimed at, but it also drew a visibility boundary that a sub-megabyte
+    executable could be parked under on purpose. The free pass costs one `open`
+    per candidate and no API calls at all, so breadth here is very nearly free,
+    and the steering budget - which is not free - is bounded by the existing
+    per-torrent and per-scan timeouts rather than by a file count.
+    """
+    out = []
+    for i, f in enumerate(files or []):
+        name = f.get("name") or ""
+        if is_padding(name) or has_format_claim(name, files):
+            continue
+        out.append((i, f))
+    return out
+
+
+def candidates(files):
+    """Every file the probe lane will read bytes for, as `(index, file, kind)`.
+
+    In index order, which is only a stable starting point: the free pass reads
+    them all and the steered pass re-orders by size.
+    """
+    kinds = {}
+    for i, f in targets(files):
+        kinds[i] = (f, TYPED)
+    for i, f in untyped(files):
+        kinds.setdefault(i, (f, UNTYPED))
+    return [(i, kinds[i][0], kinds[i][1]) for i in sorted(kinds)]
+
+
+def span_for(p, kind):
+    """How many opening bytes to read for one candidate.
+
+    A typed file is read at exactly the user's `header_bytes`; that setting's
+    meaning does not change. An untyped one is read at whichever is larger of
+    that and the classifier's own minimum, because what the structural parsers
+    need is a property of the formats and not a preference: a PE whose
+    `e_lfanew` is 0x400 does not reach its signature until byte 1050, and a
+    hand-lowered `header_bytes` must not quietly turn that into "unrecognised".
+
+    The default `header_bytes` is already `CLASSIFY_BYTES`, so on a default
+    install this reads exactly what it read before.
+    """
+    if kind == TYPED:
+        return p["header_bytes"]
+    return max(p["header_bytes"], classify.CLASSIFY_BYTES)
+
+
 def steerable(torrent, p):
     """Is it worth spending steering budget on this torrent? (bool, why).
 
@@ -225,11 +351,14 @@ def _changes(plan, current):
     return out
 
 
-def _judge(torrent, file_entry, single, mappings, nbytes, source):
+def _judge(torrent, file_entry, single, mappings, nbytes, source, kind=TYPED):
     """Read one file's header and judge it. (finding|None, resolved, detail)."""
     name = file_entry.get("name") or ""
     path = paths.local_path(torrent, file_entry, single, mappings)
     read = paths.read_head(path, nbytes)
+    if kind == UNTYPED:
+        return _classified(name, read, nbytes, file_entry)
+
     state, detected, note = validators.validate(name, read.data, read.ready)
 
     if state == INVALID:
@@ -246,6 +375,35 @@ def _judge(torrent, file_entry, single, mappings, nbytes, source):
     return None, read.ready, (note if read.ready else read.why)
 
 
+def _classified(name, read, nbytes, file_entry):
+    """The untyped half of `_judge`: what the bytes prove, and nothing more.
+
+    No finding is returned, and that is the whole point of this stage. The
+    sensor is being proven to select and classify accurately before anything
+    downstream is allowed to act on what it says, so a confirmed executable
+    behind a scene name is written to the log and goes no further.
+
+    `resolved` is the classifier's own `retryable`, inverted. It is not a
+    judgement about length: a complete file shorter than a parser needs has all
+    the bytes it will ever have and is answered terminally, while bytes that
+    should be there and are not are worth coming back for.
+    """
+    verdict = classify.classify(read.data, read.ready,
+                                file_size=file_entry.get("size"),
+                                requested=nbytes)
+    detail = verdict.note if read.ready else read.why
+    # The format and the hint are mutually exclusive by construction, and are
+    # written differently on purpose: a format is what was proved, a hint is
+    # only what was glimpsed, and the log should not let the two read alike.
+    if verdict.format:
+        qualifier = f" ({verdict.format})"
+    elif verdict.hint:
+        qualifier = f" (prefix looked like {verdict.hint}, unproven)"
+    else:
+        qualifier = ""
+    return None, not verdict.retryable, f"{verdict.evidence}{qualifier}: {detail}"
+
+
 def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
     """Probe one torrent. Returns a Result; findings may be empty.
 
@@ -257,14 +415,13 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
         return NOTHING
     thash = (torrent.get("hash") or "").lower()
     name = torrent.get("name") or thash[:8]
-    tgts = targets(files)
-    if not thash or not tgts:
+    cands = candidates(files)
+    if not thash or not cands:
         return NOTHING
 
     memo = _memo(state, thash)
     mappings = paths.parse_mappings(p["path_mappings"])
     single = len(files) == 1
-    nbytes = p["header_bytes"]
 
     # The piece size turns a byte range into a set of pieces, so without it
     # there is no way to establish that a header is actually downloaded. It is
@@ -296,10 +453,11 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
     # ---- pass 1: whatever is already on disk ----
     findings, unresolved = [], []
     unreadable = 0
-    for idx, f in tgts:
+    for idx, f, kind in cands:
         fname = f.get("name") or ""
         if memo["resolved"].get(fname):
             continue
+        nbytes = span_for(p, kind)
         if _first_piece(f) is None:
             log.warning("Probe: qBittorrent did not report piece_range for %r. "
                         "The probe lane needs it to target a file's opening "
@@ -313,9 +471,10 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
                       "of %r in %r; leaving it alone", fname, name)
             continue
         if not pieces.verified(piece_states, needed):
-            unresolved.append((idx, f, needed))
+            unresolved.append((idx, f, needed, kind))
             continue
-        find, resolved, detail = _judge(torrent, f, single, mappings, nbytes, "free")
+        find, resolved, detail = _judge(torrent, f, single, mappings, nbytes,
+                                        "free", kind)
         log.debug("Probe free pass %s [%s]: %s", name, fname, detail)
         if resolved:
             memo["resolved"][fname] = True
@@ -342,7 +501,7 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
         if findings:
             log.info("Probe: %s failed content validation without any steering "
                      "(%d file(s) checked from data already on disk)",
-                     name, len(tgts))
+                     name, len(cands))
         return Result(tuple(findings), False)
 
     # ---- pass 2: steer qBittorrent at one file, then put it back ----
@@ -422,7 +581,7 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
         # sequential download it can only help.
         qb.set_first_last_prio(thash, True)
 
-        for idx, f, needed in order:
+        for idx, f, needed, kind in order:
             if time.time() >= deadline:
                 break
             fname = f.get("name") or ""
@@ -447,7 +606,7 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
                 continue
 
             find, resolved, detail = _judge(torrent, f, single, mappings,
-                                            p["header_bytes"], "steered")
+                                            span_for(p, kind), "steered", kind)
             log.info("Probe: %r [%s] -> %s", name, fname, detail)
             if resolved:
                 memo["resolved"][fname] = True
