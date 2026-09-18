@@ -77,6 +77,9 @@ class FakeArr:
     def queue_by_hash(self):
         return dict(self._queue)
 
+    def has_remediation_identity(self, record):
+        return record.get(self.meta["search"][2]) is not None
+
     def search(self, record):
         self.searches.append(record)
         return 555

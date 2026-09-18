@@ -89,6 +89,8 @@ class ArrStub:
         if self._raises:
             raise self._raises
         return self._q
+    def has_remediation_identity(self, record):
+        return record.get(ARR_TYPES[self.type]["search"][2]) is not None
 
 
 # ---------------------------------------------------------------- state ----

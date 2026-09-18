@@ -141,7 +141,15 @@ class ArrClient:
         return out
 
     def queue_by_hash(self):
-        """Map lowercased torrent hash -> full queue record for this instance."""
+        """Map lowercased torrent hash -> full queue record for this instance.
+
+        Deliberately includes the *arr's "unknown" items - downloads it can see
+        in its own category but has no media record for. They are not ownership
+        (see `has_remediation_identity`), but they are real queue entries, and
+        `intents` needs to know an entry is still sitting there before it
+        retries a removal. Visibility and ownership are different questions;
+        this answers the first and `ownership` decides the second.
+        """
         params = {"pageSize": 2000, self.meta["unknown_param"]: "true"}
         for inc in self.meta.get("queue_includes", []):
             params[inc] = "true"
@@ -153,6 +161,40 @@ class ArrClient:
             if dlid:
                 out[dlid] = rec
         return out
+
+    def remediation_identity(self, record):
+        """The *arr-native media id this queue record carries, or None.
+
+        Read from `search`'s own declaration rather than a second list, because
+        this is precisely the field `search()` needs: `search` returns None
+        without it, so "has an identity" and "a replacement search is possible"
+        cannot drift apart. `airdate` keys on the same field in every supported
+        type, and `_media_ids` reads its singular form, so the blocklist oracle
+        agrees too.
+
+            sonarr   episodeId      lidarr   albumId
+            radarr   movieId        readarr  bookId
+            whisparr movieId
+        """
+        return record.get(self.meta["search"][2])
+
+    def has_remediation_identity(self, record):
+        """Can Protectarr's *arr-aware remediation actually operate on this?
+
+        A queue record with no media id is an "unknown" item: the *arr can see
+        the download sitting in its category but has no idea what it is for.
+        Measured against Sonarr 4.0.20 and Radarr 6.4.4, asking such a record
+        to be failed is accepted - HTTP 200, `"removed"`, the data really is
+        deleted - and then produces no blocklist row, no downloadFailed history
+        event and no replacement search, because a blocklist row is keyed on
+        the media id there is none of. The remediation oracle correctly reports
+        it unverified, which is terminal, so the intent sits in the triage
+        queue forever with nothing able to resolve it.
+
+        So this is not a capability check bolted onto ownership. It is the
+        question of whether the *arr is claiming the download at all.
+        """
+        return bool(record) and self.remediation_identity(record) is not None
 
     def fail(self, queue_id):  # noqa: D401
         """Remove from client + blocklist, and DON'T let the arr auto-redownload

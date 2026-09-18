@@ -20,7 +20,18 @@ ordinary category match.
 So ownership is durable. A claim is only ever recorded from a queue we actually
 read, absence only counts when we read the owner's queue and it was not there,
 and a torrent that was owned stays accounted for until something positive says
-otherwise:
+otherwise.
+
+*A queue entry is not automatically a claim.* Protectarr asks each *arr for its
+unknown items as well, because `intents` needs to know whether a queue entry is
+still sitting there before it retries a removal. But an unknown item is the
+*arr reporting a download in its own category that it has no media record for,
+and an *arr that cannot name what a download is for cannot blocklist it or
+search for a replacement. Only a record carrying the media id the remediation
+path needs counts as a claim - see `ArrClient.has_remediation_identity`.
+
+The states:
+
 
     untracked   no *arr has ever been seen claiming it
     owned       exactly one *arr claims it right now
@@ -82,9 +93,30 @@ def collect(clients):
                         "be treated as absent this pass.", client.name, e)
             continue
         readable.add(client.name)
-        log.debug("%s queue: %d item(s)", client.name, len(queue))
+        unknown = 0
         for thash, record in queue.items():
+            # A queue entry is not the same thing as a claim. The *arr is asked
+            # for its unknown items too, and an unknown item is the *arr saying
+            # "there is a download in my category that I have no media record
+            # for" - a hand-added torrent, or one whose series or movie has
+            # since been deleted. Treating that as ownership sent it down the
+            # *arr-aware path, which deletes the data and then cannot blocklist
+            # or re-search it, because both are keyed on the media id it does
+            # not have.
+            if not client.has_remediation_identity(record):
+                unknown += 1
+                log.debug("%s lists %s but has no media record for it; that is "
+                          "queue visibility, not a claim", client.name,
+                          thash[:8])
+                continue
             claims.setdefault(thash.lower(), []).append((client, record))
+        log.debug("%s queue: %d item(s), %d claimed, %d unknown to it",
+                  client.name, len(queue), len(queue) - unknown, unknown)
+        if unknown:
+            log.info("%s has %d download(s) in its category it has no media "
+                     "record for. Protectarr does not treat those as owned: "
+                     "the *arr cannot blocklist or re-search them.",
+                     client.name, unknown)
     return claims, readable
 
 

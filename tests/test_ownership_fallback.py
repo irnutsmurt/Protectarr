@@ -65,6 +65,7 @@ from protectarr import config as cfg_mod  # noqa: E402
 cfg_mod.CONFIG_PATH = os.path.join(tempfile.mkdtemp(), "config.yaml")
 
 from protectarr import core, ownership  # noqa: E402
+from protectarr.arr import ARR_TYPES, ArrClient  # noqa: E402
 
 A = "a" * 40
 
@@ -219,17 +220,37 @@ class ScanCase(unittest.TestCase):
 
 
 class FakeArr:
-    def __init__(self, name, hashes=(), broken=False, arr_type="sonarr"):
+    def __init__(self, name, hashes=(), broken=False, arr_type="sonarr",
+                 identified=True):
         self.name = name
         self.type = arr_type
+        self.meta = ARR_TYPES[arr_type]
         self.hashes = list(hashes)
         self.broken = broken
+        # False makes every record an *arr "unknown" item: visible in the
+        # queue, no media record behind it.
+        self.identified = identified
 
     def queue_by_hash(self):
         if self.broken:
             raise requests.RequestException("connection refused")
-        return {h: {"id": 1, "title": f"{self.name} item", "downloadId": h}
-                for h in self.hashes}
+        rec = {"id": 1, "title": f"{self.name} item"}
+        if self.identified:
+            # The media id a real claim carries. Without it the *arr is merely
+            # reporting a download it has no record for, which is not a claim.
+            rec[ARR_TYPES[self.type]["search"][2]] = 1
+        return {h: dict(rec, downloadId=h) for h in self.hashes}
+
+    def has_remediation_identity(self, record):
+        """Delegates to the production predicate rather than copying it.
+
+        A fake that reimplements the rule cannot catch a mutation of the real
+        one, which is exactly what the harness found: six mutants of
+        `ArrClient.has_remediation_identity` were invisible to every
+        scanner-level test here.
+        """
+        return ArrClient.has_remediation_identity(
+            ArrClient(self.name, self.type, "http://fake", "k"), record)
 
     def grab_indexer(self, download_id):
         return None
@@ -519,3 +540,148 @@ class TestTheInvariant(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAQueueEntryIsNotAutomaticallyAClaim(ScanCase):
+    """An *arr "unknown" item is visibility, not ownership.
+
+    Protectarr asks every *arr for its unknown items, because `intents` has to
+    know whether a queue entry is still sitting there before retrying a
+    removal. An unknown item is the *arr reporting a download in its own
+    category that it has no media record for: a torrent the user added by hand,
+    or one whose series or movie has since been deleted.
+
+    Treating that as ownership routed it to the *arr-aware path. Measured
+    against Sonarr 4.0.20.3014 and Radarr 6.4.4.10685, that path accepts the
+    request (HTTP 200, "removed"), really does delete the data, and then
+    produces no blocklist row, no downloadFailed event and no replacement
+    search - all three are keyed on the media id the record does not carry. The
+    oracle reports it unverified, which is terminal, so the intent sits in the
+    triage queue with nothing able to resolve it.
+    """
+
+    def test_an_unknown_queue_item_is_not_a_claim(self):
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", [A], identified=False)])
+        self.assertEqual(ownership.records().get(A), None,
+                         "an unknown item must not establish ownership")
+        self.assertEqual(actions[0]["decision"], "qbit_delete")
+        self.assertIsNone(actions[0]["arr"])
+
+    def test_arr_tracked_leaves_an_unknown_queue_item_alone(self):
+        """The default mode now fails safe here. It used to send the download
+        down the *arr path, deleting the data and leaving an unresolvable
+        remediation behind."""
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", [A], identified=False)],
+                            mode="arr_tracked")
+        self.assertEqual(actions, [])
+
+    def test_the_audit_trail_says_category_fallback_not_arr(self):
+        """`via: "arr"` on a removal the *arr has no record of is a false
+        statement in the one place an operator goes to find out what
+        happened."""
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", [A], identified=False)])
+        self.assertEqual(actions[0]["decision"], "qbit_delete")
+        self.assertIsNone(actions[0]["_owner"],
+                          "no queue record may be carried into remediation")
+
+    def test_a_record_carrying_the_media_id_is_still_a_claim(self):
+        """The control. One field is the whole difference."""
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", [A], identified=True)])
+        self.assertEqual(actions[0]["decision"], "arr_fail")
+        self.assertEqual(actions[0]["arr"], "Sonarr")
+        self.assertEqual(ownership.records()[A].get("state"), ownership.OWNED)
+
+    def test_every_supported_arr_type_declares_its_identity_field(self):
+        """The predicate reads `search`'s own declaration, so "has an identity"
+        and "a replacement search is possible" cannot drift apart. Pinned as an
+        external literal: a table derived from the code would agree with it by
+        construction.
+        """
+        from protectarr.arr import ARR_TYPES
+        self.assertEqual(
+            {t: meta["search"][2] for t, meta in ARR_TYPES.items()},
+            {"sonarr": "episodeId", "radarr": "movieId", "whisparr": "movieId",
+             "lidarr": "albumId", "readarr": "bookId"})
+
+    def test_the_identity_field_is_the_one_search_actually_reads(self):
+        """Not a parallel list. If someone changes what `search` reads, this
+        predicate follows it rather than silently disagreeing."""
+        from protectarr.arr import ARR_TYPES, ArrClient
+        for arr_type, meta in ARR_TYPES.items():
+            client = ArrClient("x", arr_type, "http://x", "k")
+            field = meta["search"][2]
+            self.assertTrue(client.has_remediation_identity({field: 7}),
+                            f"{arr_type}: {field} should be an identity")
+            self.assertFalse(client.has_remediation_identity({"id": 1}),
+                             f"{arr_type}: a bare queue id is not an identity")
+            self.assertIsNone(client.search({"id": 1}),
+                              f"{arr_type}: search must refuse without one")
+
+    def test_an_unknown_item_never_reaches_the_arr_aware_path(self):
+        """Across every mode, so no mode can route it to `arr_fail`."""
+        for mode in ("arr_tracked", "both", "allowlist", "either"):
+            ownership._store.reset()
+            actions = self.scan([downloading()],
+                                [FakeArr("Sonarr", [A], identified=False)],
+                                mode=mode)
+            for row in actions:
+                self.assertNotEqual(row.get("decision"), "arr_fail",
+                                    f"{mode} sent an unknown item to the *arr")
+
+
+class TestLegacyOwnershipRecords(ScanCase):
+    """Records written before the identity rule existed.
+
+    Older versions recorded OWNED from any queue entry, so a store can name an
+    owner for a torrent that was never remediable. Those records must not stay
+    protected forever on the strength of a classification we now know was
+    wrong - but ownership must also not regress just because one pass happened
+    not to see a claim, which is the invariant the whole module exists for.
+    """
+
+    def test_a_legacy_owned_record_does_not_stay_owned_forever(self):
+        """The *arr still lists it, so its queue was read and did not claim it.
+        That is a positive observation, not a missed pass, and it earns the
+        ORPHANED state with its dwell rather than instant deletion."""
+        self.scan([downloading()], [FakeArr("Sonarr", [A], identified=True)])
+        self.assertEqual(ownership.records()[A].get("state"), ownership.OWNED)
+
+        self.scan([downloading()], [FakeArr("Sonarr", [A], identified=False)])
+        self.assertEqual(ownership.records()[A].get("state"),
+                         ownership.ORPHANED)
+
+    def test_the_dwell_still_gates_that_correction(self):
+        """A transient record missing its media id - an *arr mid-import, say -
+        must not become deletable immediately. The dwell is what absorbs it."""
+        self.scan([downloading()], [FakeArr("Sonarr", [A], identified=True)])
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", [A], identified=False)])
+        self.assertEqual(actions, [], "a fresh orphan is not actionable")
+
+    def test_a_returning_claim_restores_ownership(self):
+        """And proves the correction is not one-way. If the media id comes
+        back, so does the claim, and the next absence is a new absence."""
+        self.scan([downloading()], [FakeArr("Sonarr", [A], identified=True)])
+        self.scan([downloading()], [FakeArr("Sonarr", [A], identified=False)])
+        self.assertEqual(ownership.records()[A].get("state"),
+                         ownership.ORPHANED)
+
+        self.scan([downloading()], [FakeArr("Sonarr", [A], identified=True)])
+        rec = ownership.records()[A]
+        self.assertEqual(rec.get("state"), ownership.OWNED)
+        self.assertIsNone(rec.get("absent_since"),
+                          "a real claim resets the absence")
+
+    def test_a_legitimate_owner_is_untouched_by_a_pass_that_saw_nothing(self):
+        """The invariant the module exists for. An *arr that simply stopped
+        listing the torrent is not the same as one that listed it without a
+        media id."""
+        self.scan([downloading()], [FakeArr("Sonarr", [A], identified=True)])
+        self.scan([downloading()], [FakeArr("Sonarr", broken=True)])
+        rec = ownership.records()[A]
+        self.assertEqual(rec.get("state"), ownership.OWNED)
+        self.assertEqual(rec.get("owner"), "Sonarr")

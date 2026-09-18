@@ -24,6 +24,7 @@ from protectarr import config as cfg_mod  # noqa: E402
 cfg_mod.CONFIG_PATH = os.path.join(tempfile.mkdtemp(), "config.yaml")
 
 from protectarr import core, ownership  # noqa: E402
+from protectarr.arr import ARR_TYPES, ArrClient  # noqa: E402
 
 A = "a" * 40
 B = "b" * 40
@@ -33,13 +34,29 @@ class FakeArr:
     def __init__(self, name, hashes=(), broken=False, arr_type="sonarr"):
         self.name = name
         self.type = arr_type
+        self.meta = ARR_TYPES[arr_type]
         self.hashes = list(hashes)
         self.broken = broken
 
     def queue_by_hash(self):
         if self.broken:
             raise requests.RequestException("connection refused")
-        return {h: {"id": 1, "title": f"{self.name} item"} for h in self.hashes}
+        # Carries the media id a real claim carries. Without it this would be
+        # an *arr "unknown" item, which is queue visibility and not ownership.
+        return {h: {"id": 1, "title": f"{self.name} item",
+                    ARR_TYPES[self.type]["search"][2]: 1}
+                for h in self.hashes}
+
+    def has_remediation_identity(self, record):
+        """Delegates to the production predicate rather than copying it.
+
+        A fake that reimplements the rule cannot catch a mutation of the real
+        one, which is exactly what the harness found: six mutants of
+        `ArrClient.has_remediation_identity` were invisible to every
+        scanner-level test here.
+        """
+        return ArrClient.has_remediation_identity(
+            ArrClient(self.name, self.type, "http://fake", "k"), record)
 
 
 class OwnershipCase(unittest.TestCase):
