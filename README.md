@@ -542,6 +542,55 @@ as zeros, an unrecognised header, a budget that ran out, and an `.mkv` that turn
 out to be a genuine AVI all land here and all produce silence. Over-caution costs
 a missed fake; the opposite costs somebody's real release.
 
+### Untyped payload classification (observational, new in 0.9.0)
+
+The table above needs an extension to check the bytes against. Some releases do
+not have one. Sonarr has grabbed files named
+`South Park S29E01 1080p WEB-DL DDP5 1 x265 FLUX` with no suffix at all, and
+dotted scene names end in things like `.x265-FLUX` or `.265-NTb`, which look
+like extensions and claim nothing. Those files were invisible to the probe: with
+no claim to check, there was no question to ask.
+
+0.9.0 asks the other question - *what do these bytes prove on their own?* - for
+any file that is not libtorrent padding and carries no recognised format claim.
+Ten bounded structural parsers walk the opening bytes to a decisive field:
+Matroska/WebM, ISO-BMFF, AVI, WAV, FLAC, PE, ELF, Mach-O, OLE compound, and
+ZIP/RAR/7z. Magic alone never confirms anything.
+
+**This is observational and nothing else.** It creates no findings, triggers no
+remediation, and changes nothing about what Protectarr removes. It exists so the
+classifier can be validated against real downloads before it is allowed to act
+on them, and that validation is the whole content of this release.
+
+What it can say:
+
+| classification              | meaning                                             |
+|-----------------------------|-----------------------------------------------------|
+| `media_format_confirmed`    | structurally a real container                        |
+| `executable_format_confirmed` | structurally a program (PE, ELF, Mach-O)           |
+| `ole_compound_confirmed`    | a Windows installer or Office document container     |
+| `archive_format_confirmed`  | structurally an archive                              |
+| `ambiguous_format`          | valid as more than one thing, so neither is proven   |
+| `format_unrecognized`       | nothing validated, sometimes with a prefix hint      |
+| `probe_data_unavailable`    | the bytes were not readable yet, worth retrying      |
+
+The distinction between the last two is deliberate. "I saw an MZ prefix and
+could not prove a PE" and "these bytes are nothing I recognise" are both
+`format_unrecognized`, and a truncated read is never either of them.
+
+Classifications are appended to `observations.jsonl` beside your config, with
+its own 8 MiB rotation budget. It is a diagnostic file: nothing in the WebUI
+reads it, it is entirely separate from `events.jsonl`, and your remediation
+history is untouched. A file whose bytes are not available yet is never written,
+so retries cannot fill it.
+
+Known gaps in this first release, all of them affecting the collected data
+rather than anything Protectarr does: a candidate whose torrent finishes or is
+removed before its bytes arrive is never written; a restart loses in-flight
+counters; and the probe's in-memory bookkeeping clears wholesale past 2,000
+torrents, which can reset a candidate's attempt counts. Records carry a
+deterministic `observation_id`, so duplicates collapse during analysis.
+
 **Requirements and costs, plainly:**
 
 - Protectarr must be able to **read the files qBittorrent writes**. In Docker
