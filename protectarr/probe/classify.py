@@ -69,6 +69,12 @@ import collections
 # test torrent - exactly the same number as the 4096 the default already reads.
 CLASSIFY_BYTES = 4096
 
+# Bumped when a parser changes what it would say about the same bytes, so that
+# baseline observations recorded by one version are not silently compared with
+# another's. Separate from Protectarr's own version, which moves for reasons
+# that have nothing to do with this file.
+VERSION = 1
+
 # The frozen evidence taxonomy. These seven strings are the whole vocabulary;
 # nothing here invents an eighth.
 MEDIA_CONFIRMED = "media_format_confirmed"

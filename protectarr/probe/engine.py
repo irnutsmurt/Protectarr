@@ -51,7 +51,7 @@ import requests
 from .. import logs
 from ..config import DEFAULTS as _CONFIG_DEFAULTS
 from ..detectors import _util, finding
-from . import classify, ledger, paths, pieces, validators
+from . import classify, ledger, observations, paths, pieces, validators
 from .validators import INVALID, UNKNOWN, VALID
 
 log = logs.get("probe")
@@ -128,7 +128,26 @@ def _memo(state, torrent_hash):
     memo = state.setdefault("probe_memo", {})
     if len(memo) > 2000:        # long uptimes should not leak memory
         memo.clear()
-    return memo.setdefault(torrent_hash, {"resolved": {}, "next_steer": 0.0})
+    return memo.setdefault(torrent_hash,
+                           {"resolved": {}, "next_steer": 0.0, "seen": {}})
+
+
+def _track(memo, filename):
+    """Accumulated lifecycle counters for one untyped candidate.
+
+    They live here, beside `resolved`, because an observation is written once
+    at the end and has to be able to say how much work the answer took. The
+    first pass over a file is what dates it: `first_seen` is when this process
+    first looked, not when the torrent was added, and the field is named for
+    what it actually measures.
+
+    In memory only, and knowingly so. A candidate whose torrent disappears
+    before it resolves takes its counters with it; see the limitation recorded
+    in `observations`.
+    """
+    seen = memo.setdefault("seen", {})
+    return seen.setdefault(filename, {"first": logs.now(), "attempts": 0,
+                                      "waits": 0, "steered": False})
 
 
 def _first_piece(file_entry):
@@ -351,13 +370,14 @@ def _changes(plan, current):
     return out
 
 
-def _judge(torrent, file_entry, single, mappings, nbytes, source, kind=TYPED):
+def _judge(torrent, file_entry, single, mappings, nbytes, source, kind=TYPED,
+           memo=None):
     """Read one file's header and judge it. (finding|None, resolved, detail)."""
     name = file_entry.get("name") or ""
     path = paths.local_path(torrent, file_entry, single, mappings)
     read = paths.read_head(path, nbytes)
     if kind == UNTYPED:
-        return _classified(name, read, nbytes, file_entry)
+        return _classified(torrent, name, read, nbytes, file_entry, memo)
 
     state, detected, note = validators.validate(name, read.data, read.ready)
 
@@ -375,18 +395,23 @@ def _judge(torrent, file_entry, single, mappings, nbytes, source, kind=TYPED):
     return None, read.ready, (note if read.ready else read.why)
 
 
-def _classified(name, read, nbytes, file_entry):
+def _classified(torrent, name, read, nbytes, file_entry, memo=None):
     """The untyped half of `_judge`: what the bytes prove, and nothing more.
 
     No finding is returned, and that is the whole point of this stage. The
     sensor is being proven to select and classify accurately before anything
     downstream is allowed to act on what it says, so a confirmed executable
-    behind a scene name is written to the log and goes no further.
+    behind a scene name is written to the log and to the observation store, and
+    goes no further.
 
     `resolved` is the classifier's own `retryable`, inverted. It is not a
     judgement about length: a complete file shorter than a parser needs has all
     the bytes it will ever have and is answered terminally, while bytes that
     should be there and are not are worth coming back for.
+
+    That same flag decides whether an observation is written, which is what
+    keeps the store from filling with retries: the state that repeats is the
+    one state never recorded.
     """
     verdict = classify.classify(read.data, read.ready,
                                 file_size=file_entry.get("size"),
@@ -401,7 +426,35 @@ def _classified(name, read, nbytes, file_entry):
         qualifier = f" (prefix looked like {verdict.hint}, unproven)"
     else:
         qualifier = ""
+
+    if memo is not None:
+        track = _track(memo, name)
+        track["attempts"] += 1
+        if not verdict.retryable:
+            _observe(torrent, name, file_entry, verdict, track, nbytes, read)
     return None, not verdict.retryable, f"{verdict.evidence}{qualifier}: {detail}"
+
+
+def _observe(torrent, name, file_entry, verdict, track, nbytes, read):
+    """Write the one terminal observation for this candidate. Never raises.
+
+    Wrapped rather than trusted. `observations.record` is written to swallow
+    its own failures, but this is the call site inside a lane that has probe
+    priorities to put back, and a bug here - not merely an I/O error - must
+    still not cost the restore. Nothing about the scan depends on the result,
+    so nothing about the scan may depend on this succeeding.
+    """
+    try:
+        observations.record(observations.build(
+            torrent.get("hash"), name, file_entry.get("size"), verdict,
+            first_seen=track["first"], resolved=logs.now(),
+            attempts=track["attempts"], piece_waits=track["waits"],
+            steered=track["steered"], requested_span=nbytes,
+            # What was actually read, which for a complete tiny file is the
+            # whole file and not the span we asked for.
+            bytes_examined=len(read.data or b"")))
+    except Exception:  # noqa: BLE001 - a diagnostic file, on a lane that deletes
+        log.debug("Observation failed for %r", name, exc_info=True)
 
 
 def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
@@ -474,7 +527,7 @@ def inspect(qb, torrent, files, cfg, state, deadline=None, allow_steer=True):
             unresolved.append((idx, f, needed, kind))
             continue
         find, resolved, detail = _judge(torrent, f, single, mappings, nbytes,
-                                        "free", kind)
+                                        "free", kind, memo)
         log.debug("Probe free pass %s [%s]: %s", name, fname, detail)
         if resolved:
             memo["resolved"][fname] = True
@@ -597,6 +650,14 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
                      "(%.0fs budget)", name, fname,
                      ", ".join(str(n) for n in needed), deadline - time.time())
 
+            if kind == UNTYPED:
+                # Counted before the wait, not after it. A wait that times out
+                # still cost the budget, and an observation that only counted
+                # successful waits would understate what the answer took.
+                track = _track(memo, fname)
+                track["waits"] += 1
+                track["steered"] = True
+
             got, why = _wait_for_pieces(qb, thash, needed, deadline, p)
             if not got:
                 log.info("Probe: no verdict for %r on %r (%s). No verdict never "
@@ -606,7 +667,8 @@ def _steer(qb, torrent, files, unresolved, p, mappings, single, memo, deadline):
                 continue
 
             find, resolved, detail = _judge(torrent, f, single, mappings,
-                                            span_for(p, kind), "steered", kind)
+                                            span_for(p, kind), "steered", kind,
+                                            memo)
             log.info("Probe: %r [%s] -> %s", name, fname, detail)
             if resolved:
                 memo["resolved"][fname] = True
