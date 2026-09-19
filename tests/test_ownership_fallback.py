@@ -201,7 +201,7 @@ class ScanCase(unittest.TestCase):
         clear_store()
 
     def scan(self, torrents, clients, mode="either", files=None,
-             only_active=True, side_effects=True):
+             only_active=True, side_effects=True, probe=False):
         """`side_effects=True` is the real destructive path, and the only one
         that synchronises. A preview deliberately does not, so tests about what
         a preview shows pass False."""
@@ -215,9 +215,11 @@ class ScanCase(unittest.TestCase):
                 return [dict(t) for t in torrents]
 
             def files(self, h):
-                return list(files if files is not None
-                            else [{"name": "Ted.Lasso.S04E08.1080p.exe",
-                                   "size": 1_060_000_000}])
+                default = [{"name": "Ted.Lasso.S04E08.1080p.exe",
+                            "size": 1_060_000_000}]
+                if isinstance(files, dict):     # per-torrent, keyed by hash
+                    return list(files.get(h, default))
+                return list(default if files is None else files)
 
             def delete(self, h, delete_files=False):
                 outer.fail("scan must not delete; side_effects=False")
@@ -228,7 +230,9 @@ class ScanCase(unittest.TestCase):
                           "blocked_extensions": [".exe"],
                           "blocked_name_keywords": [],
                           "archive_detection": {"enabled": False},
-                          "probe": {"enabled": False}},
+                          "probe": {"enabled": probe,
+                                    "max_torrents_per_scan": 0,
+                                    "scan_budget_seconds": 30}},
             "safety": dict(SAFETY, mode=mode),
             "arrs": [{"name": c.name, "type": c.type} for c in clients],
         }
@@ -1120,3 +1124,192 @@ class TestTheScanLocalRefreshBarrier(ScanCase):
         self.assertEqual(actions, [])
         self.assertEqual(ownership.records()[A].get("candidate_owner"),
                          "Sonarr")
+
+
+class TestTheBarrierIsPerPhaseNotPerScan(ScanCase):
+    """The probe lane gets its own refresh, because it runs later.
+
+    The main loop and the probe lane are two phases of one scan, and the probe
+    lane may hold the scan for its whole budget - two minutes by default. A
+    barrier raised before it began would be authorising a deletion against a
+    download-client view the *arr took minutes earlier.
+
+    The fix is the phase boundary itself, not a clock. Nothing here measures
+    elapsed time, sets a TTL, or leans on the *arr's own one-minute polling
+    timer, which is not Protectarr's to depend on.
+    """
+
+    def probe_pass(self, candidates, clients, sync, mode="allowlist"):
+        """Drive the probe lane directly.
+
+        Standing up a real probe - content on disk, piece ranges, a steering
+        budget - would test the probe engine, which has its own suite. What
+        matters here is which barrier the lane is handed, so the findings are
+        injected and the lane's own machinery is left alone.
+        """
+        cfg = {"detection": {"probe": {"enabled": True,
+                                       "max_torrents_per_scan": 0,
+                                       "scan_budget_seconds": 60}},
+               "safety": dict(SAFETY, mode=mode), "arrs": [], "dry_run": False}
+        find = {"detector": "probe", "reason": "content_type_mismatch",
+                "evidence": {"filename": "ep1.mkv", "claimed_type": ".mkv",
+                             "detected_type": "windows_pe"}}
+        real = core.probe.inspect
+        core.probe.inspect = lambda *a, **k: type(
+            "R", (), {"findings": [find], "steered": False})()
+        try:
+            return core._probe_pass(
+                None, [(t, [], None) for t in candidates], cfg, {},
+                cfg["safety"], True, {}, resolved={}, sync=sync)
+        finally:
+            core.probe.inspect = real
+
+    def syncer(self, clients, phase="test"):
+        barrier = ownership.Barrier(clients, phase=phase)
+        fn = (lambda thash: ownership.synchronise(clients, thash,
+                                                  barrier=barrier))
+        fn.barrier = barrier
+        return fn
+
+    def test_many_main_loop_candidates_cost_one_refresh_each(self):
+        clients = [FakeArr("Sonarr"), FakeArr("Radarr", arr_type="radarr")]
+        self.scan([dict(downloading(), hash=f"{i:040x}") for i in range(6)],
+                  clients, mode="allowlist")
+        self.assertEqual([c.refreshes for c in clients], [1, 1])
+
+    def test_many_probe_candidates_cost_one_new_refresh_each(self):
+        clients = [FakeArr("Sonarr"), FakeArr("Radarr", arr_type="radarr")]
+        rows = self.probe_pass(
+            [dict(downloading(), hash=f"{i:040x}") for i in range(5)],
+            clients, self.syncer(clients, "probe lane"))
+        self.assertEqual(len(rows), 5)
+        self.assertEqual([c.refreshes for c in clients], [1, 1],
+                         "one per *arr for the phase, not one per candidate")
+
+    def test_the_probe_lane_never_reuses_the_main_loop_barrier(self):
+        """The structural claim, asserted on identity rather than on counts."""
+        seen = {}
+        real = core._probe_pass
+
+        def capture(*a, **kw):
+            seen["probe_sync"] = kw.get("sync")
+            return []
+
+        clients = [FakeArr("Sonarr")]
+        core._probe_pass = capture
+        try:
+            # Nothing in the metadata, so the fast lane has no say and the
+            # probe lane is reached. A queued reap would skip it entirely.
+            self.scan([downloading()], clients, mode="allowlist", probe=True,
+                      files=[{"name": "ok.mkv", "size": 1}])
+        finally:
+            core._probe_pass = real
+        probe_sync = seen.get("probe_sync")
+        self.assertIsNotNone(probe_sync, "the probe lane was never reached")
+        self.assertEqual(probe_sync.barrier.phase, "probe lane")
+        self.assertEqual(probe_sync.barrier.refreshed, 0,
+                         "the probe barrier must still be lazy")
+
+    def test_no_probe_candidate_means_no_second_refresh(self):
+        """Laziness survives the split: a phase that never reaches the
+        boundary costs nothing."""
+        clients = [FakeArr("Sonarr"), FakeArr("Radarr", arr_type="radarr")]
+        self.probe_pass([], clients, self.syncer(clients, "probe lane"))
+        self.assertEqual([c.refreshes for c in clients], [0, 0])
+
+    def test_evidence_arriving_between_phases_is_caught(self):
+        """The reason the split matters. An *arr grabbed the release after the
+        main loop had already cleared an unrelated torrent; the probe lane's
+        own refresh and its own reads find it."""
+        arr = FakeArr("Sonarr")
+        main = self.syncer([arr], "main loop")
+        self.assertTrue(main(A).cleared)
+
+        arr.grabbed.add(B.lower())
+        rows = self.probe_pass([downloading2()], [arr],
+                               self.syncer([arr], "probe lane"))
+        self.assertEqual(rows, [], "the late grab protected it")
+        self.assertEqual(arr.refreshes, 2, "one refresh per phase")
+
+    def test_a_failed_probe_phase_refresh_protects_every_probe_candidate(self):
+        clients = [FakeArr("Sonarr"),
+                   FakeArr("Radarr", arr_type="radarr", refresh_ok=False)]
+        rows = self.probe_pass(
+            [dict(downloading(), hash=f"{i:040x}") for i in range(4)],
+            clients, self.syncer(clients, "probe lane"))
+        self.assertEqual(rows, [])
+
+    def test_a_failed_main_phase_does_not_condemn_the_probe_phase(self):
+        """The barriers are independent in both directions."""
+        arr = FakeArr("Sonarr", refresh_ok=False)
+        main = self.syncer([arr], "main loop")
+        self.assertFalse(main(A).cleared)
+
+        arr.refresh_ok = True
+        rows = self.probe_pass([downloading2()], [arr],
+                               self.syncer([arr], "probe lane"))
+        self.assertEqual([r["decision"] for r in rows], ["qbit_delete"])
+
+    def test_neither_barrier_survives_the_scan(self):
+        clients = [FakeArr("Sonarr")]
+        for expected in (1, 2, 3):
+            self.scan([downloading()], clients, mode="allowlist")
+            self.assertEqual(clients[0].refreshes, expected)
+
+    def test_a_scan_costs_at_most_two_refreshes_per_arr(self):
+        """The bound the split promises, stated as a number."""
+        clients = [FakeArr("Sonarr"), FakeArr("Radarr", arr_type="radarr"),
+                   FakeArr("Lidarr", arr_type="lidarr")]
+        torrents = [dict(downloading(), hash=f"{i:040x}") for i in range(8)]
+        self.scan(torrents, clients, mode="allowlist")
+        self.probe_pass(torrents, clients, self.syncer(clients, "probe lane"))
+        for c in clients:
+            self.assertLessEqual(c.refreshes, 2, c.name)
+
+    def test_both_phases_of_one_real_scan_refresh_independently(self):
+        """End to end through `scan`, not through a syncer built by hand.
+
+        The other probe tests here drive `_probe_pass` directly, which is
+        deliberate - they are about the lane, not the wiring - but it means
+        nothing was exercising how `scan` hands each phase its own barrier.
+        Two mutants of exactly that wiring died by a single test each, which is
+        too thin a margin for the property the whole change exists for.
+
+        The main loop refuses its candidate (Sonarr's history claims it), so no
+        reap is queued and the probe lane runs, where an injected finding
+        reaches the destructive boundary with its own barrier.
+        """
+        arr = FakeArr("Sonarr", grabbed=[A])
+        find = {"detector": "probe", "reason": "content_type_mismatch",
+                "evidence": {"filename": "ep1.mkv", "claimed_type": ".mkv",
+                             "detected_type": "windows_pe"}}
+        real = core.probe.inspect
+        core.probe.inspect = lambda *a, **k: type(
+            "R", (), {"findings": [find], "steered": False})()
+        try:
+            # A flags in the fast lane and is refused there; B has nothing in
+            # its metadata, so it falls through to the probe lane.
+            actions = self.scan(
+                [downloading(), downloading2()], [arr],
+                mode="allowlist", probe=True,
+                files={B: [{"name": "ep1.mkv", "size": 1}]})
+        finally:
+            core.probe.inspect = real
+
+        self.assertEqual(arr.refreshes, 2,
+                         "one refresh for the main loop, one for the probe "
+                         "lane, never shared between them")
+        decisions = {a["hash"]: a["decision"] for a in actions}
+        self.assertNotIn(A, decisions, "Sonarr's grab history protected it")
+        self.assertEqual(decisions.get(B), "qbit_delete",
+                         "the probe candidate was judged on its own evidence")
+
+    def test_a_reap_in_the_main_loop_still_defers_the_probe_lane(self):
+        """Unchanged by the split, and worth pinning: a scan with something to
+        reap reaps it and probes on the next pass, so in the common case only
+        one barrier is ever established."""
+        arr = FakeArr("Sonarr")
+        actions = self.scan([downloading()], [arr], mode="allowlist",
+                            probe=True)
+        self.assertEqual(actions[0]["decision"], "qbit_delete")
+        self.assertEqual(arr.refreshes, 1, "the probe lane never ran")

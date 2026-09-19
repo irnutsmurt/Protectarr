@@ -456,13 +456,21 @@ class Barrier:
     evidence arriving mid-scan still be found. Caching a queue row or a history
     absence to save a call would be trading the answer for the round trip.
 
-    The barrier lives exactly as long as the `scan()` that built it. A failure
-    is not cached across scans either: the next scan gets a clean attempt.
+    A barrier lives for one *phase* of one scan, not for the whole scan. The
+    probe lane runs after the main loop has finished and may hold the scan for
+    its entire budget, so a barrier raised before it began would be describing
+    a download-client view the *arr took minutes earlier. The phase boundary is
+    what defines freshness here - not a TTL, not an elapsed-time threshold, and
+    not the *arr's own polling timer, which is not ours to depend on.
+
+    A failure is not cached across phases or scans either: each gets a clean
+    attempt.
     """
 
-    def __init__(self, clients, refresh_timeout=90):
+    def __init__(self, clients, refresh_timeout=90, phase="scan"):
         self.clients = list(clients)
         self.refresh_timeout = refresh_timeout
+        self.phase = phase
         self.refreshed = 0          # commands actually issued, for tests
         self._result = None         # None until the first candidate asks
 
@@ -486,8 +494,9 @@ class Barrier:
                 self._result = (False, why)
                 return self._result
         self._result = (True, "every application refreshed")
-        log.debug("Ownership synchronisation barrier established across %d "
-                  "application(s)", len(self.clients))
+        log.debug("Ownership synchronisation barrier established for the %s "
+                  "phase across %d application(s)", self.phase,
+                  len(self.clients))
         return self._result
 
 

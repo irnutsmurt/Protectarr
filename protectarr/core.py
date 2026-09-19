@@ -637,22 +637,34 @@ def scan(cfg, state, side_effects=True):
                     "ownership is unknown this pass. Torrents will not be "
                     "deleted directly from qBittorrent.")
 
-    # Built now, refreshed never - `Barrier.establish` does nothing until the
-    # first torrent actually reaches the destructive boundary, and most scans
-    # never have one. It lives exactly as long as this call.
-    barrier = ownership.Barrier(arr_clients)
+    def phase_syncer(phase):
+        """Ownership synchronisation scoped to one phase of this scan.
 
-    def sync_ownership(thash):
-        """Fresh ownership resolution at the destructive boundary.
+        The barrier inside refreshes each *arr once, lazily: it does nothing at
+        all until a torrent actually reaches the destructive boundary, and most
+        scans never have one.
 
-        The refresh is shared across this scan; the queue and history reads
-        behind every verdict are not.
+        A phase, not a scan, because the probe lane runs after the main loop
+        has finished and may hold the scan for its whole budget. Reusing the
+        main loop's barrier there would mean authorising a deletion against a
+        download-client view the *arr took minutes ago. Discarding it at the
+        phase boundary is a structural guarantee rather than a bet on how long
+        the probe lane took, and it costs at most one extra refresh per *arr.
+
+        A preview gets None. Forcing every configured *arr to refresh is a
+        write to them, and a page render must not do that.
         """
-        return ownership.synchronise(arr_clients, thash, barrier=barrier)
+        if not side_effects:
+            return None
+        barrier = ownership.Barrier(arr_clients, phase=phase)
 
-    # A preview never synchronises. It would force every configured *arr to
-    # refresh, which is a write to them, and a page render must not do that.
-    syncer = sync_ownership if side_effects else None
+        def sync(thash):
+            return ownership.synchronise(arr_clients, thash, barrier=barrier)
+
+        sync.barrier = barrier          # named so tests can see the boundary
+        return sync
+
+    syncer = phase_syncer("main loop")
 
     safety = cfg["safety"]
     actions = []
@@ -814,7 +826,9 @@ def scan(cfg, state, side_effects=True):
         else:
             actions.extend(_probe_pass(qb, probe_candidates, cfg, state, safety,
                                        ownership_known, arr_by_name,
-                                       resolved=resolved, sync=syncer,
+                                       resolved=resolved,
+                                       # A new barrier: see `phase_syncer`.
+                                       sync=phase_syncer("probe lane"),
                                        side_effects=side_effects))
 
     # Everything the Active Downloads view needs was established above and is
