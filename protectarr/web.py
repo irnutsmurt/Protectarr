@@ -853,6 +853,10 @@ def _blocked_why(reason, detail):
                 f"this scan, so it will not be removed as unowned")
     if reason == "ownership_conflict":
         return detail.get("why") or "more than one application claims it"
+    if reason == "provisional_candidate_owner":
+        owner = detail.get("owner") or "an application"
+        return (f"{owner}'s history says it asked for this release, so "
+                f"Protectarr will not remove it as unowned")
     return detail.get("why") or reason
 
 
@@ -908,7 +912,7 @@ def _protectarr_state(row):
 
     if state == core.BLOCKED:
         return ("Blocked", "bad", _blocked_why(row.get("policy_reason"), detail))
-    if state == core.WAITING:
+    if state == core.WAITING and row.get("policy_reason") == "orphan_dwell":
         if not detail.get("measurable"):
             # Either the owner was unreachable this pass or the user paused it.
             # Both mean the absence is not being measured, and a countdown
@@ -931,6 +935,14 @@ def _protectarr_state(row):
         return ("Not actionable by policy", "off",
                 _NOT_COVERED.get(row.get("policy_reason"))
                 or row.get("policy_reason"))
+    if state == core.WAITING and row.get("policy_reason") == "awaiting_ownership_sync":
+        # Deliberately not its own row state. Nothing is waiting: if a finding
+        # appears here, Protectarr checks with every application first and then
+        # decides. Rendering that as "Waiting" would put the word on most of a
+        # healthy library and mean nothing by it.
+        return ("Monitoring", "on",
+                "can remediate if a finding appears, after checking with every "
+                "application that none of them owns it")
     return ("Monitoring", "on", "can remediate if a finding appears")
 
 

@@ -203,9 +203,16 @@ class TestNothingIsEverPresentedAsAnIntention(unittest.TestCase):
     """`would` is what policy permits, not what is queued to happen."""
 
     def test_a_permitted_row_carries_no_finding_of_its_own(self):
+        """The row a torrent nothing claims produces. Since the first-pass race
+        fix that is WAITING rather than PERMITTED, because a direct removal
+        would need a synchronisation first - but the point of the test is
+        unchanged: the row carries no finding, so nothing is presented as an
+        intention."""
         row = build([torrent(A)])["rows"][0]
-        self.assertEqual(row["policy_state"], core.PERMITTED)
+        self.assertEqual(row["policy_state"], core.WAITING)
+        self.assertEqual(row["policy_reason"], "awaiting_ownership_sync")
         self.assertIsNone(row["finding"])
+        self.assertIsNone(row["would"])
 
     def test_the_action_is_only_populated_where_policy_permits(self):
         blocked = ownership.Ownership(ownership.CONFLICTED, None, None, None,

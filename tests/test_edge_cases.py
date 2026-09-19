@@ -92,6 +92,17 @@ class ArrStub:
     def has_remediation_identity(self, record):
         return record.get(ARR_TYPES[self.type]["search"][2]) is not None
 
+    def grab_events(self, download_id, after_id=None, pages=4):
+        if self._raises:
+            raise self._raises
+        return []
+
+    def refresh_monitored_downloads(self, timeout=90, poll=0.25):
+        """This stub models an *arr that answers its queue but cannot be
+        synchronised, so nothing it says clears a direct removal. Stated
+        rather than left to an AttributeError being swallowed."""
+        return False, "this stub does not refresh"
+
 
 # ---------------------------------------------------------------- state ----
 
@@ -113,10 +124,15 @@ class TestState(unittest.TestCase):
         self.assertEqual(scan_with(cfg_for("allowlist"), qb, [dead]), [])
 
     def test_a_genuine_orphan_is_still_reaped_when_the_arr_answers(self):
+        """The *arr answers and claims nothing - but that alone is no longer
+        enough to delete. Since the first-pass race fix the torrent has to
+        survive a synchronisation too, and `ArrStub` refuses to refresh, so
+        this now pins the refusal. The reaped case is in
+        `test_ownership_fallback`, where the stub can complete a refresh."""
         t = torrent()
         qb = FakeQb([t], {t["hash"]: [{"name": "Show.S01E01.exe"}]})
         actions = scan_with(cfg_for("either"), qb, [ArrStub(queue={})])
-        self.assertEqual([a["decision"] for a in actions], ["qbit_delete"])
+        self.assertEqual(actions, [])
 
     def test_worker_survives_an_unexpected_error(self):
         """The loop used to die on any non-HTTP exception while the UI kept
@@ -230,10 +246,13 @@ class TestIdentity(unittest.TestCase):
                                          "allowed_tags": []}))
 
     def test_category_match_is_case_insensitive(self):
+        # Cleared, because this pins the category comparison rather than the
+        # synchronisation gate that now sits in front of a direct removal.
         self.assertEqual(
             core.evaluate({"category": "TV", "tags": ""}, "x.exe", None,
                           {"mode": "either", "allowed_categories": ["tv"],
-                           "allowed_tags": []}), "qbit_delete")
+                           "allowed_tags": []}, fallback_cleared=True),
+            "qbit_delete")
 
     def test_untracked_torrent_in_an_unlisted_category_is_left_alone(self):
         self.assertIsNone(

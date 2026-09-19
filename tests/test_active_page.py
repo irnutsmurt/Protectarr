@@ -186,9 +186,16 @@ class TestTheProtectarrStateVocabulary(PageCase):
         return web._active_rows(snap)[0]["state"]
 
     def test_a_healthy_covered_torrent_reads_as_monitoring(self):
+        """Still Monitoring, and still not a threat to the download.
+
+        Since the first-pass race fix, a torrent no application claims needs a
+        synchronisation before it could ever be removed directly. That is an
+        extra step before a decision, not a state the operator waits through,
+        so it must not put "Waiting" on most of a healthy library.
+        """
         s = self.state_of()
         self.assertEqual(s["label"], "Monitoring")
-        self.assertEqual(s["why"], "can remediate if a finding appears")
+        self.assertIn("can remediate if a finding appears", s["why"])
 
     def test_monitoring_never_says_anything_about_deleting(self):
         s = self.state_of()

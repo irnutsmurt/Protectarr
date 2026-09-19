@@ -28,7 +28,7 @@ from protectarr import config as cfg_mod  # noqa: E402
 
 cfg_mod.CONFIG_PATH = os.path.join(tempfile.mkdtemp(), "config.yaml")
 
-from protectarr import core, logs, probe  # noqa: E402
+from protectarr import core, ownership, logs, probe  # noqa: E402
 from protectarr.probe import engine, ledger, paths, pieces, validators  # noqa: E402
 from protectarr.probe.validators import INVALID, UNKNOWN, VALID  # noqa: E402
 
@@ -1063,6 +1063,11 @@ class TestSteerability(unittest.TestCase):
                          engine.DEFAULTS["max_torrents_per_scan"])
 
 
+def cleared(_thash):
+    """A synchronisation that found nothing, for tests about something else."""
+    return ownership.Synchronisation(True, None, "nothing owns it")
+
+
 class TestWiring(ProbeCase):
     """The lane's place in a scan: same policy, same safety rules, second."""
 
@@ -1074,7 +1079,10 @@ class TestWiring(ProbeCase):
                                             "allowed_categories": ["tv"]},
                 "arrs": [], "dry_run": False}
         t = dict(self.torrent, category="tv")
-        row = core._assess(t, [find], None, {}, conf, conf["safety"], True, None)
+        # `sync=cleared` because this pins how a probe finding is *judged*,
+        # not the synchronisation that now precedes a direct removal.
+        row = core._assess(t, [find], None, {}, conf, conf["safety"], True,
+                           None, sync=cleared)
         self.assertEqual(row["decision"], "qbit_delete")
         self.assertEqual(row["policy"]["severity"], "critical")
         self.assertIn("Windows program", row["reason"])
@@ -1087,7 +1095,10 @@ class TestWiring(ProbeCase):
                 "safety": {"mode": "allowlist", "allowed_categories": ["tv"]},
                 "arrs": [], "dry_run": False}
         t = dict(self.torrent, category="tv")
-        row = core._assess(t, [find], None, {}, conf, conf["safety"], True, None)
+        # `sync=cleared` because this pins how a probe finding is *judged*,
+        # not the synchronisation that now precedes a direct removal.
+        row = core._assess(t, [find], None, {}, conf, conf["safety"], True,
+                           None, sync=cleared)
         self.assertEqual(row["decision"], "warn")
 
     def test_the_probe_lane_is_off_by_default(self):

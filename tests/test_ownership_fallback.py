@@ -102,11 +102,30 @@ ORPHAN_DWELLED = ownership.Ownership(
     ownership.ORPHANED, "Sonarr", None, None, (DWELL + 1) * 60, "absent 11m")
 
 
-def judge(mode, own, hit=False, allowed=True, known=True):
+PROVISIONAL = ownership.Ownership(
+    ownership.PROVISIONAL, None, None, None, None,
+    "seen for the first time; ownership not established yet")
+
+PROVISIONAL_GRABBED = ownership.Ownership(
+    ownership.PROVISIONAL, "Sonarr", None, None, None,
+    "grabbed by Sonarr according to its history")
+
+
+def clear_store():
+    """Actually empty the ownership store.
+
+    `Store.reset()` only forgets the broken flag - it has never cleared
+    records, so every mid-test `_store.reset()` was a no-op on the data. Tests
+    that need a clean slate mid-test have to say so properly.
+    """
+    ownership._store.mutate(lambda owners: (owners.clear(), True)[1])
+
+
+def judge(mode, own, hit=False, allowed=True, known=True, cleared=False):
     safety = dict(SAFETY, mode=mode)
     torrent = {"category": "tv" if allowed else "other", "tags": ""}
     return core.explain(torrent, ("client", {}) if hit else None, safety,
-                        known, own=own)
+                        known, own=own, fallback_cleared=cleared)
 
 
 class TestWhatTheDecisionSeesOfADurableOwner(unittest.TestCase):
@@ -179,10 +198,13 @@ class ScanCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         cfg_mod.CONFIG_PATH = os.path.join(self.dir, "config.yaml")
-        ownership._store.reset()
+        clear_store()
 
     def scan(self, torrents, clients, mode="either", files=None,
-             only_active=True):
+             only_active=True, side_effects=True):
+        """`side_effects=True` is the real destructive path, and the only one
+        that synchronises. A preview deliberately does not, so tests about what
+        a preview shows pass False."""
         outer = self
 
         class FakeQb:
@@ -214,14 +236,24 @@ class ScanCase(unittest.TestCase):
         core.QbitClient = lambda *a, **k: FakeQb()
         core.build_clients = lambda cfg: list(clients)
         try:
-            return core.scan(cfg, {}, side_effects=False)
+            return core.scan(cfg, {}, side_effects=side_effects)
         finally:
             core.QbitClient, core.build_clients = real_qb, real_build
 
 
 class FakeArr:
+    """Models the whole ownership contract, not just the queue.
+
+    `grabbed` is the exact-hash grab history, which is what closes the
+    first-pass race; `refresh_ok` and the two `*_raises` switches are how the
+    fail-safe paths are exercised, because a refresh that did not complete and
+    a history that could not be read must never look like an answer.
+    """
+
     def __init__(self, name, hashes=(), broken=False, arr_type="sonarr",
-                 identified=True):
+                 identified=True, grabbed=(), refresh_ok=True,
+                 refresh_why=None, history_raises=False, queue_raises_after=0,
+                 history_raises_on=()):
         self.name = name
         self.type = arr_type
         self.meta = ARR_TYPES[arr_type]
@@ -230,16 +262,47 @@ class FakeArr:
         # False makes every record an *arr "unknown" item: visible in the
         # queue, no media record behind it.
         self.identified = identified
+        self.grabbed = {h.lower() for h in grabbed}
+        self.refresh_ok = refresh_ok
+        self.refresh_why = refresh_why or f"{name}'s refresh did not finish"
+        self.history_raises = history_raises
+        # 1-based call numbers that should raise. Lets a test fail exactly one
+        # of the two history reads, which is the only way to catch a mutant
+        # that swallows the first and carries on.
+        self.history_raises_on = set(history_raises_on)
+        self.history_reads = 0
+        self.queue_raises_after = queue_raises_after
+        self.queue_reads = 0
+        self.refreshes = 0
 
     def queue_by_hash(self):
+        self.queue_reads += 1
         if self.broken:
             raise requests.RequestException("connection refused")
+        if (self.queue_raises_after
+                and self.queue_reads > self.queue_raises_after):
+            raise requests.RequestException("connection reset")
         rec = {"id": 1, "title": f"{self.name} item"}
         if self.identified:
             # The media id a real claim carries. Without it the *arr is merely
             # reporting a download it has no record for, which is not a claim.
             rec[ARR_TYPES[self.type]["search"][2]] = 1
         return {h: dict(rec, downloadId=h) for h in self.hashes}
+
+    def grab_events(self, download_id, after_id=None, pages=4):
+        self.history_reads += 1
+        if self.history_raises or self.history_reads in self.history_raises_on:
+            raise requests.RequestException("history unavailable")
+        if (download_id or "").lower() in self.grabbed:
+            return [{"id": 41, "downloadId": download_id.upper(),
+                     "eventType": "grabbed"}]
+        return []
+
+    def refresh_monitored_downloads(self, timeout=90, poll=0.25):
+        self.refreshes += 1
+        if self.refresh_ok:
+            return True, f"{self.name} refreshed"
+        return False, self.refresh_why
 
     def has_remediation_identity(self, record):
         """Delegates to the production predicate rather than copying it.
@@ -254,6 +317,15 @@ class FakeArr:
 
     def grab_indexer(self, download_id):
         return None
+
+
+B = "b" * 40
+
+
+def downloading2(state="downloading", category="tv"):
+    """A second distinct torrent, for tests about more than one candidate."""
+    return dict(downloading(state, category), hash=B,
+                name="South Park S29E02 1080p WEB H264 MeGusta")
 
 
 def downloading(state="downloading", category="tv"):
@@ -328,78 +400,79 @@ class TestPathTwoTheFirstPassRace(ScanCase):
     """Nothing was ever established. qBittorrent has the torrent, Sonarr's
     queue has not published it yet.
 
-    STILL OPEN. The OWNED veto does not reach this and was not meant to: the
-    state is UNTRACKED, there is no durable record, and a rule phrased as
-    "respect the stored owner" has nothing to respect. These tests pin the
-    current behaviour so the gap stays visible rather than being mistaken for
-    something the ownership fix covered.
+    FIXED. The torrent is written down as PROVISIONAL before anything is
+    decided about it, and the fallback is refused until a synchronisation run
+    for that very attempt finds every *arr reachable, every refresh completed,
+    and neither a claim nor a grab event anywhere.
+
+    The window is real and was measured: a grabbed torrent reaches qBittorrent
+    2.9-33.3 ms before its *arr's own grab history names it, and about 5.1 s
+    before the *arr's queue publishes it. Against a 20-second poll that is
+    roughly one grab in four landing inside the queue gap.
     """
 
-    def test_a_torrent_sonarr_has_not_yet_published_reaches_the_delete(self):
-        actions = self.scan([downloading()], [FakeArr("Sonarr")])
+    def test_a_torrent_sonarr_has_not_yet_published_is_not_deleted(self):
+        """The queue gap. Sonarr grabbed it and its history says so; the queue
+        has not caught up. That is enough to refuse."""
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", grabbed=[A])])
+        self.assertEqual(actions, [])
+        rec = ownership.records()[A]
+        self.assertEqual(rec.get("state"), ownership.PROVISIONAL)
+        self.assertEqual(rec.get("candidate_owner"), "Sonarr")
 
-        self.assertEqual(len(actions), 1)
-        self.assertEqual(actions[0]["decision"], "qbit_delete")
-        self.assertEqual(ownership.records().get(A), None)
+    def test_the_uncertainty_is_written_down_before_anything_is_decided(self):
+        """The property that survives a crash. Even with no grab history and
+        nothing to find, the torrent is recorded before the destructive
+        decision, so a Protectarr that dies mid-pass restarts protected rather
+        than with no memory of it at all."""
+        self.scan([downloading()], [FakeArr("Sonarr", broken=True)])
+        self.assertEqual(ownership.records()[A].get("state"),
+                         ownership.PROVISIONAL)
+
+    def test_the_grab_history_window_is_closed_too(self):
+        """The narrower race: qBittorrent has the torrent and even the grab
+        history has not appeared. Nothing positive exists anywhere, so the
+        refusal cannot come from evidence - it comes from the fallback needing
+        clearance that this attempt did not get, because Sonarr never refreshed
+        successfully."""
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", refresh_ok=False)])
+        self.assertEqual(actions, [])
 
     def test_nothing_in_the_decision_consults_how_old_the_torrent_is(self):
-        """`added_on` is the field that would separate "nobody owns this" from
-        "nobody owns this yet". qBittorrent reports it; Protectarr never reads
-        it, so a torrent added one second ago and one added last week are the
-        same input."""
-        fresh = dict(downloading(), added_on=2_000_000_000)
-        old = dict(downloading(), added_on=1)
-        self.assertEqual(
-            self.scan([fresh], [FakeArr("Sonarr")])[0]["decision"],
-            self.scan([old], [FakeArr("Sonarr")])[0]["decision"])
+        """`added_on` is still never read. The fix is evidence-based, not a
+        timer, so a torrent added one second ago and one added last week get
+        the same treatment - both synchronise, both are judged on the answer."""
+        for added in (2_000_000_000, 1):
+            clear_store()
+            arr = FakeArr("Sonarr")
+            actions = self.scan([dict(downloading(), added_on=added)], [arr])
+            self.assertEqual(actions[0]["decision"], "qbit_delete")
+            self.assertEqual(arr.refreshes, 1)
 
-    def test_the_very_next_pass_would_have_established_sonarr_as_the_owner(self):
-        """The cost of the race, made explicit.
+    def test_winning_and_losing_the_race_now_reach_the_same_answer(self):
+        """The comparison that used to show two incompatible outcomes.
 
-        Identical inputs both times. The only difference is that Sonarr's queue
-        has published the item by the second pass - which is the normal outcome,
-        because `RefreshMonitoredDownloads` runs on its own timer and the grab
-        precedes it. One scan earlier and Protectarr deletes the files and
-        never tells Sonarr; one scan later and Sonarr is handed the release
-        back, blocklists it, and searches for a replacement.
-
-        Two passes of the same torrent, two incompatible answers, and which one
-        an operator gets is decided by where a 20-second poll happens to land.
+        Before: a scan landing in the window deleted the files and never told
+        Sonarr; one scan later it handed the release back. Now both refuse,
+        because both find Sonarr's grab history.
         """
-        raced = self.scan([downloading()], [FakeArr("Sonarr")])
-        self.assertEqual(raced[0]["decision"], "qbit_delete")
-        self.assertIsNone(raced[0]["arr"])
+        raced = self.scan([downloading()], [FakeArr("Sonarr", grabbed=[A])])
+        self.assertEqual(raced, [])
 
-        ownership._store.reset()
-        lucky = self.scan([downloading()], [FakeArr("Sonarr", [A])])
+        clear_store()
+        lucky = self.scan([downloading()],
+                          [FakeArr("Sonarr", [A], grabbed=[A])])
         self.assertEqual(lucky[0]["decision"], "arr_fail")
         self.assertEqual(lucky[0]["arr"], "Sonarr")
 
-    def test_losing_the_race_is_unrecoverable_where_winning_it_is_not(self):
-        """Why this is worth more than the difference between two code paths.
-
-        `arr_fail` hands the release back: Sonarr blocklists it and searches
-        again, so the episode still arrives. `qbit_delete` removes the files
-        with no blocklist and no requeue, so Sonarr sits waiting for an import
-        that is never coming, and the release it already rejected stays
-        eligible for the next automatic search.
-        """
-        raced = self.scan([downloading()], [FakeArr("Sonarr")])
-        self.assertEqual(raced[0]["decision"], "qbit_delete")
-
-        ownership._store.reset()
-        lucky = self.scan([downloading()], [FakeArr("Sonarr", [A])])
-        self.assertIsNotNone(lucky[0]["_owner"],
-                             "the *arr-aware path carries the queue record "
-                             "that makes a blocklist and requeue possible")
-
-    def test_a_torrent_deleted_by_the_race_leaves_no_ownership_record(self):
-        """There is nothing for a later pass to learn from, either. The fix for
-        the carried-forward OWNED state cannot help here even in principle,
-        because this torrent never reaches a state worth persisting -
-        `_persist` skips UNTRACKED as "nothing worth remembering yet"."""
-        self.scan([downloading()], [FakeArr("Sonarr")])
-        self.assertEqual(ownership.records(), {})
+    def test_a_live_claim_appearing_during_sync_upgrades_to_owned(self):
+        """The queue caught up between the scan and the synchronisation. The
+        *arr-aware path is available again, so it is used."""
+        actions = self.scan([downloading()], [FakeArr("Sonarr", [A])])
+        self.assertEqual(actions[0]["decision"], "arr_fail")
+        self.assertEqual(ownership.records()[A].get("state"), ownership.OWNED)
 
 
 class TestPathThreeAnArrRemovedFromTheConfig(ScanCase):
@@ -432,7 +505,7 @@ class TestPathThreeAnArrRemovedFromTheConfig(ScanCase):
         down = self.scan([downloading()], [FakeArr("Sonarr", broken=True)])
         self.assertEqual(down, [])
 
-        ownership._store.reset()
+        clear_store()
         self.scan([downloading()], [FakeArr("Sonarr", [A])])
         gone = self.scan([downloading()], [])
         self.assertEqual(gone, [])
@@ -461,10 +534,16 @@ class TestTheBoundariesAFixMustNotMove(ScanCase):
     def test_a_genuinely_unowned_allowlisted_torrent_is_still_reaped(self):
         """The feature this whole mode exists for. A fix that protects stored
         owners must leave this alone."""
-        actions = self.scan([downloading(category="tv")], [FakeArr("Sonarr")],
+        arr = FakeArr("Sonarr")
+        actions = self.scan([downloading(category="tv")], [arr],
                             mode="allowlist")
         self.assertEqual(actions[0]["decision"], "qbit_delete")
-        self.assertEqual(ownership.records().get(A), None)
+        self.assertEqual(arr.refreshes, 1,
+                         "the clearance must come from a real refresh")
+        # The record stays PROVISIONAL. Nothing about the negative answer is
+        # persisted, so the next attempt has to ask again.
+        self.assertEqual(ownership.records()[A].get("state"),
+                         ownership.PROVISIONAL)
 
     def test_an_unallowlisted_category_is_untouched_in_either(self):
         actions = self.scan([downloading(category="software")],
@@ -501,8 +580,13 @@ class TestTheBoundariesAFixMustNotMove(ScanCase):
         """Stated so a fix cannot quietly take it out. This is path two's
         outcome and it is also the legitimate behaviour of the mode; the two are
         the same cell of the table, which is the hard part of the fix."""
-        self.assertEqual(judge("either", UNTRACKED).action, "qbit_delete")
-        self.assertEqual(judge("allowlist", UNTRACKED).action, "qbit_delete")
+        for state in (UNTRACKED, PROVISIONAL):
+            for mode in ("either", "allowlist"):
+                self.assertIsNone(judge(mode, state).action,
+                                  "not deletable without synchronisation")
+                self.assertEqual(
+                    judge(mode, state, cleared=True).action, "qbit_delete",
+                    "and deletable with it")
 
 
 class TestTheInvariant(unittest.TestCase):
@@ -563,8 +647,10 @@ class TestAQueueEntryIsNotAutomaticallyAClaim(ScanCase):
     def test_an_unknown_queue_item_is_not_a_claim(self):
         actions = self.scan([downloading()],
                             [FakeArr("Sonarr", [A], identified=False)])
-        self.assertEqual(ownership.records().get(A), None,
+        self.assertEqual(ownership.records()[A].get("state"),
+                         ownership.PROVISIONAL,
                          "an unknown item must not establish ownership")
+        self.assertIsNone(ownership.records()[A].get("owner"))
         self.assertEqual(actions[0]["decision"], "qbit_delete")
         self.assertIsNone(actions[0]["arr"])
 
@@ -624,7 +710,7 @@ class TestAQueueEntryIsNotAutomaticallyAClaim(ScanCase):
     def test_an_unknown_item_never_reaches_the_arr_aware_path(self):
         """Across every mode, so no mode can route it to `arr_fail`."""
         for mode in ("arr_tracked", "both", "allowlist", "either"):
-            ownership._store.reset()
+            clear_store()
             actions = self.scan([downloading()],
                                 [FakeArr("Sonarr", [A], identified=False)],
                                 mode=mode)
@@ -685,3 +771,352 @@ class TestLegacyOwnershipRecords(ScanCase):
         rec = ownership.records()[A]
         self.assertEqual(rec.get("state"), ownership.OWNED)
         self.assertEqual(rec.get("owner"), "Sonarr")
+
+
+class TestSynchronisationFailsSafe(ScanCase):
+    """Every way the evidence can fail to arrive, and the same answer to all.
+
+    An answer we could not obtain is not an answer. Zero rows is not a failed
+    request, a refresh that timed out is not a refresh that completed, and a
+    queue that could not be read is not an empty queue.
+    """
+
+    def unreachable(self, **kw):
+        return self.scan([downloading()], [FakeArr("Sonarr", **kw)])
+
+    def test_an_unreachable_arr_leaves_it_protected(self):
+        self.assertEqual(self.unreachable(broken=True), [])
+
+    def test_a_refresh_that_fails_leaves_it_protected(self):
+        self.assertEqual(self.unreachable(refresh_ok=False), [])
+
+    def test_a_refresh_that_times_out_leaves_it_protected(self):
+        self.assertEqual(
+            self.unreachable(refresh_ok=False,
+                             refresh_why="did not finish within 90s"), [])
+
+    def test_a_history_read_that_fails_leaves_it_protected(self):
+        self.assertEqual(self.unreachable(history_raises=True), [])
+
+    def test_a_single_failed_history_read_is_enough(self):
+        """The *arr refreshed and then stopped answering. Treating that empty
+        result as "no grab history" would clear the torrent for deletion, which
+        is a mutant the harness specifically hunts."""
+        self.assertEqual(self.unreachable(history_raises_on=(1,)), [])
+
+    def test_the_second_candidate_gets_its_own_failure(self):
+        """A shared refresh barrier must not carry a shared verdict. The first
+        candidate's history read succeeded; the second one's fails, and only
+        the second is affected."""
+        arr = FakeArr("Sonarr", history_raises_on=(2,))
+        actions = self.scan([downloading(), downloading2()], [arr],
+                            mode="allowlist")
+        decisions = {a["hash"]: a["decision"] for a in actions}
+        self.assertEqual(decisions.get(A), "qbit_delete",
+                         "the first candidate was fully evaluated")
+        self.assertNotIn(B, decisions,
+                         "the second candidate's own read failed, so it stays "
+                         "protected")
+        self.assertEqual(arr.refreshes, 1, "one barrier, not two")
+
+    def test_a_queue_reread_that_fails_after_a_good_refresh_protects_it(self):
+        """The subtle one. The first queue read succeeded, the refresh
+        completed, and then the post-refresh read failed. An empty result would
+        have cleared the torrent for deletion."""
+        self.assertEqual(self.unreachable(queue_raises_after=1), [])
+
+    def test_one_failing_arr_among_several_is_enough(self):
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr"),
+                             FakeArr("Radarr", arr_type="radarr",
+                                     refresh_ok=False)])
+        self.assertEqual(actions, [])
+
+    def test_every_failure_leaves_the_record_provisional(self):
+        """None of them may write a negative. The store must still say "not
+        established", so the next attempt synchronises again."""
+        for kw in ({"broken": True}, {"refresh_ok": False},
+                   {"history_raises": True}, {"queue_raises_after": 1}):
+            clear_store()
+            self.scan([downloading()], [FakeArr("Sonarr", **kw)])
+            self.assertEqual(ownership.records()[A].get("state"),
+                             ownership.PROVISIONAL, repr(kw))
+
+
+class TestNegativeEvidenceIsNeverDurable(ScanCase):
+    """A clearance authorises one attempt and then expires."""
+
+    def test_a_clearance_is_not_written_to_the_store(self):
+        arr = FakeArr("Sonarr")
+        self.scan([downloading()], [arr], mode="allowlist")
+        rec = ownership.records()[A]
+        self.assertEqual(rec.get("state"), ownership.PROVISIONAL)
+        for key in rec:
+            self.assertNotIn("clear", key.lower())
+            self.assertNotIn("sync", key.lower())
+            self.assertNotIn("unowned", key.lower())
+
+    def test_the_next_attempt_synchronises_again(self):
+        """Yesterday's negative answer must not authorise today's delete. The
+        *arr could have grabbed the torrent in between."""
+        arr = FakeArr("Sonarr")
+        self.scan([downloading()], [arr], mode="allowlist")
+        self.assertEqual(arr.refreshes, 1)
+        self.scan([downloading()], [arr], mode="allowlist")
+        self.assertEqual(arr.refreshes, 2, "the second attempt must re-ask")
+
+    def test_an_arr_that_grabbed_it_since_now_protects_it(self):
+        """The reason a clearance cannot be durable, made concrete."""
+        first = FakeArr("Sonarr")
+        self.assertEqual(
+            self.scan([downloading()], [first], mode="allowlist")[0]["decision"],
+            "qbit_delete")
+        second = FakeArr("Sonarr", grabbed=[A])
+        self.assertEqual(self.scan([downloading()], [second],
+                                   mode="allowlist"), [])
+
+    def test_a_preview_never_synchronises(self):
+        """A page render must not force five applications to refresh, and a
+        preview that triggered the thing it claims to observe would be lying.
+
+        It still reports the finding, though. Observational must not mean
+        blind: the row says what was found and marks that a real scan would ask
+        every application before acting, rather than promising a deletion whose
+        authorisation nobody has sought.
+        """
+        arr = FakeArr("Sonarr")
+        actions = self.scan([downloading()], [arr], side_effects=False)
+        self.assertEqual(arr.refreshes, 0, "a preview must not refresh")
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["decision"], "warn")
+        self.assertTrue(actions[0]["pending_ownership_sync"])
+
+    def test_a_preview_never_reports_a_deletion_it_cannot_authorise(self):
+        """The half that matters: whatever a preview shows, it is never
+        `qbit_delete`, because the answer that would authorise one has not been
+        asked for."""
+        for mode in ("arr_tracked", "both", "allowlist", "either"):
+            clear_store()
+            actions = self.scan([downloading()], [FakeArr("Sonarr")],
+                                mode=mode, side_effects=False)
+            for row in actions:
+                self.assertNotEqual(row.get("decision"), "qbit_delete", mode)
+
+
+class TestCandidateOwnerDurability(ScanCase):
+    """Positive evidence survives; its absence later is not a retraction."""
+
+    def test_a_candidate_owner_is_persisted(self):
+        self.scan([downloading()], [FakeArr("Sonarr", grabbed=[A])])
+        rec = ownership.records()[A]
+        self.assertEqual(rec.get("candidate_owner"), "Sonarr")
+        self.assertEqual(rec.get("candidate_owner_type"), "sonarr")
+        self.assertEqual(rec.get("candidate_evidence"), "grab_history")
+        self.assertEqual(rec.get("grab_event_id"), 41)
+
+    def test_it_survives_a_restart(self):
+        """The store is the only thing that crosses a process boundary."""
+        self.scan([downloading()], [FakeArr("Sonarr", grabbed=[A])])
+        ownership._store.reset()        # a fresh process, same file
+        actions = self.scan([downloading()], [FakeArr("Sonarr")])
+        self.assertEqual(actions, [])
+        self.assertEqual(ownership.records()[A].get("candidate_owner"),
+                         "Sonarr")
+
+    def test_later_history_absence_does_not_erase_it(self):
+        """Deleting a series cascade-deletes its history while the torrent
+        keeps downloading - measured on both apps - so a missing row is not a
+        retraction of one we already saw."""
+        self.scan([downloading()], [FakeArr("Sonarr", grabbed=[A])])
+        actions = self.scan([downloading()], [FakeArr("Sonarr")])
+        self.assertEqual(actions, [], "still protected")
+        self.assertEqual(ownership.records()[A].get("candidate_owner"),
+                         "Sonarr")
+
+    def test_a_live_claim_upgrades_it_to_owned(self):
+        """And the candidate stops mattering, because operational ownership is
+        now established and remediation can actually run."""
+        self.scan([downloading()], [FakeArr("Sonarr", grabbed=[A])])
+        actions = self.scan([downloading()],
+                            [FakeArr("Sonarr", [A], grabbed=[A])])
+        self.assertEqual(actions[0]["decision"], "arr_fail")
+        self.assertEqual(ownership.records()[A].get("state"), ownership.OWNED)
+
+    def test_a_candidate_owner_blocks_fallback_even_when_cleared(self):
+        """Positive evidence outranks a clearance. A synchronisation that found
+        a grab event does not return cleared in the first place, but the table
+        must refuse it independently."""
+        self.assertIsNone(judge("either", PROVISIONAL_GRABBED).action)
+
+
+class TestSynchronisationConflicts(ScanCase):
+    """Two applications, one torrent. Never resolved by picking one."""
+
+    def test_two_live_claims_are_a_conflict(self):
+        actions = self.scan(
+            [downloading()],
+            [FakeArr("Sonarr", [A]),
+             FakeArr("Radarr", [A], arr_type="radarr")])
+        self.assertEqual(actions, [])
+        self.assertEqual(ownership.records()[A].get("state"),
+                         ownership.CONFLICTED)
+
+    def test_two_grab_histories_are_a_conflict(self):
+        """Neither claims it now, but both say they asked for it. Deleting it
+        would be choosing between them."""
+        result = ownership.synchronise(
+            [FakeArr("Sonarr", grabbed=[A]),
+             FakeArr("Radarr", grabbed=[A], arr_type="radarr")], A)
+        self.assertFalse(result.cleared)
+        self.assertEqual(result.own.state, ownership.CONFLICTED)
+        self.assertIn("Radarr", result.why)
+        self.assertIn("Sonarr", result.why)
+
+    def test_a_claim_disagreeing_with_a_grab_history_is_a_conflict(self):
+        """Radarr is claiming a torrent Sonarr's history says Sonarr grabbed."""
+        self.scan([downloading()], [FakeArr("Sonarr", grabbed=[A])])
+        self.scan([downloading()],
+                  [FakeArr("Radarr", [A], arr_type="radarr")])
+        self.assertEqual(ownership.records()[A].get("state"),
+                         ownership.CONFLICTED)
+
+    def test_a_conflict_is_never_cleared_for_deletion(self):
+        for own in (ownership.Ownership(ownership.CONFLICTED, None, None, None,
+                                        None, "two claims"),):
+            for mode in ("allowlist", "either"):
+                self.assertIsNone(judge(mode, own, cleared=True).action)
+
+
+class TestTheScanLocalRefreshBarrier(ScanCase):
+    """One completed refresh per *arr per scan, and nothing else shared.
+
+    A `RefreshMonitoredDownloads` makes an *arr re-read its download client, so
+    one completed refresh establishes a current view of the whole population
+    this scan is judging - and that population is fixed, because `core.scan`
+    fetches qBittorrent's torrent list once and both detection lanes work from
+    that single snapshot.
+
+    What is emphatically not shared is any verdict. Every candidate reads every
+    queue and every exact-hash history for itself, after the barrier, so
+    evidence that arrives mid-scan is still found.
+    """
+
+    def many(self, n):
+        return [dict(downloading(), hash=f"{i:040x}",
+                     name=f"Release.{i}") for i in range(n)]
+
+    def arrs(self, m, **kw):
+        types = ("sonarr", "radarr", "lidarr", "readarr", "whisparr")
+        return [FakeArr(f"App{i}", arr_type=types[i % len(types)], **kw)
+                for i in range(m)]
+
+    def test_ten_candidates_across_five_arrs_cost_five_refreshes(self):
+        """The whole point of the change. Per torrent it was fifty."""
+        clients = self.arrs(5)
+        actions = self.scan(self.many(10), clients, mode="allowlist")
+        self.assertEqual(len(actions), 10, "all ten were still judged")
+        self.assertEqual([c.refreshes for c in clients], [1] * 5)
+
+    def test_every_candidate_still_reads_every_queue_and_history(self):
+        """The barrier shares a refresh, not an answer."""
+        clients = self.arrs(3)
+        self.scan(self.many(4), clients, mode="allowlist")
+        for c in clients:
+            self.assertEqual(c.refreshes, 1)
+            self.assertEqual(c.queue_reads, 5,
+                             "one collect() pass plus one per candidate")
+            self.assertEqual(c.history_reads, 4, "one per candidate")
+
+    def test_grab_history_appearing_mid_scan_protects_the_later_candidate(self):
+        """Candidate 1 is cleared, then the *arr's history gains a row for
+        candidate 2. The shared barrier must not carry candidate 1's negative
+        answer over to it."""
+        class LateGrab(FakeArr):
+            def grab_events(self, download_id, after_id=None, pages=4):
+                # The row appears only once the first candidate is done with.
+                if self.history_reads >= 1:
+                    self.grabbed.add(B.lower())
+                return super().grab_events(download_id, after_id, pages)
+
+        arr = LateGrab("Sonarr")
+        actions = self.scan([downloading(), downloading2()], [arr],
+                            mode="allowlist")
+        decisions = {a["hash"]: a["decision"] for a in actions}
+        self.assertEqual(decisions.get(A), "qbit_delete")
+        self.assertNotIn(B, decisions, "the late grab row protected it")
+        self.assertEqual(arr.refreshes, 1)
+
+    def test_a_live_claim_appearing_mid_scan_is_also_detected(self):
+        """The same, through the queue rather than history."""
+        class LateClaim(FakeArr):
+            def queue_by_hash(self):
+                out = super().queue_by_hash()
+                if self.queue_reads >= 3:
+                    rec = {"id": 7, "title": "late",
+                           ARR_TYPES[self.type]["search"][2]: 9,
+                           "downloadId": B}
+                    out[B] = rec
+                return out
+
+        arr = LateClaim("Sonarr")
+        actions = self.scan([downloading(), downloading2()], [arr],
+                            mode="allowlist")
+        decisions = {a["hash"]: a["decision"] for a in actions}
+        self.assertEqual(decisions.get(A), "qbit_delete")
+        self.assertEqual(decisions.get(B), "arr_fail",
+                         "a claim that arrived after the barrier still wins")
+
+    def test_one_failed_refresh_blocks_every_candidate_in_that_scan(self):
+        clients = [FakeArr("Sonarr"),
+                   FakeArr("Radarr", arr_type="radarr", refresh_ok=False)]
+        actions = self.scan(self.many(6), clients, mode="allowlist")
+        self.assertEqual(actions, [])
+
+    def test_a_failed_barrier_is_not_retried_per_torrent(self):
+        """Ten candidates against a broken *arr must not become ten commands."""
+        bad = FakeArr("Radarr", arr_type="radarr", refresh_ok=False)
+        self.scan(self.many(10), [FakeArr("Sonarr"), bad], mode="allowlist")
+        self.assertEqual(bad.refreshes, 1)
+
+    def test_the_next_scan_refreshes_again(self):
+        """Nothing about synchronisation survives the scan."""
+        arr = FakeArr("Sonarr")
+        self.scan([downloading()], [arr], mode="allowlist")
+        self.assertEqual(arr.refreshes, 1)
+        self.scan([downloading()], [arr], mode="allowlist")
+        self.assertEqual(arr.refreshes, 2)
+
+    def test_a_failed_barrier_is_not_cached_across_scans_either(self):
+        """The next scan gets a clean attempt, not yesterday's failure."""
+        arr = FakeArr("Sonarr", refresh_ok=False)
+        self.assertEqual(self.scan([downloading()], [arr], mode="allowlist"), [])
+        arr.refresh_ok = True
+        actions = self.scan([downloading()], [arr], mode="allowlist")
+        self.assertEqual(actions[0]["decision"], "qbit_delete")
+        self.assertEqual(arr.refreshes, 2)
+
+    def test_no_synchronisation_state_reaches_the_store(self):
+        clients = self.arrs(3)
+        self.scan(self.many(3), clients, mode="allowlist")
+        for rec in ownership.records().values():
+            self.assertEqual(rec.get("state"), ownership.PROVISIONAL)
+            for key in rec:
+                for banned in ("refresh", "barrier", "sync", "clear",
+                               "unowned"):
+                    self.assertNotIn(banned, key.lower(), rec)
+
+    def test_nothing_refreshes_when_no_candidate_reaches_the_boundary(self):
+        """Most scans never have one. The barrier must cost nothing then."""
+        clients = self.arrs(4)
+        self.scan(self.many(5), clients, mode="arr_tracked")
+        self.assertEqual([c.refreshes for c in clients], [0] * 4)
+
+    def test_a_candidate_owner_still_outranks_a_successful_barrier(self):
+        """Durable positive evidence is stronger than this scan refreshing."""
+        self.scan([downloading()], [FakeArr("Sonarr", grabbed=[A])],
+                  mode="allowlist")
+        arr = FakeArr("Sonarr")
+        actions = self.scan([downloading()], [arr], mode="allowlist")
+        self.assertEqual(actions, [])
+        self.assertEqual(ownership.records()[A].get("candidate_owner"),
+                         "Sonarr")

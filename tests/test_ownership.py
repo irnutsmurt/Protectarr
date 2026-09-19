@@ -72,9 +72,13 @@ class OwnershipCase(unittest.TestCase):
 
 
 class TestBasicStates(OwnershipCase):
-    def test_a_torrent_no_arr_has_ever_claimed_is_untracked(self):
+    def test_a_torrent_no_arr_has_ever_claimed_is_provisional(self):
+        """Not "untracked". Nothing claims it and nothing remembers it, which
+        is the state of not having found out yet rather than a finding that
+        nobody owns it - and it is written down so the not-knowing survives a
+        restart."""
         got = self.pass_([FakeArr("Sonarr")])
-        self.assertEqual(got[A].state, ownership.UNTRACKED)
+        self.assertEqual(got[A].state, ownership.PROVISIONAL)
 
     def test_one_claim_is_ownership(self):
         got = self.pass_([FakeArr("Sonarr", [A])])
@@ -99,7 +103,7 @@ class TestBasicStates(OwnershipCase):
     def test_ownership_of_another_torrent_is_unaffected(self):
         got = self.pass_([FakeArr("Sonarr", [A])], acquiring=(A, B))
         self.assertEqual(got[A].state, ownership.OWNED)
-        self.assertEqual(got[B].state, ownership.UNTRACKED)
+        self.assertEqual(got[B].state, ownership.PROVISIONAL)
 
 
 class TestOrphanDwell(OwnershipCase):
@@ -253,8 +257,9 @@ class TestDurability(OwnershipCase):
                         []):
             ownership._store.reset()
             got = self.pass_(clients)
-            self.assertNotEqual(got[A].state, ownership.UNTRACKED,
-                                f"untracked after a pass with {clients!r}")
+            self.assertNotIn(got[A].state,
+                             (ownership.UNTRACKED, ownership.PROVISIONAL),
+                             f"forgotten after a pass with {clients!r}")
 
 
 class TestScanFeedsOwnershipCorrectly(OwnershipCase):

@@ -16,24 +16,20 @@ survived during the 0.7.0 work. This one is an external fact: it was read off
 the running code before the refactor, and from here on it only changes when a
 human decides behaviour should change.
 
-Note two things the table shows that are easy to miss in the source:
+Note what the tables show that is easy to miss in the source:
 
-  * ownership alters the outcome for exactly the three states that carry
-    evidence about an owner: `conflicted` (never actionable), an orphan inside
-    its dwell (never actionable), and `owned` (never deleted *directly*).
-    `none`, `untracked` and `orphan_dwelled` fall straight through to the mode
-    dispatch.
+  * ownership alters the outcome for exactly the states that carry evidence
+    about an owner: `conflicted` (never actionable), an orphan inside its
+    dwell (never actionable), `owned` (never deleted *directly*), and
+    `provisional_grabbed` (an exact grab-history owner, likewise).
   * an unrecognised mode is a refusal, not a default. `bogus` is all dashes.
+  * direct deletion needs a fresh synchronisation. That is the difference
+    between the two tables, and it is an argument rather than a stored fact,
+    so it cannot be a column of the ownership record.
 
-The `owned` row changed in the 0.9.x ownership safety fix. It used to read `Q`
-in the `allowlist`/`either` direct-delete cell, alongside `none` and
-`untracked`, and a test here asserted that as a rule. It was wrong, and
-reachable: `arr_hit` is built only from queues read *this* pass, so a torrent
-whose stored record names Sonarr arrives here with `arr_hit` empty whenever the
-user paused it, its owner was unreachable, or its owner was deleted from the
-config. Protectarr deleted those from qBittorrent, files and all, and logged
-"no *arr owned it". The two cells below were re-derived from the fixed code and
-checked to be the only ones that moved.
+The `owned` row changed in the 0.9.1 ownership safety fix, and `untracked`,
+`provisional` and the second table arrived with the 0.9.3 first-pass race fix.
+Both tables were re-derived from the fixed code and checked cell by cell.
 """
 
 import unittest
@@ -53,45 +49,113 @@ COLUMNS = [
 
 # `-` leave it alone, `A` hand back to the owning *arr, `Q` delete from
 # qBittorrent directly. Rows are (mode, ownership state).
-#
 #                        hit=F                    hit=T
 #                   allow=F    allow=T       allow=F    allow=T
 #                  known F T   known F T    known F T   known F T
+#
+# Direct deletion is refused until a synchronisation run for THIS attempt has
+# established that every application was reachable, every refresh completed,
+# and neither a live claim nor a retained grab event names the hash. This is
+# the table for an attempt that has NOT been cleared, which is the default and
+# the state every attempt starts in.
 TABLE = """
-arr_tracked    none              - -  - -    A A  A A
-arr_tracked    untracked         - -  - -    A A  A A
-arr_tracked    owned             - -  - -    A A  A A
-arr_tracked    orphan_fresh      - -  - -    - -  - -
-arr_tracked    orphan_dwelled    - -  - -    A A  A A
-arr_tracked    conflicted        - -  - -    - -  - -
+arr_tracked    none                 - -  - -    A A  A A
+arr_tracked    untracked            - -  - -    A A  A A
+arr_tracked    provisional          - -  - -    A A  A A
+arr_tracked    provisional_grabbed  - -  - -    A A  A A
+arr_tracked    owned                - -  - -    A A  A A
+arr_tracked    orphan_fresh         - -  - -    - -  - -
+arr_tracked    orphan_dwelled       - -  - -    A A  A A
+arr_tracked    conflicted           - -  - -    - -  - -
 
-both           none              - -  - -    - -  A A
-both           untracked         - -  - -    - -  A A
-both           owned             - -  - -    - -  A A
-both           orphan_fresh      - -  - -    - -  - -
-both           orphan_dwelled    - -  - -    - -  A A
-both           conflicted        - -  - -    - -  - -
+both           none                 - -  - -    - -  A A
+both           untracked            - -  - -    - -  A A
+both           provisional          - -  - -    - -  A A
+both           provisional_grabbed  - -  - -    - -  A A
+both           owned                - -  - -    - -  A A
+both           orphan_fresh         - -  - -    - -  - -
+both           orphan_dwelled       - -  - -    - -  A A
+both           conflicted           - -  - -    - -  - -
 
-allowlist      none              - -  - Q    - -  A A
-allowlist      untracked         - -  - Q    - -  A A
-allowlist      owned             - -  - -    - -  A A
-allowlist      orphan_fresh      - -  - -    - -  - -
-allowlist      orphan_dwelled    - -  - Q    - -  A A
-allowlist      conflicted        - -  - -    - -  - -
+allowlist      none                 - -  - -    - -  A A
+allowlist      untracked            - -  - -    - -  A A
+allowlist      provisional          - -  - -    - -  A A
+allowlist      provisional_grabbed  - -  - -    - -  A A
+allowlist      owned                - -  - -    - -  A A
+allowlist      orphan_fresh         - -  - -    - -  - -
+allowlist      orphan_dwelled       - -  - Q    - -  A A
+allowlist      conflicted           - -  - -    - -  - -
 
-either         none              - -  - Q    A A  A A
-either         untracked         - -  - Q    A A  A A
-either         owned             - -  - -    A A  A A
-either         orphan_fresh      - -  - -    - -  - -
-either         orphan_dwelled    - -  - Q    A A  A A
-either         conflicted        - -  - -    - -  - -
+either         none                 - -  - -    A A  A A
+either         untracked            - -  - -    A A  A A
+either         provisional          - -  - -    A A  A A
+either         provisional_grabbed  - -  - -    A A  A A
+either         owned                - -  - -    A A  A A
+either         orphan_fresh         - -  - -    - -  - -
+either         orphan_dwelled       - -  - Q    A A  A A
+either         conflicted           - -  - -    - -  - -
 
-bogus          none              - -  - -    - -  - -
-bogus          untracked         - -  - -    - -  - -
-bogus          owned             - -  - -    - -  - -
-bogus          orphan_fresh      - -  - -    - -  - -
-bogus          orphan_dwelled    - -  - -    - -  - -
-bogus          conflicted        - -  - -    - -  - -
+bogus          none                 - -  - -    - -  - -
+bogus          untracked            - -  - -    - -  - -
+bogus          provisional          - -  - -    - -  - -
+bogus          provisional_grabbed  - -  - -    - -  - -
+bogus          owned                - -  - -    - -  - -
+bogus          orphan_fresh         - -  - -    - -  - -
+bogus          orphan_dwelled       - -  - -    - -  - -
+bogus          conflicted           - -  - -    - -  - -
+"""
+
+# The same table for an attempt that HAS been cleared. Only three rows move,
+# and the two that do not are the point: a stored owner and an exact
+# grab-history owner both outrank a clearance, because a synchronisation that
+# found no evidence has not disproved evidence we already have. Retained
+# history is deleted when a series or movie is, while the torrent keeps
+# downloading, so absence genuinely is not evidence here.
+CLEARED_TABLE = """
+arr_tracked    none                 - -  - -    A A  A A
+arr_tracked    untracked            - -  - -    A A  A A
+arr_tracked    provisional          - -  - -    A A  A A
+arr_tracked    provisional_grabbed  - -  - -    A A  A A
+arr_tracked    owned                - -  - -    A A  A A
+arr_tracked    orphan_fresh         - -  - -    - -  - -
+arr_tracked    orphan_dwelled       - -  - -    A A  A A
+arr_tracked    conflicted           - -  - -    - -  - -
+
+both           none                 - -  - -    - -  A A
+both           untracked            - -  - -    - -  A A
+both           provisional          - -  - -    - -  A A
+both           provisional_grabbed  - -  - -    - -  A A
+both           owned                - -  - -    - -  A A
+both           orphan_fresh         - -  - -    - -  - -
+both           orphan_dwelled       - -  - -    - -  A A
+both           conflicted           - -  - -    - -  - -
+
+allowlist      none                 - -  - Q    - -  A A
+allowlist      untracked            - -  - Q    - -  A A
+allowlist      provisional          - -  - Q    - -  A A
+allowlist      provisional_grabbed  - -  - -    - -  A A
+allowlist      owned                - -  - -    - -  A A
+allowlist      orphan_fresh         - -  - -    - -  - -
+allowlist      orphan_dwelled       - -  - Q    - -  A A
+allowlist      conflicted           - -  - -    - -  - -
+
+either         none                 - -  - Q    A A  A A
+either         untracked            - -  - Q    A A  A A
+either         provisional          - -  - Q    A A  A A
+either         provisional_grabbed  - -  - -    A A  A A
+either         owned                - -  - -    A A  A A
+either         orphan_fresh         - -  - -    - -  - -
+either         orphan_dwelled       - -  - Q    A A  A A
+either         conflicted           - -  - -    - -  - -
+
+bogus          none                 - -  - -    - -  - -
+bogus          untracked            - -  - -    - -  - -
+bogus          provisional          - -  - -    - -  - -
+bogus          provisional_grabbed  - -  - -    - -  - -
+bogus          owned                - -  - -    - -  - -
+bogus          orphan_fresh         - -  - -    - -  - -
+bogus          orphan_dwelled       - -  - -    - -  - -
+bogus          conflicted           - -  - -    - -  - -
 """
 
 VERDICT = {"-": None, "A": "arr_fail", "Q": "qbit_delete"}
@@ -114,6 +178,14 @@ OWNERSHIPS = {
         "absent 11m"),
     "conflicted": ownership.Ownership(
         ownership.CONFLICTED, None, None, None, None, "two claims"),
+    # Written on first sight, before anything is decided about the torrent.
+    "provisional": ownership.Ownership(
+        ownership.PROVISIONAL, None, None, None, None, "first sight"),
+    # The same state carrying an exact grab-history owner. The difference is
+    # the whole reason positive evidence outranks a clearance.
+    "provisional_grabbed": ownership.Ownership(
+        ownership.PROVISIONAL, "Sonarr", None, None, None,
+        "grabbed by Sonarr according to its history"),
 }
 
 SAFETY = {"allowed_categories": ["tv"], "allowed_tags": [],
@@ -137,16 +209,18 @@ def parse_table(text):
 
 
 EXPECTED = parse_table(TABLE)
+EXPECTED_CLEARED = parse_table(CLEARED_TABLE)
 
 
 class TestTheDecisionTableIsPinned(unittest.TestCase):
     """Every cell, by name, so a refactor cannot quietly move one."""
 
-    def verdict(self, mode, own_key, hit, allowed, known):
+    def verdict(self, mode, own_key, hit, allowed, known, cleared=False):
         safety = dict(SAFETY, mode=mode)
         torrent = {"category": "tv" if allowed else "other", "tags": ""}
         return core.evaluate(torrent, "", TRACKED if hit else None, safety,
-                             known, own=OWNERSHIPS[own_key])
+                             known, own=OWNERSHIPS[own_key],
+                             fallback_cleared=cleared)
 
     def test_every_cell_matches_the_recorded_table(self):
         checked = 0
@@ -159,7 +233,44 @@ class TestTheDecisionTableIsPinned(unittest.TestCase):
                     f"allowlisted={allowed} ownership_known={known}: "
                     f"expected {want!r}, got {got!r}")
                 checked += 1
-        self.assertEqual(checked, 240)
+        self.assertEqual(checked, 320)
+
+    def test_every_cleared_cell_matches_the_recorded_table(self):
+        """The second table: the same inputs with a synchronisation clearance
+        for this attempt. Pinned separately because a clearance is an argument,
+        not a property of the torrent, and must not leak into the first."""
+        checked = 0
+        for (mode, own_key), row in sorted(EXPECTED_CLEARED.items()):
+            for (hit, allowed, known), want in zip(COLUMNS, row):
+                got = self.verdict(mode, own_key, hit, allowed, known,
+                                   cleared=True)
+                self.assertEqual(
+                    got, want,
+                    f"[cleared] mode={mode} ownership={own_key} "
+                    f"arr_tracked={hit} allowlisted={allowed} "
+                    f"ownership_known={known}: expected {want!r}, got {got!r}")
+                checked += 1
+        self.assertEqual(checked, 320)
+
+    def test_a_clearance_only_ever_permits_direct_deletion(self):
+        """It may turn a refusal into `qbit_delete` and nothing else. If a
+        clearance could change an `arr_fail` into something else, or withdraw
+        one, it would be deciding ownership rather than authorising a fallback.
+        """
+        for key in EXPECTED:
+            for plain, cleared in zip(EXPECTED[key], EXPECTED_CLEARED[key]):
+                if plain != cleared:
+                    self.assertIsNone(plain, f"{key}: clearance withdrew {plain!r}")
+                    self.assertEqual(cleared, "qbit_delete", f"{key}")
+
+    def test_without_a_clearance_only_a_dwelled_orphan_is_deletable(self):
+        """Everything else has to synchronise first. The orphan is exempt
+        because its evidence was earned by watching the torrent leave a queue
+        we read, and the dwell already aged it."""
+        for (mode, own), row in EXPECTED.items():
+            if "qbit_delete" in row:
+                self.assertEqual(own, "orphan_dwelled",
+                                 f"{mode}/{own} deletes without synchronising")
 
     def test_the_table_covers_every_mode_the_code_can_take(self):
         """A mode added to `evaluate` without a row here would go unpinned."""
@@ -174,8 +285,12 @@ class TestTheDecisionTableIsPinned(unittest.TestCase):
              ownership.CONFLICTED},
             {"untracked", "owned", "orphaned", "conflicted"},
             "the ownership vocabulary moved; the table below needs revisiting")
-        self.assertEqual(states, {"none", "untracked", "owned", "orphan_fresh",
-                                  "orphan_dwelled", "conflicted"})
+        self.assertEqual(states, {"none", "untracked", "provisional",
+                                  "provisional_grabbed", "owned",
+                                  "orphan_fresh", "orphan_dwelled",
+                                  "conflicted"})
+        self.assertEqual(set(EXPECTED), set(EXPECTED_CLEARED),
+                         "the two tables must cover the same ground")
 
 
 class TestTheInvariantsBehindTheTable(unittest.TestCase):
@@ -200,6 +315,18 @@ class TestTheInvariantsBehindTheTable(unittest.TestCase):
             self.assertEqual(row, [None] * 8,
                              f"mode {mode} acted inside the dwell")
 
+    def test_an_exact_grab_history_owner_is_never_deleted_directly(self):
+        """Positive evidence from the *arr's own history. It outranks a
+        clearance, because a later synchronisation finding no row has not
+        retracted the row we already saw."""
+        for table, label in ((EXPECTED, "uncleared"),
+                             (EXPECTED_CLEARED, "cleared")):
+            for (mode, own), row in table.items():
+                if own == "provisional_grabbed":
+                    self.assertNotIn("qbit_delete", row,
+                                     f"[{label}] {mode} deleted a torrent "
+                                     f"whose grab history names an owner")
+
     def test_ownership_is_invisible_only_where_it_carries_no_evidence(self):
         """No record, never claimed, and an orphan that has served its dwell
         are the same input as far as the mode dispatch is concerned.
@@ -209,8 +336,8 @@ class TestTheInvariantsBehindTheTable(unittest.TestCase):
         nothing once the pass itself saw no claim.
         """
         for mode in ("arr_tracked", "both", "allowlist", "either", "bogus"):
-            rows = [EXPECTED[(mode, k)] for k in
-                    ("none", "untracked", "orphan_dwelled")]
+            rows = [EXPECTED_CLEARED[(mode, k)] for k in
+                    ("none", "untracked", "provisional", "orphan_dwelled")]
             self.assertEqual(rows[1:], rows[:-1], f"mode {mode} diverged")
 
     def test_a_stored_owner_is_never_deleted_directly_in_any_mode(self):
@@ -271,10 +398,13 @@ class TestTheParametersEvaluateActuallyReads(unittest.TestCase):
         kw = {"torrent": {"category": "tv", "tags": ""}, "bad_name": "",
               "arr_hit": None,
               "safety": dict(SAFETY, mode="allowlist"),
-              "ownership_known": True, "own": None}
+              "ownership_known": True, "own": None, "cleared": True}
         kw.update(over)
+        # Cleared by default: these pin which *parameters* are read, and a
+        # refusal to delete without synchronising would mask all of them.
         return core.evaluate(kw["torrent"], kw["bad_name"], kw["arr_hit"],
-                             kw["safety"], kw["ownership_known"], own=kw["own"])
+                             kw["safety"], kw["ownership_known"], own=kw["own"],
+                             fallback_cleared=kw["cleared"])
 
     def test_bad_name_is_not_read(self):
         """It has been a dead parameter since ownership landed; `core` itself

@@ -245,7 +245,8 @@ def _mode_coverage(mode, arr_hit, is_allowed, ownership_known):
     return None, "unknown_mode"
 
 
-def explain(torrent, arr_hit, safety, ownership_known=True, own=None):
+def explain(torrent, arr_hit, safety, ownership_known=True, own=None,
+            fallback_cleared=False):
     """Why Protectarr would or would not act here, without acting. Read-only.
 
     This is the decision table. `evaluate` is a projection of it that keeps
@@ -310,6 +311,37 @@ def explain(torrent, arr_hit, safety, ownership_known=True, own=None):
         return Judgement(BLOCKED, None, "owned_not_claimed_this_pass",
                          {"owner": own.owner, "why": own.why})
 
+    # A torrent nothing has established ownership for is not a torrent nobody
+    # owns. Between an *arr grabbing a release and its own grab history naming
+    # the infohash there is a window of a few milliseconds, and between the
+    # grab and the *arr's queue publishing it there are about five seconds; a
+    # scan landing in either sees a torrent no *arr appears to claim. So the
+    # fallback is refused until a `synchronise` run for *this attempt* says
+    # every application was reachable, every refresh completed, and neither its
+    # queue nor its retained history names the hash.
+    #
+    # `fallback_cleared` is an argument rather than a field of `own` on purpose.
+    # It is not a fact about the torrent, it is an authorisation for one
+    # destructive attempt, and it has to expire when that attempt does. A dry
+    # run, a failed delete or a restart all discard it.
+    # A candidate owner outranks any clearance. It comes from an exact-hash
+    # grab row - that *arr said it asked for this release - and a later
+    # synchronisation that finds no row has not retracted it: deleting a series
+    # cascade-deletes its history while the torrent carries on downloading,
+    # measured on Sonarr 4.0.20 and Radarr 6.4.4. So absence genuinely is not
+    # evidence, and the positive observation stands.
+    if (action == "qbit_delete" and own is not None
+            and own.state == ownership.PROVISIONAL and own.owner):
+        return Judgement(BLOCKED, None, "provisional_candidate_owner",
+                         {"owner": own.owner, "why": own.why})
+
+    if action == "qbit_delete" and not fallback_cleared:
+        state = own.state if own is not None else ownership.PROVISIONAL
+        if state in (ownership.PROVISIONAL, ownership.UNTRACKED):
+            return Judgement(WAITING, None, "awaiting_ownership_sync", {
+                "candidate_owner": own.owner if own is not None else None,
+                "why": own.why if own is not None else None})
+
     if own is not None and own.state == ownership.ORPHANED:
         dwell = safety.get("orphan_dwell_minutes", 10)
         if not ownership.actionable_orphan(own, dwell):
@@ -327,7 +359,8 @@ def explain(torrent, arr_hit, safety, ownership_known=True, own=None):
     return Judgement(PERMITTED, action, reason, None)
 
 
-def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True, own=None):
+def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True,
+             own=None, fallback_cleared=False):
     """Decide what to do with a torrent that contains a blocked file.
 
     A projection of `explain` that keeps only the action. Everything below
@@ -354,6 +387,10 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True, own=None)
                     `orphan_dwell_minutes`. An *arr that moves an item between
                     queues, or is mid-restart, produces a brief absence that is
                     not abandonment.
+        provisional seen, ownership not established. Never deleted directly
+                    unless `fallback_cleared` says a synchronisation run for
+                    this very attempt found every *arr reachable, every refresh
+                    completed, and no claim or grab event anywhere.
         owned       an *arr owns it, but no queue named it on this pass. Never
                     deleted directly. The stored owner is a real observation
                     and "nothing owns this" would contradict it; the *arr-aware
@@ -375,16 +412,24 @@ def evaluate(torrent, bad_name, arr_hit, safety, ownership_known=True, own=None)
     positional parameter from a function this central is a change worth making
     on purpose rather than in passing.
     """
-    return explain(torrent, arr_hit, safety, ownership_known, own).action
+    return explain(torrent, arr_hit, safety, ownership_known, own,
+                   fallback_cleared).action
 
 
 def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb,
-            own=None):
+            own=None, sync=None):
     """Findings about one torrent -> an action row, or None to leave it alone.
 
     Shared by both detection lanes, so a probe finding is judged by exactly the
     same profile and safety rules as an extension match. The lane a finding came
     from decides nothing about what happens to it.
+
+    `sync` is how a torrent with no established ownership earns the right to be
+    deleted directly, and it is only ever called for one that would otherwise
+    be. It is None on a preview, which is why a preview shows those torrents as
+    waiting rather than as deletions: forcing five *arrs to refresh is not
+    something a page render should do, and a preview that triggered it would be
+    changing the thing it claims to be observing.
     """
     arr_entry = arr_by_name.get(arr_hit[0].name) if arr_hit else None
     profile = policy.resolve(cfg, arr_entry, t.get("category") or "")
@@ -417,8 +462,41 @@ def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb,
         "_qb": qb,
     }
 
-    decision = evaluate(t, row["bad_file"], arr_hit, safety, ownership_known,
-                        own=own)
+    judgement = explain(t, arr_hit, safety, ownership_known, own=own)
+    if judgement.reason == "awaiting_ownership_sync" and sync is None:
+        # A preview, which must not synchronise. Dropping the row would make
+        # the preview blind to a finding it can plainly see, so it is reported
+        # as an observation instead: this was found, and a real scan would ask
+        # every application about it before doing anything. Reporting it as a
+        # deletion would be worse - it would promise an outcome that depends on
+        # an answer nobody has asked for yet.
+        row["decision"] = "warn"
+        row["pending_ownership_sync"] = True
+        return row
+    if judgement.reason == "awaiting_ownership_sync" and sync is not None:
+        # The one place the destructive boundary is crossed, so the one place
+        # worth spending several *arr round trips on. Nothing it concludes is
+        # stored as a negative: `cleared` authorises this attempt only.
+        outcome = sync(t.get("hash", ""))
+        log.info("Ownership synchronisation for %s: %s", t.get("name"),
+                 outcome.why)
+        own = outcome.own or own
+        if own is not None and own.state == ownership.OWNED and own.client:
+            # The queue published a claim between this scan reading the *arr
+            # queues and the synchronisation re-reading them - which is exactly
+            # the five-second window the whole fix exists for. `arr_hit` was
+            # built before that, so without this the torrent would merely be
+            # protected, and the *arr-aware path that can blocklist it and
+            # search for a replacement would be skipped for no reason.
+            arr_hit = (own.client, own.record)
+            row["arr"] = own.client.name
+            row["_owner"] = arr_hit
+            log.info("%s claimed %s while Protectarr was synchronising; "
+                     "handing it back rather than removing it directly.",
+                     own.client.name, t.get("name"))
+        judgement = explain(t, arr_hit, safety, ownership_known, own=own,
+                            fallback_cleared=outcome.cleared)
+    decision = judgement.action
     if verdict == "warn":
         # Worth recording, not worth destroying over. The safety mode still
         # decides whether this torrent was ever ours to touch.
@@ -437,7 +515,7 @@ def _assess(t, findings, arr_hit, arr_by_name, cfg, safety, ownership_known, qb,
 
 
 def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name,
-                resolved=None,
+                resolved=None, sync=None,
                 side_effects=True):
     """Second lane: the torrents the fast lane had nothing to say about.
 
@@ -478,7 +556,7 @@ def _probe_pass(qb, candidates, cfg, state, safety, ownership_known, arr_by_name
                  ", ".join(f"{f['reason']}({f.get('evidence', {}).get('filename', '?')})"
                            for f in res.findings))
         row = _assess(t, list(res.findings), arr_hit, arr_by_name, cfg, safety,
-                      ownership_known, qb,
+                      ownership_known, qb, sync=sync,
                       own=(resolved or {}).get((t.get("hash") or "").lower()))
         if row:
             rows.append(row)
@@ -539,7 +617,12 @@ def scan(cfg, state, side_effects=True):
         # rather than on speed or progress, so a stalled torrent at 0 B/s -
         # exactly what an abandoned fake looks like - stays eligible.
         acquiring=[t.get("hash") or "" for t in torrents
-                   if (t.get("state") or "") in ORPHANABLE_STATES])
+                   if (t.get("state") or "") in ORPHANABLE_STATES],
+        # Everything this pass can see. A torrent nothing claims and nothing
+        # remembers becomes PROVISIONAL and is written down here, before any
+        # decision is taken about it - which is the whole point, because the
+        # decision is the destructive one.
+        seen=[t.get("hash") or "" for t in torrents])
     # hash -> (client, queue_record), for the torrents exactly one *arr claims.
     owner = {h: (o.client, o.record) for h, o in resolved.items()
              if o.state == ownership.OWNED and o.client}
@@ -553,6 +636,23 @@ def scan(cfg, state, side_effects=True):
         log.warning("At least one application queue could not be read, so "
                     "ownership is unknown this pass. Torrents will not be "
                     "deleted directly from qBittorrent.")
+
+    # Built now, refreshed never - `Barrier.establish` does nothing until the
+    # first torrent actually reaches the destructive boundary, and most scans
+    # never have one. It lives exactly as long as this call.
+    barrier = ownership.Barrier(arr_clients)
+
+    def sync_ownership(thash):
+        """Fresh ownership resolution at the destructive boundary.
+
+        The refresh is shared across this scan; the queue and history reads
+        behind every verdict are not.
+        """
+        return ownership.synchronise(arr_clients, thash, barrier=barrier)
+
+    # A preview never synchronises. It would force every configured *arr to
+    # refresh, which is a write to them, and a page render must not do that.
+    syncer = sync_ownership if side_effects else None
 
     safety = cfg["safety"]
     actions = []
@@ -678,8 +778,17 @@ def scan(cfg, state, side_effects=True):
             # mode would have let us act on. Nothing else is worth the bytes,
             # and steering a torrent Protectarr may never touch would be a
             # change made for no possible outcome.
-            if probe_on and evaluate(t, "", arr_hit, safety,
-                                     ownership_known, own=own) is not None:
+            #
+            # Asked with a clearance granted, because the question here is
+            # "could this torrent ever be actionable", not "is it actionable
+            # right now". Reading the bytes of a file already on disk destroys
+            # nothing, so it does not need the synchronisation that a deletion
+            # does - and making candidacy wait for one would mean forcing every
+            # *arr to refresh for every clean torrent in the library, and would
+            # silently stop probing the whole unowned-allowlisted population
+            # the lane exists for.
+            if probe_on and evaluate(t, "", arr_hit, safety, ownership_known,
+                                     own=own, fallback_cleared=True) is not None:
                 probe_candidates.append((t, files, arr_hit))
             continue
 
@@ -689,7 +798,7 @@ def scan(cfg, state, side_effects=True):
                            for f in findings))
 
         row = _assess(t, findings, arr_hit, arr_by_name, cfg, safety,
-                      ownership_known, qb, own=own)
+                      ownership_known, qb, own=own, sync=syncer)
         if row:
             actions.append(row)
 
@@ -705,7 +814,7 @@ def scan(cfg, state, side_effects=True):
         else:
             actions.extend(_probe_pass(qb, probe_candidates, cfg, state, safety,
                                        ownership_known, arr_by_name,
-                                       resolved=resolved,
+                                       resolved=resolved, sync=syncer,
                                        side_effects=side_effects))
 
     # Everything the Active Downloads view needs was established above and is

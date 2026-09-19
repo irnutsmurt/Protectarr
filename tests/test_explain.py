@@ -22,11 +22,11 @@ from tests.test_evaluate_matrix import (COLUMNS, EXPECTED, OWNERSHIPS, SAFETY,
 
 
 def judge(mode, own_key="none", hit=False, allowed=True, known=True,
-          **safety_over):
+          cleared=False, **safety_over):
     safety = dict(SAFETY, mode=mode, **safety_over)
     torrent = {"category": "tv" if allowed else "other", "tags": ""}
     return core.explain(torrent, TRACKED if hit else None, safety, known,
-                        own=OWNERSHIPS[own_key])
+                        own=OWNERSHIPS[own_key], fallback_cleared=cleared)
 
 
 class TestEvaluateIsAProjectionOfExplain(unittest.TestCase):
@@ -42,7 +42,7 @@ class TestEvaluateIsAProjectionOfExplain(unittest.TestCase):
                     f"mode={mode} ownership={own_key} tracked={hit} "
                     f"allowlisted={allowed} known={known}")
                 checked += 1
-        self.assertEqual(checked, 240)
+        self.assertEqual(checked, 320)
 
     def test_an_action_is_only_ever_offered_on_permitted(self):
         """A refusal that still carried an action would be a loaded gun."""
@@ -171,8 +171,9 @@ class TestTheReasonsEvaluateThrewAway(unittest.TestCase):
 
     def test_a_permitted_torrent_says_which_route_it_would_take(self):
         self.assertEqual(judge("either", hit=True).reason, "tracked_by_arr")
-        self.assertEqual(judge("either", hit=False, allowed=True).reason,
-                         "allowlisted_and_unowned")
+        self.assertEqual(
+            judge("either", hit=False, allowed=True, cleared=True).reason,
+            "allowlisted_and_unowned")
 
 
 class TestExplainIsSafeForARequestThread(unittest.TestCase):

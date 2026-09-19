@@ -768,12 +768,21 @@ class TestSafetyModes(unittest.TestCase):
     SAFETY = {"allowed_categories": ["tv"], "allowed_tags": []}
     TRACKED = object()          # stands in for (client, record)
 
-    def verdict(self, mode, category, tracked):
+    def verdict(self, mode, category, tracked, cleared=True):
+        """What each mode does with one torrent.
+
+        `cleared=True` by default: these pin the *mode* dispatch, and since the
+        first-pass race fix a direct deletion additionally needs a fresh
+        synchronisation. Leaving that un-cleared would make every row read
+        None and hide the thing being tested. The synchronisation itself is
+        pinned in `test_ownership_fallback`.
+        """
         from protectarr import core
         safety = dict(self.SAFETY, mode=mode)
         torrent = {"category": category, "tags": ""}
         return core.evaluate(torrent, "bad.exe",
-                             self.TRACKED if tracked else None, safety)
+                             self.TRACKED if tracked else None, safety,
+                             fallback_cleared=cleared)
 
     def test_arr_tracked_leaves_orphans_alone(self):
         self.assertEqual(self.verdict("arr_tracked", "tv", True), "arr_fail")
@@ -793,6 +802,12 @@ class TestSafetyModes(unittest.TestCase):
         """The live case: Sonarr failed the release and dropped it, the torrent
         kept downloading a .exe, and arr_tracked would not touch it."""
         self.assertEqual(self.verdict("either", "tv", False), "qbit_delete")
+
+    def test_no_mode_deletes_directly_without_a_synchronisation(self):
+        """The other half of the default above, stated rather than implied."""
+        for mode in ("arr_tracked", "both", "allowlist", "either"):
+            self.assertIsNone(self.verdict(mode, "tv", False, cleared=False),
+                              f"{mode} deleted without synchronising")
 
     def test_either_still_prefers_the_arr_when_one_owns_it(self):
         # Only the *arr path blocklists the release and decides about requeue,

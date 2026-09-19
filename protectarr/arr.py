@@ -20,6 +20,12 @@ log = logs.get("arr")
 EVENT_DOWNLOAD_FAILED = 4
 _FAILED_NAMES = {"4", "downloadfailed"}
 
+# `eventType` must be the number on the wire: `eventType=grabbed` is HTTP
+# 400 on both apps even though the *response* spells it that way. The
+# response is matched by name or number, because only the request is picky.
+EVENT_GRABBED = 1
+_GRABBED_NAMES = {"1", "grabbed"}
+
 # Per app type:
 #   version       - API version segment
 #   unknown_param - queue "include unknown items" flag
@@ -363,6 +369,53 @@ class ArrClient:
         caller looking identical: only the first is evidence, and treating the
         second as evidence is how an outage becomes a permanent verdict.
         """
+        return self._history_events(download_id, EVENT_DOWNLOAD_FAILED,
+                                    _FAILED_NAMES, after_id, pages)
+
+    def grab_events(self, download_id, after_id=None, pages=4):
+        """`grabbed` history events for one infohash, newest first.
+
+        The positive half of the same identity. A grabbed row is this *arr
+        saying it asked for this exact torrent, and it is written at grab time:
+        measured on Sonarr 4.0.20 and Radarr 6.4.4, it is queryable within
+        2.9-33.3 ms of the grab, roughly 5 seconds before the download reaches
+        the *arr's queue. That gap is the first-pass race, and this is the
+        evidence that closes it.
+
+        Two things it is *not*. It is not proof of current ownership: a grabbed
+        row outlives the download, and the *arr may have finished with it long
+        ago. And its absence is not proof of anything at all - deleting a
+        series or movie cascade-deletes its history rows while the torrent
+        carries on downloading, measured on both apps. So this is read as
+        positive evidence only, never as a negative.
+
+        Raises on a read failure, for the same reason `failed_events` does.
+        """
+        return self._history_events(download_id, EVENT_GRABBED, _GRABBED_NAMES,
+                                    after_id, pages)
+
+    def _history_events(self, download_id, event_type, names, after_id, pages):
+        """History rows for one infohash and one event type, newest first.
+
+        The server-side `downloadId` filter is CASE SENSITIVE, and a case that
+        does not match returns HTTP 200 with zero records rather than an error.
+        Servarr stores the 40-character SHA-1 uppercased; qBittorrent reports
+        it lowercased, and `queue_by_hash` lowercases it again. Querying with
+        the hash as handed to us therefore finds nothing, silently - so the
+        uppercase form is asked for first and the original spelling is only
+        tried if that comes back empty.
+
+        Measured on both apps: the filter searches the whole retained history
+        rather than a recent window - a row buried well off page 1 of an
+        unfiltered query comes back with `pageSize=1` - and `totalRecords`
+        reflects the filter. Paging is kept anyway, because a parameter the
+        server does not understand is ignored rather than refused.
+
+        Raises on a read failure rather than returning an empty list. "The *arr
+        has no such event" and "we could not ask the *arr" must not reach the
+        caller looking identical: only the first is evidence, and treating the
+        second as evidence is how an outage becomes a permanent verdict.
+        """
         did = (download_id or "").lower()
         if not did:
             return []
@@ -376,8 +429,7 @@ class ArrClient:
                 r = self._s.get(
                     self._url("history"),
                     params={"downloadId": spelling, "page": page,
-                            "pageSize": 100,
-                            "eventType": EVENT_DOWNLOAD_FAILED},
+                            "pageSize": 100, "eventType": event_type},
                     timeout=self.timeout)
                 r.raise_for_status()
                 body = r.json()
@@ -389,7 +441,7 @@ class ArrClient:
                     # server does not understand is ignored, not refused.
                     if (rec.get("downloadId") or "").lower() != did:
                         continue
-                    if str(rec.get("eventType", "")).lower() not in _FAILED_NAMES:
+                    if str(rec.get("eventType", "")).lower() not in names:
                         continue
                     if after_id is not None and (rec.get("id") or 0) <= after_id:
                         continue
@@ -400,6 +452,47 @@ class ArrClient:
                 break
         out.sort(key=lambda rec: rec.get("id") or 0, reverse=True)
         return out
+
+    def refresh_monitored_downloads(self, timeout=90, poll=0.25):
+        """Force the *arr to re-read its download client. (ok, why).
+
+        The *arr builds its queue from a scheduled poll of the download client,
+        not from the grab: measured, `RefreshMonitoredDownloads` runs on a
+        one-minute timer on both Sonarr 4.0.20 and Radarr 6.4.4, and a torrent
+        takes 21.7-73.6 s to appear if nothing forces it. Forcing it completes
+        in 0.06-1.06 s, which turns "wait and hope" into a synchronisation
+        barrier that can be waited on.
+
+        `ok` is True only for a command that reached `completed`. A timeout, a
+        failed command and an unreachable *arr are all False with a reason,
+        because an unfinished refresh says nothing about ownership and must
+        never be read as one that found nothing.
+        """
+        deadline = time.monotonic() + timeout
+        try:
+            r = self._s.post(self._url("command"),
+                             json={"name": "RefreshMonitoredDownloads"},
+                             timeout=self.timeout)
+            r.raise_for_status()
+            command_id = r.json().get("id")
+        except (requests.RequestException, ValueError) as e:
+            return False, f"could not ask {self.name} to refresh: {e}"
+        if command_id is None:
+            return False, f"{self.name} accepted the refresh but named no command"
+
+        while time.monotonic() < deadline:
+            state, result, _ = self.command_status(command_id)
+            if state is None:
+                return False, (f"{self.name} stopped answering while its "
+                               f"refresh was running")
+            if state == "completed":
+                return True, f"{self.name} refreshed"
+            if state in ("failed", "aborted", "unknown"):
+                return False, (f"{self.name}'s refresh {state}"
+                               f"{f' ({result})' if result else ''}")
+            time.sleep(poll)
+        return False, (f"{self.name}'s refresh did not finish within "
+                       f"{timeout:.0f}s")
 
     def blocklist_rows(self, pages=4):
         """Every blocklist record this instance holds, newest first.
