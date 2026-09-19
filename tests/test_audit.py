@@ -33,7 +33,7 @@ from protectarr import config as cfg_mod  # noqa: E402
 
 cfg_mod.CONFIG_PATH = os.path.join(tempfile.mkdtemp(), "config.yaml")
 
-from protectarr import core, events, intents, web  # noqa: E402
+from protectarr import core, events, intents, logs, web  # noqa: E402
 
 from test_intents import (FakeArr, HASH, VERIFIED, UNVERIFIED,  # noqa: E402
                           action, conf, queue_record)
@@ -639,3 +639,154 @@ class TestNoCredentialRegression(WebCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheIncidentTimeline(AuditCase):
+    """When each part of an incident happened, from events that were written.
+
+    Nothing here is inferred. A milestone Protectarr never recorded does not
+    appear, and no entry borrows a neighbouring event's timestamp - the whole
+    value of the section is that every line is a thing that was written down.
+    """
+
+    def detail(self):
+        return web._detail(self.rows()[0])
+
+    def labels(self):
+        return [t["what"] for t in self.detail()["timeline"]]
+
+    def test_a_detection_with_no_remediation_still_has_a_timestamp(self):
+        """The commonest incident and the one that used to show none at all.
+
+        The Timeline was hidden below two entries, and the dossier carries no
+        other time - the When column is on the table behind the dialog - so an
+        operator who opened a flagged row to investigate it could not say when
+        it happened.
+        """
+        rows = web._history_rows([{"timestamp": "2026-09-18 16:04:12 -0700",
+                                   "torrent": {"name": "A"},
+                                   "action": {"result": "warned"}}])
+        timeline = web._detail(rows[0])["timeline"]
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["when"], "2026-09-18 16:04:12 -0700")
+        self.assertEqual(timeline[0]["what"], "Flagged, nothing removed")
+
+    def test_a_settled_remediation_names_each_moment_once(self):
+        client = FakeArr()
+        self.reap(client)
+        intents.reconcile([client])
+        got = self.labels()
+        self.assertEqual(got, ["Handed back to the application", "Settled"])
+        self.assertEqual(len(set(got)), len(got), "a label appears twice")
+
+    def test_removal_verified_is_not_called_pending(self):
+        """`_MILESTONES` maps both `pending` and `removed` to "Pending",
+        because for the status pill both mean "still in progress". On a
+        timeline they are two moments, and printing the same word against two
+        timestamps reads as a bug rather than as a lifecycle.
+        """
+        self.stranded()
+        intents.reconcile([FakeArr()])
+        self.assertIn("Removal verified", self.labels())
+        self.assertNotIn("Pending", self.labels())
+
+    def test_a_failed_unverified_moment_is_named(self):
+        self.stranded()
+        intents.reconcile([FakeArr(evidence=UNVERIFIED)])
+        self.assertIn("Could not verify the removal", self.labels())
+
+    def test_a_resumed_transition_is_marked_and_only_then(self):
+        """`recovered` means the intent outlived the process that opened it,
+        which is a resumption rather than a failure being put right. The label
+        says so."""
+        self.stranded()
+        intents.reconcile([FakeArr()])
+        self.assertTrue(any(t["resumed"] for t in self.detail()["timeline"]))
+
+        # `Store.reset()` only forgets the broken flag; it has never cleared
+        # records. Leaving the stranded intent in place would make
+        # `open_intent` refuse to start a second remediation, and `reap` would
+        # silently reuse the old one - along with its pre-restart `opened`,
+        # which is the very field under test.
+        intents._store.mutate(lambda d: (d.clear(), True)[1])
+        os.remove(os.path.join(self.dir, "events.jsonl"))
+        client = FakeArr()
+        self.reap(client)
+        intents.reconcile([client])
+        self.assertFalse(any(t["resumed"] for t in self.detail()["timeline"]),
+                         "routine follow-up was marked as a resumption")
+
+    def test_no_milestone_is_given_a_timestamp_it_did_not_record(self):
+        """`pending` is never audited - `intents.audit` is only ever called
+        from reconcile - so a remediation that is still pending has exactly one
+        entry, the reap. It does not gain an invented "opened" line, and the
+        reap's timestamp is not reused under a second label.
+        """
+        self.reap(FakeArr())
+        timeline = self.detail()["timeline"]
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(timeline[0]["what"], "Handed back to the application")
+
+    def test_the_timeline_runs_oldest_first(self):
+        client = FakeArr()
+        self.reap(client)
+        intents.reconcile([client])
+        whens = [t["when"] for t in self.detail()["timeline"]]
+        self.assertEqual(whens, sorted(whens))
+
+    def test_unrelated_events_between_lifecycle_events_are_not_folded_in(self):
+        """The join is equality on `remediation_id`. An unrelated incident
+        landing between a reap and its settlement must not appear in either
+        one's timeline."""
+        client = FakeArr()
+        self.reap(client)
+        events.record({"timestamp": "2026-09-18 16:05:00 -0700",
+                       "torrent": {"name": "Unrelated"},
+                       "action": {"result": "warned"}, "dry_run": False})
+        intents.reconcile([client])
+        rows = self.rows()
+        mine = [r for r in rows if (r["ev"].get("torrent") or {}).get("name")
+                != "Unrelated"][0]
+        got = [t["what"] for t in web._detail(mine)["timeline"]]
+        self.assertEqual(got, ["Handed back to the application", "Settled"])
+
+    def test_another_remediations_timestamps_cannot_leak_in(self):
+        """Two incidents, two ids. Each dossier shows only its own moments."""
+        client = FakeArr()
+        self.reap(client)
+        intents.reconcile([client])
+        first = self.detail()["timeline"]
+
+        intents._store.mutate(lambda d: (d.clear(), True)[1])
+        self.stranded(remediation_id="rid-second", hash=HASH)
+        intents.reconcile([FakeArr()])
+        rows = self.rows()
+        ids = {(r["latest"].get("remediation_id")
+                or r["ev"].get("remediation_id")) for r in rows}
+        self.assertIn("rid-second", ids)
+        for row in rows:
+            rid = (row["latest"].get("remediation_id")
+                   or row["ev"].get("remediation_id"))
+            for x in row["timeline"]:
+                if x.get("remediation_id"):
+                    self.assertEqual(x["remediation_id"], rid,
+                                     "an event from another remediation was "
+                                     "folded into this dossier")
+        self.assertTrue(first, "the first incident lost its timeline")
+
+    def test_a_relative_age_accompanies_each_entry_when_readable(self):
+        """Same convention as the Dashboard: the absolute value is what goes
+        in a bug report, the relative one answers "was this recent"."""
+        rows = web._history_rows([{"timestamp": logs.now(),
+                                   "torrent": {"name": "A"},
+                                   "action": {"result": "warned"}}])
+        self.assertEqual(web._detail(rows[0])["timeline"][0]["rel"],
+                         "just now")
+
+    def test_an_unreadable_timestamp_declines_rather_than_guessing(self):
+        rows = web._history_rows([{"timestamp": "not a date",
+                                   "torrent": {"name": "A"},
+                                   "action": {"result": "warned"}}])
+        entry = web._detail(rows[0])["timeline"][0]
+        self.assertEqual(entry["when"], "not a date")
+        self.assertIsNone(entry["rel"])

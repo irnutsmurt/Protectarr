@@ -975,6 +975,13 @@ textarea { min-height: 70px; font-family: ui-monospace, Menlo, Consolas, monospa
      200px cell in a 343px dialog, which is the History regression again. */
   .dsec.span th { white-space: nowrap; }
 }
+/* The relative age sits under the timestamp rather than beside it. Beside it
+   would add ~12 characters to a cell that is already `white-space: nowrap` at
+   900px and up, which is the one place in this dialog where a long string
+   cannot wrap its way out of trouble. Block, so each line is independently
+   nowrap-safe, and outside the media query so the stacked layout gets the same
+   two lines rather than a different shape. */
+.dsec.span th .tl-rel { display: block; font-weight: 400; }
 .modal-head {
   display: flex; align-items: center; padding: 14px 18px; font-size: 15px; font-weight: 600;
   color: var(--text-head); background: var(--card-head); border-bottom: 1px solid var(--border);

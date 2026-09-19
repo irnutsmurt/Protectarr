@@ -154,13 +154,23 @@ class TestDetailGridStructure(unittest.TestCase):
                              "single-column stack, where it means nothing")
 
     def test_timeline_is_the_only_full_span_section(self):
-        """`span` is passed once, and by the chronological section."""
+        """`span` is passed once, and by the chronological section.
+
+        The title is found by walking back to the nearest `section(` call
+        rather than by looking a fixed distance behind the span marker. The
+        fixed window was 400 characters and broke the moment the Timeline's
+        map body grew past it, which is a property of the formatting rather
+        than of the thing being asserted.
+        """
         calls = re.findall(r"section\((.{0,40}?),", self.html, re.S)
         spans = re.findall(r"\}\), true\);|\], true\);", self.html)
         self.assertEqual(len(spans), 1, "more than one section asks to span")
         i = self.html.index("}), true);") if "}), true);" in self.html \
             else self.html.index("], true);")
-        self.assertIn("'Timeline'", self.html[max(0, i - 400):i])
+        before = self.html[:i]
+        j = before.rindex("section(")
+        self.assertIn("'Timeline'", before[j:j + 40],
+                      "the spanning section is not the Timeline")
         self.assertTrue(calls, "section() is never called")
 
     def test_no_broad_nowrap_rule_was_added(self):
@@ -220,13 +230,25 @@ STRESS = {
     "search_command": 1126044, "search_state": "completed",
     "search_result": "successful",
     "search_message": "Completed search for 1 series. 0 reports downloaded.",
+    # Each entry carries a relative age on its own line under the timestamp,
+    # which is the widest the label column ever gets. `resumed` and a note
+    # together are the worst case for the value column.
     "timeline": [
-        {"when": "2026-09-15 10:13:03 -0700", "what": "reaped", "note": None},
-        {"when": "2026-09-15 10:13:06 -0700", "what": "Removed", "note": None},
-        {"when": "2026-09-15 10:13:54 -0700", "what": "Verified",
-         "note": "reconciled from the intent ledger after a restart"},
-        {"when": "2026-09-15 10:14:39 -0700", "what": "Failed Unverified",
-         "note": None},
+        {"when": "2026-09-15 10:13:03 -0700", "rel": "3 days ago",
+         "what": "Handed back to the application", "note": None,
+         "resumed": False},
+        {"when": "2026-09-15 10:13:06 -0700", "rel": "3 days ago",
+         "what": "Removal verified", "note": None, "resumed": False},
+        {"when": "2026-09-15 10:13:54 -0700", "rel": "3 days ago",
+         "what": "Removal verified", "resumed": True,
+         # A real note, as `intents.reconcile` writes them. The earlier
+         # placeholder said "after a restart", which the `resumed` marker
+         # already says, so the stress record was rehearsing a duplication
+         # that production cannot produce.
+         "note": "the removal was confirmed against the *arr's own records"},
+        {"when": "2026-09-15 10:14:39 -0700", "rel": "3 days ago",
+         "what": "Could not verify the removal", "note": None,
+         "resumed": False},
     ],
 }
 
@@ -346,6 +368,23 @@ class TestDetailGridGeometry(unittest.TestCase):
         for w in (1920, 1440, 1280, 1024, 900, 768, 600):
             with self.subTest(width=w):
                 self.assertEqual(self.measure(w)["overflow"], 0)
+
+    def test_the_timestamp_column_survives_the_narrowest_phone(self):
+        """The Timeline's label column is the one cell in the dialog that
+        cannot wrap above 900px, and it now holds two lines rather than one.
+        320px is narrower than any phone Protectarr is likely to meet, which
+        is the point: if it fits there it fits everywhere."""
+        for w in (320, 360, 375, 414):
+            with self.subTest(width=w):
+                self.assertEqual(self.measure(w)["overflow"], 0)
+
+    def test_the_relative_age_does_not_widen_the_timestamp_column(self):
+        """It sits under the timestamp, not beside it. Beside it would add
+        about twelve characters to a nowrap cell and push the dialog out."""
+        wide = self.measure(1440)
+        timeline = [s for s in wide["sections"] if s["name"] == "Timeline"][0]
+        self.assertGreater(timeline["w"], wide["bodyW"] * 0.9)
+        self.assertEqual(wide["overflow"], 0)
 
 
 if __name__ == "__main__":

@@ -26,7 +26,10 @@ function section(title, pairs, span){
   if (!rows.length) return '';
   return '<section class="dsec' + (span ? ' span' : '') + '"><h3>' + esc(title) + '</h3>'
     + '<table class="applist"><tbody>' + rows.map(function(p){
-        return '<tr><th>' + esc(p[0])
+        // p[2]: the value is already markup. p[3]: so is the label, which
+        // only the Timeline needs - its label column is a timestamp with a
+        // relative age beside it rather than a field name.
+        return '<tr><th>' + (p[3] ? p[0] : esc(p[0]))
              + '</th><td>' + (p[2] ? p[1] : esc(p[1])) + '</td></tr>';
       }).join('') + '</tbody></table></section>';
 }
@@ -79,11 +82,22 @@ function showDetails(i){
     // The whole reason `Settled` is not the same as "a replacement arrived".
     ['Arr message', r.search_message]
   ]);
-  if (r.timeline && r.timeline.length > 1){
+  if (r.timeline && r.timeline.length){
     // Full width: it is chronological, its label column is a timestamp rather
     // than a field name, and it is the one section that grows without bound.
+    //
+    // Shown even for a single entry. The dossier carries no other timestamp -
+    // the When column is on the table behind the dialog - so an operator who
+    // opened a row to investigate it could not otherwise say when it happened.
     html += section('Timeline', r.timeline.map(function(t){
-      return [t.when, esc(t.what) + (t.note ? ' <span class="hint">' + esc(t.note) + '</span>' : ''), true];
+      var hints = [];
+      if (t.resumed) hints.push('resumed after a restart');
+      if (t.note) hints.push(t.note);
+      var when = esc(t.when)
+        + (t.rel ? '<span class="hint tl-rel">' + esc(t.rel) + '</span>' : '');
+      return [when,
+              esc(t.what) + (hints.length ? ' <span class="hint">' + esc(hints.join(' \u00b7 ')) + '</span>' : ''),
+              true, true];
     }), true);
   }
   if (!html) html = '<p class="hint">Nothing further was recorded for this event.</p>';

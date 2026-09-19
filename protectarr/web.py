@@ -386,20 +386,72 @@ def _detail(row):
         "search_result": search.get("result"),
         "search_message": search.get("message"),
         # Oldest first here: a timeline that runs backwards is a puzzle.
+        #
+        # Every entry is an event that was actually written. Nothing is
+        # inferred from ordering and no milestone is given the neighbouring
+        # event's timestamp: a lifecycle step Protectarr never recorded simply
+        # does not appear. `intents.opened` would be an authoritative
+        # "remediation started", but it lives in recovery state that ages out
+        # at seven days rather than in the audit trail, so showing it would
+        # make a dossier's contents depend on how old the incident is.
         "timeline": [{
             "when": x.get("timestamp"),
+            "rel": _relative(x.get("timestamp")),
             "what": _timeline_label(x),
             "note": (x.get("remediation") or {}).get("note"),
+            # The intent outlived the process that opened it, so a later run
+            # made this transition. That is what `recovered` means here - not
+            # that a failure was put right.
+            "resumed": bool((x.get("remediation") or {}).get("recovered")),
         } for x in reversed(row["timeline"])],
     }
+
+
+# What each timeline entry is allowed to claim. Deliberately not `_MILESTONES`,
+# which answers a different question: that map names the *state a remediation is
+# in* for the status pill, where `pending` and `removed` are both "Pending"
+# because both mean "still in progress". On a timeline they are two different
+# moments and collapsing them would print the same word twice against two
+# timestamps, which reads as a bug.
+#
+# Each label is the strongest statement the event actually supports. `removed`
+# is the milestone the oracle sets after finding both the downloadFailed
+# history event and the blocklist row, so it may say "verified"; the reap event
+# itself may not, because at that point the removal has been *issued*.
+_TIMELINE_MILESTONES = {
+    "pending": "Remediation opened",
+    "removed": "Removal verified",
+    "settled": "Settled",
+    "failed_unverified": "Could not verify the removal",
+}
+
+# The reap event carries no `event_type`, so it is identified by its outcome.
+# `reaped` is split by decision because the two paths did different things:
+# one handed the release back to the application, the other deleted it from
+# qBittorrent with nothing to hand it to.
+_TIMELINE_ACTIONS = {
+    "warned": "Flagged, nothing removed",
+    "would_reap": "Detected (dry run, nothing removed)",
+    "failed": "Attempt failed, nothing removed",
+    "partial": "Removed, follow-up incomplete",
+}
 
 
 def _timeline_label(e):
     rem = e.get("remediation") or {}
     if e.get("event_type") == "remediation":
         milestone = rem.get("milestone") or "updated"
-        return _MILESTONES.get(milestone, (milestone,))[0]
-    return (e.get("action") or {}).get("result") or "recorded"
+        return _TIMELINE_MILESTONES.get(milestone, milestone)
+    act = e.get("action") or {}
+    result = act.get("result")
+    if result == "reaped":
+        # Not "Removed": at this point the removal was issued and, on the *arr
+        # path, the oracle had its first look. Whether it stuck is the
+        # `removed` milestone's statement to make, not this one's.
+        return ("Removed from qBittorrent"
+                if act.get("decision") == "qbit_delete"
+                else "Handed back to the application")
+    return _TIMELINE_ACTIONS.get(result, result or "Recorded")
 
 
 def _base(row, e):
